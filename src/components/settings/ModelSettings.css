@@ -1,0 +1,403 @@
+/* "模型接入"页面：模型库卡片（radio 单选激活）+ 接入表单；全局骨架类
+   （.settings-body/.settings-page-head/.settings-group/.settings-row）在
+   SettingsDialog.css / GeneralSettings.css，本文件只管 model- 前缀的增量样式 */
+
+/* —— 模型库卡片 —— */
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 整卡可点 = 激活（radio 语义）；编辑/删除按钮 stopPropagation 不触发；
+   毛玻璃改版：玻璃卡（不挂 backdrop-filter——卡内嵌 fixed 删除确认气泡） */
+.model-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  background: var(--glass-card);
+  box-shadow: var(--glass-rim);
+  cursor: pointer;
+}
+
+.model-card:hover:not(.active) {
+  border-color: var(--accent-border); /* 可点击意向；active 态由紫边 + 紫底表达 */
+}
+
+.model-card.active {
+  border-color: var(--accent-border);
+  background: var(--accent-softer);
+}
+
+/* radio 圆环：16px 空心圆，激活显 8px accent 实心点 */
+.model-card-radio {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+}
+
+.model-card.active .model-card-radio {
+  border-color: var(--accent);
+}
+
+.model-card.active .model-card-radio::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* 品牌图标位：统一 Bot（不做各厂商品牌图标），accent 弱底方块 */
+.model-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+}
+
+.model-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0; /* 允许等宽副信息行省略 */
+}
+
+.model-card-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-card-name {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* 连接徽标：语义绑上次测试结果（在线绿 / 离线橙 / 未测灰），与激活态无关。
+   底色用固定低透明 rgba（项目无 color-mix 先例，明暗主题下半透明叠加各自底色） */
+.model-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.model-badge.ok {
+  color: var(--green);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.model-badge.bad {
+  color: var(--orange);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.model-badge.idle {
+  color: var(--text-muted);
+  background: var(--grid-line);
+}
+
+.model-card-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: ui-monospace, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 右侧测速摘要列 */
+.model-card-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.model-card-meta-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.model-card-meta-value {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.model-card-meta-value.ok {
+  color: var(--green);
+}
+
+.model-card-meta-value.bad {
+  color: var(--orange);
+}
+
+.model-card-meta-value.pending {
+  color: var(--text-secondary);
+}
+
+/* 卡尾操作组：铅笔常显；删除 hover 浮现（:has 联动气泡打开期间常显，口径同侧栏） */
+.model-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.model-card-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.model-card-btn:hover {
+  background: var(--grid-line);
+  color: var(--text-secondary);
+}
+
+.model-del-btn {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.model-card:hover .model-del-btn,
+.model-card:focus-within .model-del-btn,
+.model-card:has(.confirming) .model-del-btn {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.model-del-btn:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+}
+
+/* "+ 接入新模型"入口：dashed 幽灵按钮全宽（贴合 settings 语言，替代设计稿黑 pill） */
+.model-add-entry {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 36px;
+  border: 1.5px dashed var(--border);
+  border-radius: 10px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.model-add-entry:hover {
+  border-color: var(--accent-border);
+  color: var(--accent-deep);
+  background: var(--accent-softer);
+}
+
+/* —— 接入 / 编辑表单（.settings-card 变体：内距收窄为 16） —— */
+
+.model-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+
+.model-form-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.model-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.model-field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.model-field-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.model-field-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 文本输入：规格对齐 .set-select-trigger / .sidebar-project-rename 惯例（玻璃内嵌底） */
+.model-input {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.model-input::placeholder {
+  color: var(--text-muted);
+}
+
+.model-input:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+
+/* URL / Model ID / Key 等技术标识字段用等宽字体 */
+.model-input.mono {
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+/* 密钥行：眼睛钮内嵌输入框右侧 */
+.model-key-wrap {
+  position: relative;
+}
+
+.model-key-wrap .model-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding-right: 32px;
+}
+
+.model-key-eye {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.model-key-eye:hover {
+  color: var(--text-secondary);
+}
+
+/* 进阶设定区：细分隔线收尾；内部复用 .settings-row（上下文覆盖收窄内距对齐表单字段） */
+.model-form-adv {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--grid-line);
+  padding-top: 12px;
+}
+
+.model-form-adv-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 4px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.model-experimental {
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--orange);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.model-form-adv .settings-row {
+  padding: 12px 2px;
+}
+
+.model-form-adv .settings-row + .settings-row {
+  border-top: 1px solid var(--grid-line);
+}
+
+/* 保存失败提示（409 重名等），置于 footer 上方 */
+.model-form-error {
+  font-size: 12px;
+  color: var(--orange);
+}
+
+/* 底部：左测试组 / 右取消 + 保存 */
+.model-form-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.model-form-test {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.model-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* 表单内联测试结果：ok 绿 / bad 橙 + 省略号截断（错误文案可能较长） */
+.model-test-result {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-test-result.ok {
+  color: var(--green);
+}
+
+.model-test-result.bad {
+  color: var(--orange);
+}

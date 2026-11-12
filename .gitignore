@@ -1,0 +1,41 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Python 构建产物
+__pycache__/
+*.py[cod]
+backend/build/
+.pybuild/
+.pytest_cache/
+backend/data/
+*.spec
+release/
+
+# Sidecar 构建产物（build:backend 生成，100MB+ 不入库，超 GitHub 单文件限制）
+src-tauri/bin/
+bin/
+
+# Editor directories and files
+.claude/
+CLAUDE.md
+docs/
+.git/
+.vscode/
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

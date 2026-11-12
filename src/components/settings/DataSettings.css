@@ -1,0 +1,738 @@
+/* "数据接入"页面：已连接数据源卡 + 精选工具推荐卡 + Composio Key 配置与搜索；
+   全局骨架类（.settings-body/.settings-page-head/.settings-group/.settings-group-title/
+   .settings-card/.settings-row-*）在 SettingsDialog.css / GeneralSettings.css，
+   本文件只管 data- 前缀的增量样式 */
+
+/* —— 网格与卡片 —— */
+
+.data-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr); /* 2026-09-20 设置页调大后两列卡过宽改三列 */
+  gap: 12px;
+}
+
+/* 玻璃卡（规格同 .model-card；不挂 backdrop-filter——毛玻璃红线，卡片只做半透明 tint） */
+.data-card {
+  display: flex;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  background: var(--glass-card);
+  box-shadow: var(--glass-rim);
+  padding: 14px 16px;
+}
+
+/* hover 高亮 = 设计图"选中高亮态"的落法（可连接意向，惯例同 .model-card:hover） */
+.data-card:hover {
+  border-color: var(--accent-border);
+}
+
+/* 纵向卡（已连接与精选通用同构，唯一差异是底部按钮）：图标行（图标左 / 通道
+   胶囊右上）→ 名称 → 描述 → 底部按钮行；按钮行 margin-top:auto 钉底，描述行数
+   不齐时两区卡片的按钮都对齐卡底。
+   定高 176px（2026-10-16 二次加固：name 单行 + desc 两行钳制后仍有内容形态
+   能撑高卡片——超长命令路径 / 徽标 / 按钮文案组合；物理定死高度 + 溢出剪裁，
+   彻底杜绝任何内容把卡片拉长，悬停 title 看全文） */
+.data-card-col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  height: 176px;
+  overflow: hidden;
+}
+
+/* 已连接卡底部按钮行：与精选卡全宽"连接应用"同一落位，两个半宽按钮平分——
+   普通数据源"配置"+"断开"，内置 MCP 为"配置"+"关闭/启用"（不可断开删除） */
+.data-row-actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  margin-top: auto;
+}
+
+.data-row-actions .data-btn {
+  flex: 1;
+  white-space: nowrap; /* 2026-10-16 定高配套：四钮窄卡下文字换行会撑高按钮行 */
+}
+
+/* 内置 MCP 停用态：整卡降淡示意（透明度口径同 .past 降淡），开关钮保持可点 */
+.data-card.disabled {
+  opacity: 0.6;
+}
+
+.data-card-col-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+/* 名称完整显示（2026-10-16 定案反转旧优先级）：应用名称不收缩不截断——挤压
+   一律由徽标消化，徽标再长也不能吃掉名称 */
+.data-card-name {
+  flex-shrink: 0;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* 描述两行钳制（2026-10-16 卡片定高要求：长路径/长描述不再撑高卡片，截断内容
+   悬停 title 看全文；min-height 恒占两行——一行描述的卡与两行描述的卡严格等高；
+   2026-09-20 曾试单行截断被回滚，两行 + title 为新定稿。overflow-wrap:anywhere
+   同日二次加固：无空格超长路径（Windows 目录串）默认不折行会溢出两行钳制，
+   强制按字符折行进钳制） */
+.data-card-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  min-height: 3.1em; /* 2 行 × line-height 1.55 */
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.data-card-desc.mono {
+  font-family: ui-monospace, Consolas, monospace; /* 本地路径用等宽（惯例同 .model-card-sub） */
+}
+
+/* —— 图标位 —— */
+
+/* 34×34 底块（规格仿 .model-card-icon）；底色用中性 --glass-track 而非紫——
+   避免与 Obsidian 品牌紫 / 紫胶囊撞色，品牌色只落在 logo 本身 */
+.data-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--glass-track);
+}
+
+.data-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* 品牌色（固定 hex 不走 token——品牌色不属于设计系统；明暗主题下饱和色均保持可辨） */
+.data-icon.notion {
+  color: #000000;
+}
+
+.data-icon.feishu-cli {
+  color: #3370ff;
+}
+
+.data-icon.ticktick,
+.data-icon.ticktick-cn { /* 国内版与国际版同一品牌同一蓝 */
+  color: #4772fa;
+}
+
+.data-icon.obsidian {
+  color: #7c3aed;
+}
+
+.data-icon.outlook {
+  color: #0072c6;
+}
+
+.data-icon.microsoft-todo {
+  color: #2564cf;
+}
+
+.data-icon.todoist,
+.data-icon.todoist-cli { /* CLI 卡复用同一品牌色 */
+  color: #e44332;
+}
+
+.data-icon.dingtalk,
+.data-icon.dingtalk-cli { /* CLI 卡复用同一品牌色 */
+  color: #0089ff;
+}
+
+.data-icon.gitlab {
+  color: #fc6d26;
+}
+
+.data-icon.github {
+  color: #181717;
+}
+
+.data-icon.jira {
+  color: #0052cc;
+}
+
+.data-icon.linear {
+  color: #5e6ad2;
+}
+
+.data-icon.trello {
+  color: #0079bf;
+}
+
+.data-icon.local-folder {
+  color: var(--orange);
+}
+
+/* Notion/GitHub 深黑线框在暗色玻璃卡上不可见——需要暗色反转的品牌色 */
+html[data-theme="dark"] .data-icon.notion,
+html[data-theme="dark"] .data-icon.github {
+  color: #ffffff;
+}
+
+/* —— 胶囊（状态 / 来源标签，规格同 .model-badge） —— */
+
+.data-pill {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/* Composio 通道：蓝（项目无蓝色 token，固定低透明 rgba 惯例，明暗叠加） */
+.data-pill.blue {
+  color: #3b82f6;
+  background: rgba(59, 130, 246, 0.12);
+}
+
+/* MCP 通道：紫（accent 族 token 亮暗两套自动适配） */
+.data-pill.purple {
+  color: var(--accent-deep);
+  background: var(--accent-softer);
+}
+
+/* CLI 通道：绿（成功族低透明 rgba，明暗叠加，惯例同 blue） */
+.data-pill.green {
+  color: #16a34a;
+  background: rgba(22, 163, 74, 0.12);
+}
+
+/* —— 精选区标题行与推荐徽章 —— */
+
+.data-featured-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 2px; /* 对齐 .settings-group-title 的 2px 缩进 */
+}
+
+.data-featured-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--orange);
+  background: rgba(245, 158, 11, 0.12); /* 黄橙配色惯例同 .model-badge.bad */
+}
+
+/* 精选卡单个全宽按钮收底（钉底同 .data-row-actions；子选择器防命中已连接
+   .data-row-actions 内的半宽按钮） */
+.data-card-col > .data-btn {
+  width: 100%;
+  margin-top: auto;
+}
+
+/* —— 底部极客选项行 —— */
+
+.data-geek {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.data-geek-link {
+  color: var(--accent-deep); /* 暗色自动 #a5b4fc */
+}
+
+/* "探索更多"外链（a 标签）：点击走 openExternal 系统浏览器打开 MCP Registry，
+   去 UA 默认下划线与紫字统一外观；"手动配置 MCP Server" 为 button（开手动
+   添加表单），button 款的重置见文件末尾 MCP 增量段 */
+a.data-geek-link {
+  text-decoration: none;
+}
+
+/* —— Composio Key 配置（规格镜像 .model-key-* / .model-badge / .model-input） —— */
+
+.data-key-wrap {
+  position: relative;
+}
+
+.data-key-input {
+  width: 240px;
+  box-sizing: border-box;
+  height: 30px;
+  padding: 0 32px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.data-key-input::placeholder {
+  color: var(--text-muted);
+}
+
+.data-key-input.mono {
+  font-family: ui-monospace, Consolas, monospace; /* 密钥为等宽字符串（惯例同 .model-input.mono） */
+}
+
+.data-key-eye {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.data-key-eye:hover {
+  color: var(--text-secondary);
+}
+
+/* Key 验证徽标三态：有效（绿）/ 无效（橙）/ 未验证（灰）——规格同 .model-badge；
+   名称行内不换行，挤压时收缩省略（名称优先完整显示，2026-10-16 定案） */
+.data-key-badge {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.data-key-badge.ok {
+  color: var(--green);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.data-key-badge.bad {
+  color: var(--orange);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.data-key-badge.idle {
+  color: var(--text-muted);
+  background: var(--grid-line);
+}
+
+/* 高可信直通徽标开关（2026-10-24）：button 载体复用 .data-key-badge 形态——
+   原生边框/字体重置后颜色由 ok/idle 修饰类接管；可点 + hover 微亮，与启停钮
+   同为 await 回填不乐观 */
+button.data-key-badge.trust {
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+  transition: filter 0.15s;
+}
+
+button.data-key-badge.trust:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+
+button.data-key-badge.trust:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* "如何获取？"外链（desc 行内）：系统浏览器打开 Composio 控制台 */
+a.data-key-link {
+  color: var(--accent-deep);
+  text-decoration: none;
+}
+
+/* Key 验证失败摘要 / 保存失败提示（settings-card 内附行） */
+.data-key-error {
+  padding: 8px 16px;
+  border-top: 1px solid var(--grid-line);
+  font-size: 12px;
+  color: var(--orange);
+}
+
+/* —— 精选区搜索框（标题行内联，切换态入口；未配 Key 时禁用置灰） —— */
+
+.data-search {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.data-search:focus-within {
+  border-color: var(--accent-border);
+}
+
+.data-search-input {
+  width: 200px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.data-search-input::placeholder {
+  color: var(--text-muted);
+}
+
+.data-search-input:disabled {
+  cursor: not-allowed;
+}
+
+.data-search-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.data-search-clear:hover {
+  color: var(--text-secondary);
+}
+
+/* —— 非精选应用图标（已连接/搜索结果） —— */
+
+/* 云端 logo：远程 URL img 直载（csp 为 null） */
+.data-app-logo {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+/* 无 logo/加载失败的首字母兜底 */
+.data-letter {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--accent-deep);
+}
+
+/* —— 搜索/连接过程态 —— */
+
+/* 搜索中 / 零结果占位行（跨两列） */
+.data-empty {
+  grid-column: 1 / -1;
+  padding: 18px 0;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* 连接/断开失败提示行（精选组末尾） */
+.data-action-error {
+  padding-left: 2px; /* 对齐 .settings-group-title 的 2px 缩进 */
+  font-size: 12px;
+  color: var(--orange);
+}
+
+/* 成功提示行（ics 导入批：布局同 data-action-error，成功绿） */
+.data-action-ok {
+  padding-left: 2px;
+  font-size: 12px;
+  color: var(--green);
+}
+
+/* —— MCP 服务接入增量（2026-09-18）—— */
+
+/* 已连接卡名称行：名称 + 连接徽标横排（规格同 .model-card-name-line） */
+/* 名称行：名称 + 测试结果徽标单行横排（2026-10-16 去 flex-wrap：换行会撑高
+   卡片破坏定高布局；放不下时截断落在名称上，悬停 title 看全名与完整徽标） */
+.data-card-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 本地文件夹配置（FormModal 配置模态内的内容列；内距由模态 body 提供） */
+.local-folder-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 目录行：mono 输入占满 + "浏览"按钮与移除 × 钉右（多目录可多行） */
+.local-folder-path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.local-folder-path-row + .local-folder-path-row {
+  margin-top: 6px;
+}
+
+.local-folder-path-row .mcp-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 行尾移除钮：小方块 ×（对齐 .data-search-clear 的次级删除语言） */
+.local-folder-remove {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  background: transparent;
+}
+
+.local-folder-remove:hover {
+  color: var(--danger);
+  background: var(--glass-track);
+}
+
+/* "+ 添加目录"：行列表底部的轻量追加入口 */
+.local-folder-add {
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 0;
+  border: none;
+  color: var(--accent);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+}
+
+.local-folder-add:hover:not(:disabled) {
+  color: var(--accent-deep);
+}
+
+.local-folder-add:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+/* 页脚"手动配置 MCP Server"/"添加自定义只读命令"按钮化：外观与链接款一致；
+   inline-flex + gap 供后者内置 Terminal 小图标与文字对齐 */
+button.data-geek-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+
+button.data-geek-link:hover {
+  text-decoration: underline;
+}
+
+/* —— 配置小模态框（2026-09-18：本地文件夹 / MCP 表单的配置测试操作由
+   "已连接"区内联展开改弹出模态，不再挤压页面布局；FormModal 组件在
+   DataSettings.tsx，三路关闭 = Esc / 点遮罩 / 右上角 X） —— */
+
+/* 遮罩：压过设置页（settings-overlay 50）与确认气泡（40）。不挂
+   backdrop-filter——叠在设置页磨砂层之上无增益，且 filter 非 none 会成为
+   fixed 后代的包含块（毛玻璃红线） */
+.data-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+}
+
+/* 卡片：规格对齐 .settings-dialog（border 1.5 / 圆角 12 / --shadow-modal，
+  宽 520 适配表单输入行——路径行/键值行），高度自适应内容、超高内滚；
+  本体不挂 backdrop-filter，frost 走 ::before 垫层（垫层是独立盒子无后代，
+  同 .settings-dialog 先例） */
+.data-modal {
+  position: relative; /* 垫层定位基准 */
+  isolation: isolate; /* 建层叠上下文：垫层 z-index:-1 落在本体底色之上、内容之下 */
+  display: flex;
+  flex-direction: column;
+  width: min(520px, calc(100vw - 64px));
+  max-height: min(640px, calc(100vh - 64px));
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--glass-panel);
+  box-shadow: var(--shadow-modal);
+}
+
+.data-modal::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  backdrop-filter: var(--glass-blur-modal);
+  pointer-events: none;
+}
+
+/* 头部：标题 + 右上 X（标题原为各表单自带行，模态化后上移统一规格） */
+.data-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 0;
+}
+
+.data-modal-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 关闭钮（规格同 .settings-close：22×22 圆角 6，hover 灰底） */
+.data-modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.data-modal-close:hover {
+  background: var(--grid-line);
+  color: var(--text-secondary);
+}
+
+/* 内容区：表单/面板由此统一给内距；超高内滚（细滚动条惯例同 .settings-body：
+   5px 细条、thumb 默认隐藏悬停浮现） */
+.data-modal-body {
+  padding: 14px 16px 16px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.data-modal-body:hover {
+  scrollbar-color: var(--scrim-soft) transparent;
+}
+
+.data-modal-body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.data-modal-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.data-modal-body::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.data-modal-body:hover::-webkit-scrollbar-thumb {
+  background: var(--scrim-soft);
+}
+
+.data-modal-body::-webkit-scrollbar-thumb:hover {
+  background: var(--scrim);
+}
+
+/* —— CLI 工具接入（第四源）—— */
+
+/* CLI 接入模态：三态说明 + 动作行。gap 6px + 负 margin 收窄（2026-10-16 用户
+   要求文案间不留空行观感——body 顶部 padding 与元素间距双重紧凑） */
+.cli-connect {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: -8px;
+}
+
+.cli-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.cli-hint.ok {
+  color: var(--green);
+}
+
+.cli-hint.bad {
+  color: var(--orange);
+}
+
+/* 安装/授权命令行：等宽代码块 + 复制按钮并排，长命令横向滚动不折行 */
+.cli-install-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cli-cmd {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 7px;
+  background: var(--glass-track);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
+.cli-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 自定义只读命令表单 */
+.custom-cli-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.custom-cli-argv {
+  height: 72px;
+  resize: vertical;
+}

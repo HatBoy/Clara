@@ -1,0 +1,42 @@
+/* 应用外壳：三栏布局（左栏/右栏宽度可拖拽，默认 200/540，中栏 flex 自适应） */
+.app {
+  position: relative;
+  display: flex;
+  height: 100vh;
+  /* 毛玻璃改版：应用底 = 柔和渐变光斑氛围层（token 两主题各一套），面板在其上分层半透明 */
+  background: var(--app-bg);
+}
+
+/* 分栏拖拽条：绝对定位贴在分界线上，不占三栏布局空间 */
+.resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  transform: translateX(-50%);
+  z-index: 10;
+  cursor: col-resize;
+}
+
+.resizer::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.resizer:hover::after {
+  background: var(--handle-resizer);
+}
+
+/* 拖拽中：全局列宽光标 + 禁止选中文本 */
+body.resizing,
+body.resizing * {
+  cursor: col-resize !important;
+  user-select: none;
+}

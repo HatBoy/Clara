@@ -1,0 +1,284 @@
+/* "记忆画像"设置页自有样式（.settings-* 通用类在 GeneralSettings.css，全局生效） */
+
+/* 行内错误提示 */
+.mem-error {
+  padding: 9px 13px;
+  border-radius: 8px;
+  background: var(--danger-softer);
+  border: 1px solid var(--danger);
+  color: var(--danger-deep);
+  font-size: 12.5px;
+}
+
+/* 新增表单行：分类 / 内容 / 证据 / 添加按钮 */
+.mem-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.mem-input {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.mem-input:focus {
+  border-color: var(--accent-border);
+}
+
+.mem-input-cat {
+  width: 130px;
+  flex-shrink: 0;
+}
+
+.mem-input-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.mem-input-evidence {
+  width: 180px;
+  flex-shrink: 0;
+}
+
+.mem-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 32px;
+  padding: 0 13px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.mem-btn.primary {
+  border: 1px solid var(--accent-border);
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+  font-weight: 500;
+}
+
+.mem-btn.primary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 规则列表卡：行间细分隔线（.settings-card 提供卡壳） */
+.mem-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.mem-empty {
+  padding: 22px 16px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* 规则行：分类 | 内容(+证据) | 来源+置信度 | 操作 */
+.mem-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+}
+
+.mem-row + .mem-row {
+  border-top: 1px solid var(--grid-line);
+}
+
+.mem-row.editing {
+  gap: 8px;
+}
+
+.mem-cat {
+  width: 130px;
+  flex-shrink: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mem-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mem-content {
+  font-size: 12.5px;
+  color: var(--text-body);
+  word-break: break-word;
+}
+
+.mem-evidence {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mem-meta {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mem-source {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.mem-source.user_manual {
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+}
+
+/* 对话写入的偏好（2026-10-22 批 3）：同为用户明说，与手动 accent 同族但更浅，
+   与 AI 归纳的 lunch 族拉开 */
+.mem-source.chat {
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+  opacity: 0.75;
+}
+
+.mem-source.ai_reflect {
+  background: var(--lunch-bg);
+  color: var(--lunch-text);
+}
+
+.mem-confidence {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  min-width: 32px;
+  text-align: right;
+}
+
+.mem-ops {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mem-icon-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.mem-icon-btn:hover {
+  background: var(--grid-line);
+  color: var(--text-secondary);
+}
+
+.mem-icon-btn.danger:hover {
+  background: var(--danger-softer);
+  color: var(--danger-deep);
+}
+
+/* —— 2026-11-03 记忆重构批 8：槽位分组 / 置信分级徽标 / 硬约束徽标 / 冲突条 —— */
+
+/* 槽位分组（组标题 + 行族；组间细分隔） */
+.mem-slot-group + .mem-slot-group {
+  border-top: 1px solid var(--border);
+}
+
+.mem-slot-title {
+  padding: 9px 14px 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.4px;
+}
+
+/* 置信分级三档徽标（法则 accent 族 / 验证 lunch 族 / 推测灰） */
+.mem-tier {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.mem-tier.law {
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+  border: 1px solid var(--accent-border);
+}
+
+.mem-tier.verified {
+  background: var(--lunch-bg);
+  color: var(--lunch-text);
+}
+
+.mem-tier.speculative {
+  background: var(--grid-line);
+  color: var(--text-muted);
+}
+
+/* 硬约束徽标（structured_anchor 非空 = 已生效为排期避让窗） */
+.mem-anchor {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  background: transparent;
+  color: var(--lunch-text);
+  border: 1px solid var(--lunch-text);
+  opacity: 0.85;
+}
+
+/* 冲突确认条（保存被预检拦截，等用户二选一） */
+.mem-conflict {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px 14px;
+  border-top: 1px solid var(--grid-line);
+  background: var(--danger-softer);
+}
+
+.mem-conflict-text {
+  font-size: 12px;
+  color: var(--danger-deep);
+  line-height: 1.55;
+}
+
+.mem-conflict-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mem-conflict-ops .mem-btn:not(.primary) {
+  border: 1px solid var(--border);
+  background: var(--glass-input);
+  color: var(--text-secondary);
+}

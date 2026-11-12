@@ -1,0 +1,59 @@
+/* 统计页轻量图表（HBars 横条组）：纯 div/flex 自绘 */
+.hbars {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.hbar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 下钻行（HBars onRowClick）：可点 + hover 反馈（label 变 accent、条提亮） */
+.hbar-row.clickable {
+  cursor: pointer;
+}
+
+.hbar-row.clickable:hover .hbar-label {
+  color: var(--accent-deep);
+}
+
+.hbar-row.clickable:hover .hbar-fill {
+  opacity: 1;
+}
+
+.hbar-label {
+  flex-shrink: 0;
+  /* 列宽由组件按组内最长标签动态给定（inline style），贴卡片左缘 */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-primary);
+  text-align: left;
+}
+
+.hbar-track {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--glass-track);
+  overflow: hidden;
+}
+
+.hbar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  opacity: 0.85;
+}
+
+.hbar-value {
+  flex-shrink: 0;
+  min-width: 38px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}

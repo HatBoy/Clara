@@ -1,0 +1,496 @@
+/* 统计问答面板（右栏）：UI 规格与日程助手 CopilotPanel 统一（2026-11-08 定稿）
+   ——面板底/header/feed/气泡/一体胶囊输入/发送钮/打字机光标逐项对齐；
+   半透明 tint 不挂 blur（栏内弹层无关，同 Copilot 毛玻璃红线——背后是平滑
+   渐变，挂 blur 无增益）。 */
+.stats-chat-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--glass-panel);
+  border-left: 1px solid var(--border);
+  height: 100%;
+}
+
+/* 头部（对齐 .copilot-header） */
+.stats-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--footer-line);
+}
+
+.stats-chat-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stats-chat-title-icon {
+  color: var(--accent-deep);
+}
+
+.stats-chat-title-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.stats-chat-range {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 折叠按钮（对齐 .copilot-collapse：28×28 / 8px） */
+.stats-chat-close-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.stats-chat-close-btn:hover {
+  background: var(--grid-line);
+  color: var(--text-secondary);
+}
+
+/* 头部右侧动作组：复盘引导钮 + 折叠钮 */
+.stats-chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 开始复盘（描边小钮，同 report-gen-btn 描边惯例；active = 复盘中 accent 态） */
+.stats-review-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.stats-review-btn:hover:not(:disabled) {
+  border-color: var(--accent-border);
+  color: var(--accent-deep);
+}
+
+.stats-review-btn.active {
+  border-color: var(--accent-border);
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+}
+
+.stats-review-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 复盘沉淀确认条（facts 帧）：feed 与输入框之间的提示卡——确认制不自动落库 */
+.stats-facts-bar {
+  margin: 0 18px 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent-border);
+  border-radius: 12px;
+  background: var(--accent-softer);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stats-facts-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-deep);
+}
+
+.stats-facts-item {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.stats-facts-topic {
+  color: var(--accent-deep);
+  font-weight: 500;
+}
+
+.stats-facts-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.stats-facts-save {
+  height: 26px;
+  padding: 0 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.stats-facts-save:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.stats-facts-skip {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.stats-facts-skip:hover {
+  color: var(--text-secondary);
+  border-color: var(--accent-border);
+}
+
+/* 消息流（对齐 .copilot-feed）：细滚动条 5px 惯例（默认隐藏悬停浮现） */
+.stats-chat-feed {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding: 18px;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.stats-chat-feed:hover {
+  scrollbar-color: var(--scrim-soft) transparent;
+}
+
+.stats-chat-feed::-webkit-scrollbar {
+  width: 5px;
+}
+
+.stats-chat-feed::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.stats-chat-feed::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.stats-chat-feed:hover::-webkit-scrollbar-thumb {
+  background: var(--scrim-soft);
+}
+
+.stats-chat-feed::-webkit-scrollbar-thumb:hover {
+  background: var(--scrim);
+}
+
+/* 气泡（对齐 .copilot-msg / .copilot-bubble）：user 右对齐 accent 浅底、
+   assistant 左对齐玻璃卡——中和区分度（比灰底明显、比深底柔和） */
+.stats-msg {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.stats-msg.user {
+  align-items: flex-end;
+}
+
+.stats-bubble {
+  max-width: 86%;
+  padding: 9px 13px;
+  border-radius: 12px;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--text-active);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.stats-msg.user .stats-bubble {
+  background: var(--accent-softer);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-deep);
+  border-bottom-right-radius: 4px;
+}
+
+.stats-msg.assistant .stats-bubble {
+  background: var(--glass-card);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+  box-shadow: var(--glass-rim);
+}
+
+/* 打字机流式光标（对齐 .copilot-bubble.streaming） */
+.stats-bubble.streaming::after {
+  content: "▍";
+  margin-left: 1px;
+  color: var(--accent);
+  animation: stats-blink 1s steps(2) infinite;
+}
+
+@keyframes stats-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Markdown 气泡（对齐 .copilot-md 样式族；strong 着色便于抓重点） */
+.stats-md {
+  white-space: normal;
+}
+
+.stats-md > :first-child {
+  margin-top: 0;
+}
+
+.stats-md > :last-child {
+  margin-bottom: 0;
+}
+
+.stats-md p {
+  margin: 6px 0;
+}
+
+.stats-md ul,
+.stats-md ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+
+.stats-md li {
+  margin: 2px 0;
+}
+
+.stats-md strong {
+  font-weight: 600;
+  color: var(--accent-deep);
+}
+
+.stats-md h1,
+.stats-md h2,
+.stats-md h3,
+.stats-md h4 {
+  margin: 10px 0 6px;
+  line-height: 1.4;
+}
+
+.stats-md h1 {
+  font-size: 15px;
+}
+
+.stats-md h2 {
+  font-size: 14.5px;
+}
+
+.stats-md h3 {
+  font-size: 14px;
+}
+
+.stats-md h4 {
+  font-size: 13.5px;
+}
+
+.stats-md code:not(pre code) {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  background: var(--glass-track);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.stats-md pre {
+  margin: 6px 0;
+  padding: 10px 12px;
+  background: var(--glass-track);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.stats-md pre code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  background: none;
+  padding: 0;
+}
+
+.stats-md blockquote {
+  margin: 6px 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
+}
+
+.stats-md table {
+  margin: 6px 0;
+  border-collapse: collapse;
+}
+
+.stats-md th,
+.stats-md td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  font-size: 12.5px;
+}
+
+.stats-md a {
+  color: var(--accent);
+}
+
+.stats-md hr {
+  margin: 8px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.stats-md img {
+  max-width: 100%;
+}
+
+/* 发送指示（对齐 .copilot-typing） */
+.stats-typing {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* 底部（对齐 .copilot-footer）：命令弹层定位锚 */
+.stats-chat-footer {
+  position: relative;
+  flex-shrink: 0;
+  padding: 14px 18px 18px;
+  background: var(--glass-panel);
+}
+
+/* 一体胶囊输入（对齐 .copilot-input）：圆角 12 边框底 + 内嵌发送钮 */
+.stats-chat-input {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 5px 6px 5px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--glass-input);
+}
+
+.stats-chat-input:focus-within {
+  border-color: var(--accent-border);
+}
+
+.stats-input-text {
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  max-height: 120px;
+  border: none;
+  background: transparent;
+  outline: none;
+  resize: none;
+  overflow-y: auto;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 6px 0;
+  color: var(--text-primary);
+}
+
+.stats-input-text::placeholder {
+  color: var(--text-muted);
+}
+
+/* 发送钮（对齐 .copilot-send：32×32 / accent 底 / ArrowUp） */
+.stats-send {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.stats-send:disabled {
+  background: var(--badge-bg);
+  cursor: default;
+}
+
+.stats-send:not(:disabled):hover {
+  background: var(--accent-deep);
+}
+
+.stats-send-icon {
+  color: #ffffff;
+}
+
+.stats-send:disabled .stats-send-icon {
+  color: var(--text-muted);
+}
+
+/* 斜杠命令联想弹层（对齐 .copilot-cmd-pop 形态：向上弹、frost 毛玻璃叶子） */
+.stats-cmd-pop {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--glass-pop);
+  backdrop-filter: var(--glass-blur-pop);
+  box-shadow: var(--glass-rim), var(--shadow-pop);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stats-cmd-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stats-cmd-item:hover {
+  background: var(--grid-line);
+}
+
+.stats-cmd-name {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent-deep);
+}
+
+.stats-cmd-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}

@@ -1,0 +1,159 @@
+/* 日程提醒悬浮卡片：默认在独立提醒窗口内呈现——窗口本身透明且居中于屏幕，
+   容器满幅铺开垂直居中即可实现"屏幕中央悬浮"（主窗口最小化/被遮挡也可见）；
+   inline 变体 = 主窗口页内兜底（纯浏览器 dev 无独立窗口可弹），居中偏上。
+   容器 pointer-events:none 不挡底下页面的交互，卡片自身恢复；
+   页内变体 z-index 80 压过设置页 50——提醒是最高时效性层级 */
+
+.reminder-toasts {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.reminder-toasts.inline {
+  justify-content: flex-start;
+  padding-top: 26vh;
+  z-index: 80;
+}
+
+/* 右下角悬浮框变体（独立窗口用）：窗口贴工作区右下角（避开任务栏），
+   卡片贴窗口底——多卡向上堆叠，贴近系统通知的呈现位置 */
+.reminder-toasts.corner {
+  justify-content: flex-end;
+  padding-bottom: 12px;
+}
+
+.reminder-toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 300px;
+  max-width: 380px;
+  padding: 12px 12px 12px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  pointer-events: auto;
+  /* 入场动画延迟 0.3s + backwards 填充：透明窗 hide→show 时 WebView2 唤醒与首帧
+     合成要数百 ms，立即播放会在像素未上屏期间跑完（竞态：唤醒快偶见、慢则只见
+     终态）；delay 等窗口稳定可见后再完整播放，backwards 使 delay 期间保持入场
+     前态（opacity 0）不闪现终态 */
+  animation: reminder-toast-in 0.45s ease-out 0.3s backwards;
+}
+
+/* 离场：上飘淡出，forwards 停在终态等消费侧移除（淡完才 filter，窗口随后 hide
+   时内容已透明、无视觉跳变）；离场中不再可交互 */
+.reminder-toast.leaving {
+  pointer-events: none;
+  animation: reminder-toast-out 0.45s ease-in forwards;
+}
+
+@keyframes reminder-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes reminder-toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+}
+
+/* 图标位：accent 软底方格，与浮层族视觉一致 */
+.reminder-toast-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+}
+
+.reminder-toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.reminder-toast-title {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reminder-toast-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* 操作按钮行（2026-10-22 批 2）：完成 / 推迟 15 分钟——小胶囊链接式按钮，
+   与 meta 行同 12px 字号；完成绿 / 推迟中性，hover 提亮 */
+.reminder-toast-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.reminder-toast-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.reminder-toast-act:hover {
+  background: var(--accent-softer);
+  border-color: var(--accent-border);
+  color: var(--accent-deep);
+}
+
+.reminder-toast-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.reminder-toast-close:hover {
+  background: var(--grid-line);
+  color: var(--text-primary);
+}

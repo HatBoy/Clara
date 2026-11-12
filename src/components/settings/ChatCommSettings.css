@@ -1,0 +1,191 @@
+/* 聊天通讯设置页（卡片骨架复用 DataSettings 的 data-card 体系，本文件只放
+   页面自有样式：品牌色 / 凭据表单 / 操作行 / 通知条） */
+
+/* 品牌色（fill 走 currentColor，由色类控制——BrandGlyph 先例） */
+.data-icon.chatcomm-feishu {
+  color: #3370ff;
+}
+
+.data-icon.chatcomm-dingtalk {
+  color: #007fff;
+}
+
+.data-icon.chatcomm-wechat {
+  color: #07c160;
+}
+
+.data-icon.chatcomm-wecom {
+  color: #0082ef;
+}
+
+/* 扫码登录模态：二维码区（qr_url 是授权链接文本——qrcode.react 渲染，
+   2026-10-23 真机实锤非图片 URL） */
+.chatcomm-qr-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  border-radius: 8px;
+  background: #ffffff; /* 二维码识别率：白底最稳（暗色主题下同样） */
+}
+
+.chatcomm-qr-img {
+  display: block;
+}
+
+.chatcomm-qr-placeholder {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.chatcomm-qr-status {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.chatcomm-qr-status.bad {
+  color: #e5484d;
+}
+
+.chatcomm-verify-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.chatcomm-verify-row .mcp-input {
+  flex: 1;
+}
+
+/* 页面骨架（.settings-body / .settings-page-*）复用 GeneralSettings.css；
+   卡片骨架复用 DataSettings 的 data-card 体系——本文件只放自有样式 */
+
+/* 瞬时通知条（保存/删除失败回显；4s 自清，inbox-notice 先例） */
+.chatcomm-notice {
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: rgba(255, 120, 100, 0.12);
+}
+
+/* 卡内按钮行复用 .data-row-actions（四钮 flex:1 平分，与数据接入已连接卡同构）；
+   未配置卡按钮为 .data-card-col 直接子元素（全宽钉底，精选卡同款）——本文件零按钮样式 */
+
+/* secret 密码态 + 眼睛切换复用 mcp-key-wrap/mcp-key-eye（自带 pr32 让位） */
+
+/* 凭据模态表单：字段体系复用 mcp-field/mcp-key-wrap（数据接入配置模态同款，
+   2026-10-23 对齐真机反馈）；输入框恒 100% 宽——裸 mcp-input 无 width 时
+   text/password 两态字体度量不同会长短不一 */
+.chatcomm-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.chatcomm-form .mcp-input {
+  width: 100%;
+}
+
+.chatcomm-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.chatcomm-doc-link {
+  margin-left: 6px;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.chatcomm-doc-link:hover {
+  text-decoration: underline;
+}
+
+/* —— 定时任务推送开关行（2026-10-23 二批）————————————————————————————
+   176px 定高红线不动：已配置卡 desc 由两行钳制降为单行（chatcomm-desc-one），
+   释放的空间给开关行（label + SetToggle 复用）。 */
+.data-card-col .chatcomm-desc-one {
+  -webkit-line-clamp: 1;
+  min-height: 1.55em; /* 单行 × line-height 1.55 */
+}
+
+.chatcomm-push-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.chatcomm-push-label {
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 问号悬停说明触发器（2026-10-23 用户定案）：气泡本体见 .chatcomm-push-tip */
+.chatcomm-push-help {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 3px;
+  color: var(--text-muted);
+  cursor: help;
+  flex-shrink: 0;
+  border-radius: 4px;
+}
+
+.chatcomm-push-help:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+}
+
+/* 悬停说明气泡：fixed 视口坐标（组件内联 style 给出，照 .set-select-pop
+   先例——设置弹层 overlay 的 backdrop-filter 不改 fixed 后代基准），不受
+   卡片 176px 定高 overflow:hidden 裁剪；毛玻璃规格对齐浮层族 */
+.chatcomm-push-tip {
+  position: fixed;
+  z-index: 60; /* 设置页 z-50 内部的局部层（同 .set-select-pop） */
+  padding: 11px 13px;
+  background: var(--glass-pop);
+  backdrop-filter: var(--glass-blur-pop);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--glass-rim), var(--shadow-pop);
+  animation: chatcomm-tip-in 0.12s ease;
+  /* 关键：气泡渲染在 .chatcomm-push-label 内部（nowrap 容器），white-space 是
+     继承属性——fixed 脱离布局流挡不住它，不显式打断则长中文串不换行溢出框 */
+  white-space: normal;
+}
+
+@keyframes chatcomm-tip-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.chatcomm-push-tip p {
+  margin: 0 0 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary); /* 正文柔灰，近黑只留标题 */
+}
+
+.chatcomm-push-tip p:last-child {
+  margin-bottom: 0;
+}
+
+.chatcomm-push-tip .chatcomm-push-tip-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--text-primary);
+}
+
+.chatcomm-push-tip-note {
+  color: var(--text-muted); /* 条件段最淡：与正文拉开层级 */
+}

@@ -1,0 +1,10 @@
+/* 提醒独立窗口载体页：html/body 必须透明——窗口 transparent:true 时 WebView
+   默认白底会把"悬浮卡片"变成一整块白色矩形；tokens.css 的暗色套还会给 body
+   上深色底（主窗口防露白用），须同特异性压掉。body reset（margin/overflow/
+   height）tokens.css 已备；卡片容器 fixed inset:0 自行相对视口定位 */
+
+html,
+body,
+html[data-theme="dark"] body {
+  background: transparent;
+}

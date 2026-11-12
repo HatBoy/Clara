@@ -1,0 +1,128 @@
+/* 快捷键设置页专属控件。骨架类（.settings-*）与 .settings-action-hint 走
+   GeneralSettings.css，本文件只补新增部分。
+   两列布局：组卡内 .shortcut-grid 复刻 .personalize-philo-grid 先例（同为
+   settings-card 内多单元格场景）；每格 .shortcut-cell 复刻 philo-card 口径
+   （flex column + --glass-input 底 + 1px 边），一格一动作：头行名称+徽标、
+   键位钮整宽、行内提示垫底。 */
+.shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  padding: 12px;
+}
+
+.shortcut-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--glass-input);
+  min-width: 0;
+}
+
+.shortcut-cell-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.shortcut-cell-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 头行状态徽标：自定义 = 灰描边（与默认键不同即标）；被占用 = 橙（该键注册
+   失败，外部应用抢占——格子 title 有改键指引） */
+.shortcut-flag {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.shortcut-flag.custom {
+  border: 1px solid var(--grid-line);
+  color: var(--text-muted);
+}
+
+.shortcut-flag.conflict {
+  border: 1px solid var(--orange);
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--orange);
+}
+
+/* 键位钮复刻 .set-port-input 盒子口径（--border 边框 / 圆角 8 / 高 28），格子内
+   整宽（长串 nowrap 由格子 min-width:0 + 按钮自身溢出裁切兜底）；捕获态换 accent
+   底与边框表示"等你按键"；.conflict 橙描边与徽标同色呼应 */
+.shortcut-key-btn {
+  width: 100%;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-card);
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.shortcut-key-btn:hover:not(:disabled) {
+  background: var(--glass-track);
+}
+
+.shortcut-key-btn.capturing {
+  border-color: var(--accent-border);
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+}
+
+.shortcut-key-btn.conflict {
+  border-color: var(--orange);
+}
+
+.shortcut-key-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 格内行内提示（改键成功/失败），与 .settings-action-hint 同色系但左对齐占整行 */
+.shortcut-cell-hint {
+  font-size: 11.5px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.shortcut-cell-hint.ok {
+  color: var(--green);
+}
+
+.shortcut-cell-hint.bad {
+  color: var(--orange);
+}
+
+/* 页脚动作行（恢复默认钮 + 说明），与最后一组卡片留出组间距 */
+.shortcut-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+  padding-left: 2px;
+}
+
+.shortcut-note {
+  font-size: 12px;
+  color: var(--text-muted);
+}

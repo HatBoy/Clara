@@ -1,0 +1,334 @@
+/* 设计 tokens（来自 docs/index.pen 设计稿变量）。
+   亮色 :root 的原 16 变量一字不动；新增 token 为组件硬编码色收编（亮色值与收编前
+   逐位相等——像素等价红线，不合并近似色）。暗色套经 html[data-theme="dark"] 同名
+   覆盖（applyTheme 三态驱动：dark / system+系统深色），body 底色随套切换。 */
+:root {
+  color-scheme: light; /* 原生控件（日期弹层/滚动条/autofill）跟随主题，dark 套同名覆盖 */
+  --bg-app: #f7f7f8;
+  --surface: #ffffff;
+  --text-primary: #111827;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  --border: #e5e7eb;
+  --grid-line: #f3f4f6;
+  --accent: #6366f1;
+  --accent-deep: #4f46e5;
+  --accent-softer: #e0e7ff;
+  --accent-border: #c7d2fe;
+  --danger: #ef4444;
+  --green: #22c55e;
+  --orange: #f59e0b;
+  --font-sans: "Inter Variable", "PingFang SC", "Microsoft YaHei", system-ui,
+    sans-serif;
+
+  /* —— 收编新增（亮色值 = 收编前硬编码字面量）—— */
+  /* 浮层投影四档：确认气泡与 QuickAdd 弹层 / 详情浮层 / 拖动卡 / 设置浮层
+     （2026-09-17 毛玻璃改版：同比调弥散调轻——大半径低透明度 = 玻璃悬浮感） */
+  --shadow-detail: 0 8px 28px rgba(17, 24, 39, 0.1);
+  --shadow-pop: 0 12px 32px rgba(17, 24, 39, 0.12);
+  --shadow-float: 0 18px 48px rgba(17, 24, 39, 0.14);
+  --shadow-modal: 0 28px 80px rgba(17, 24, 39, 0.18);
+  /* 遮罩 / 细滚动条 thumb（悬停浮现） */
+  --scrim: rgba(17, 24, 39, 0.28);
+  --scrim-soft: rgba(17, 24, 39, 0.12);
+  /* 文字灰阶（与 text-primary/secondary/muted 不合并的既有独立值） */
+  --text-emphasis: #1f2329; /* 待办卡与日程卡标题 */
+  --text-strong: #1f2937; /* 浮层内标题 */
+  --text-body: #4b5563; /* Copilot 正文 */
+  --text-active: #374151; /* 菜单/分段选中态文字 */
+  --text-tertiary: #52525b; /* 侧栏分组标题 */
+  /* 弱交互件 */
+  --tick-muted: #b3b8c0; /* 时间刻度 */
+  --handle-idle: #c4c7ce; /* 待办卡拖拽手柄 */
+  --handle-resizer: #c7cbd4; /* 分栏拖拽条 hover 竖线 */
+  /* 底栏与开关轨道 */
+  --footer-bg: #f7f8fa;
+  --footer-line: #f0f0f3;
+  --toggle-track: #e2e2e7;
+  --badge-bg: #e2e2e7; /* 收件箱徽标底（与开关轨道同值、语义独立） */
+  /* 午休建议块（浅绿族） */
+  --lunch-bg: #f0faf5;
+  --lunch-border: #a7e3c2;
+  --lunch-icon: #58c08c;
+  --lunch-text: #3aa377;
+  /* 删除动作族 */
+  --danger-softer: #fef2f2;
+  --danger-deep: #dc2626;
+  /* Copilot 附属 */
+  --accent-light: #a5b4fc; /* Copilot 标题浅紫 */
+  /* 统计图表三线色（收编 MultiLineTrend 等图表硬编码值；Canvas 内经
+     getComputedStyle 读取） */
+  --chart-1: #3b82f6; /* 完成待办（蓝） */
+  --chart-2: #a855f7; /* 日程发生（紫） */
+  --chart-3: #f97316; /* 时间花费（橙） */
+
+  /* —— 毛玻璃套（2026-09-17 全站视觉改版新增设计值，非收编）—— */
+  /* 应用底：柔和渐变光斑氛围（靛紫压左上 / 天蓝压右上 / 暖粉压下中 / 淡紫收右下），
+     基色 = --bg-app（暗色 body 兜底同基色，resize 露底不闪色） */
+  --app-bg:
+    radial-gradient(1100px 720px at 6% -10%, rgba(99, 102, 241, 0.14), transparent 62%),
+    radial-gradient(900px 640px at 102% 8%, rgba(56, 189, 248, 0.12), transparent 60%),
+    radial-gradient(1200px 800px at 46% 116%, rgba(244, 114, 182, 0.1), transparent 64%),
+    radial-gradient(760px 560px at 88% 96%, rgba(167, 139, 250, 0.08), transparent 60%),
+    #f7f7f8;
+  /* 玻璃 fill 分档：rail 灰轨（侧栏等）/ canvas 中栏画布（光斑主透出区）/
+     panel 右栏 / card 卡片 / card-compact 月视图紧凑卡（无 blur 补偿档）/
+     pop 弹层 / input 输入内嵌 / track 轨道小件底 /
+     widget 桌面小部件外壳（纯透明窗口直透壁纸——窗口级合成三次证伪后定稿直透路线，
+     tint 是唯一观感与对比度旋钮；值与 canvas 同档但语义独立不合并）。
+     widget 档由"小部件透明度"设置驱动：JS（WidgetWindow）把 --widget-transparency
+     注入为 0..1 小数，tint alpha = 0.93 - t（亮）/ 1 - t（暗）——暗色恒比亮色浓
+     0.07 保白壁纸对比度（0.55 在暗色仅 3.4:1 不达 AA），默认 t=0.2 即亮 0.73/
+     暗 0.80（2026-09-17 用户定默认 20%）；变量缺省时 fallback 同值，主窗口
+     不注入即恒默认观感 */
+  --glass-rail: rgba(243, 244, 247, 0.6);
+  --glass-canvas: rgba(255, 255, 255, 0.55);
+  --glass-panel: rgba(255, 255, 255, 0.62);
+  --glass-card: rgba(255, 255, 255, 0.72);
+  --glass-card-compact: rgba(255, 255, 255, 0.8);
+  --glass-pop: rgba(255, 255, 255, 0.78);
+  --glass-input: rgba(255, 255, 255, 0.5);
+  --glass-track: rgba(17, 24, 39, 0.06);
+  --glass-widget: rgba(255, 255, 255, calc(0.93 - var(--widget-transparency, 0.2)));
+  --lunch-glass: rgba(240, 250, 245, 0.68); /* 午休建议块：有色玻璃幽灵卡 */
+  --ghost-glass: rgba(224, 231, 255, 0.62); /* AI 草案幽灵方块：紫色系 tint（与午休绿系区分） */
+  /* 玻璃 filter 三档（亮暗同值，只在 :root 定义）+ 顶缘高光 rim
+     （rim 为单段 inset shadow，可与外投影逗号组合使用） */
+  --glass-blur-card: blur(12px) saturate(1.35);
+  --glass-blur-pop: blur(20px) saturate(1.5);
+  --glass-blur-modal: blur(28px) saturate(1.35);
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+/* 暗色套：同名覆盖 + body 底色（.app 的 surface 底在暗色下即深面板色） */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-app: #1c1d21;
+  --surface: #25262b;
+  --text-primary: #f3f4f6;
+  --text-secondary: #9ca3af;
+  --text-muted: #6b7280;
+  --border: #3a3b42;
+  --grid-line: #2e2f35;
+  --accent: #818cf8;
+  --accent-deep: #a5b4fc;
+  --accent-softer: rgba(99, 102, 241, 0.18);
+  --accent-border: rgba(129, 140, 248, 0.4);
+  --danger: #f87171;
+  --green: #4ade80;
+  --orange: #fbbf24;
+
+  --shadow-detail: 0 8px 28px rgba(0, 0, 0, 0.36);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.42);
+  --shadow-float: 0 18px 48px rgba(0, 0, 0, 0.46);
+  --shadow-modal: 0 28px 80px rgba(0, 0, 0, 0.5);
+  --scrim: rgba(0, 0, 0, 0.5);
+  --scrim-soft: rgba(255, 255, 255, 0.14);
+  --text-emphasis: #f3f4f6;
+  --text-strong: #e5e7eb;
+  --text-body: #b0b5c0;
+  --text-active: #d1d5db;
+  --text-tertiary: #8e939e;
+  --tick-muted: #565962;
+  --handle-idle: #4b4e57;
+  --handle-resizer: #52555e;
+  --footer-bg: #1f2024;
+  --footer-line: #33343a;
+  --toggle-track: #3f4046;
+  --badge-bg: #3f4046;
+  --lunch-bg: #12291d;
+  --lunch-border: #2f6b4a;
+  --lunch-icon: #4ca877;
+  --lunch-text: #6fc796;
+  --danger-softer: rgba(248, 113, 113, 0.12);
+  --danger-deep: #b91c1c;
+  --accent-light: #c7d2fe;
+  --chart-1: #60a5fa;
+  --chart-2: #c084fc;
+  --chart-3: #fb923c;
+
+  /* —— 毛玻璃套（暗色）：深底三斑（暗色贵在克制）+ 烟色玻璃 fill；
+     blur 档亮暗同值不重复定义，rim 降到勉强可辨防塑料感 —— */
+  --app-bg:
+    radial-gradient(1100px 720px at 6% -12%, rgba(129, 140, 248, 0.11), transparent 60%),
+    radial-gradient(900px 640px at 102% 10%, rgba(56, 189, 248, 0.07), transparent 58%),
+    radial-gradient(1200px 800px at 46% 118%, rgba(244, 114, 182, 0.06), transparent 62%),
+    #1c1d21;
+  --glass-rail: rgba(23, 24, 28, 0.55);
+  --glass-canvas: rgba(30, 31, 36, 0.45);
+  --glass-panel: rgba(32, 33, 38, 0.52);
+  --glass-card: rgba(41, 42, 48, 0.62);
+  --glass-card-compact: rgba(44, 45, 52, 0.72);
+  --glass-widget: rgba(30, 31, 36, calc(1 - var(--widget-transparency, 0.2)));
+  --glass-pop: rgba(41, 42, 48, 0.78);
+  --glass-input: rgba(255, 255, 255, 0.05);
+  --glass-track: rgba(255, 255, 255, 0.07);
+  --lunch-glass: rgba(18, 41, 29, 0.6);
+  --ghost-glass: rgba(46, 46, 80, 0.62);
+  --glass-rim: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 暗色下 body 底与 bg-app 同色（窗口resize 露底 / 设置遮罩后衬不闪白） */
+html[data-theme="dark"] body {
+  background: #1c1d21;
+}
+/* ============================================================
+   全局文字按钮族（2026-11-12 三次定稿 · 扁平现代单源）
+   ------------------------------------------------------------
+   四族既有类名桥接同一套视觉（类名不动、JSX 零改）：
+   · copilot-prop-btn（日程助手建议卡：primary/secondary/danger/ghost）
+   · model-btn（模型接入表单：primary/ghost/ghost-accent）
+   · data-btn（数据接入/聊天通讯弹窗：primary/ghost/ghost-accent）
+   · schedule-detail-minutes-cancel/-submit（日历浮层纪要双钮）
+   设计语言（用户定稿）：简洁低调现代扁平——零渐变、零内高光、
+   零 text-shadow、零多层投影；primary 用 accent 浅淡底 + 深字，
+   hover 底色加深一档；描边档透明底细线框，hover 微灰底。
+   新增文字按钮直接挂本族类名，勿在组件 CSS 复制。
+   ============================================================ */
+
+.copilot-prop-btn,
+.model-btn,
+.data-btn,
+.schedule-detail-minutes-cancel,
+.schedule-detail-minutes-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    color 0.15s,
+    filter 0.15s;
+}
+
+.copilot-prop-btn:focus-visible,
+.model-btn:focus-visible,
+.data-btn:focus-visible,
+.schedule-detail-minutes-cancel:focus-visible,
+.schedule-detail-minutes-submit:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
+}
+
+.copilot-prop-btn:disabled,
+.model-btn:disabled,
+.data-btn:disabled,
+.schedule-detail-minutes-cancel:disabled,
+.schedule-detail-minutes-submit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: none;
+}
+
+/* —— 主操作（采纳 / 保存配置 / 确认 / 提炼行动项）：accent 浅淡底 + 深字 —— */
+.copilot-prop-btn.primary,
+.model-btn.primary,
+.data-btn.primary,
+.schedule-detail-minutes-submit {
+  border: 1px solid transparent;
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+}
+
+.copilot-prop-btn.primary:hover:not(:disabled),
+.model-btn.primary:hover:not(:disabled),
+.data-btn.primary:hover:not(:disabled),
+.schedule-detail-minutes-submit:hover:not(:disabled) {
+  background: var(--accent-border);
+}
+
+.copilot-prop-btn.primary:active:not(:disabled),
+.model-btn.primary:active:not(:disabled),
+.data-btn.primary:active:not(:disabled),
+.schedule-detail-minutes-submit:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-border) 80%, var(--accent));
+}
+
+/* —— 描边次操作（取消 / 编辑）：透明底细线框，hover 微灰底 —— */
+.copilot-prop-btn.secondary,
+.model-btn.ghost,
+.data-btn.ghost,
+.schedule-detail-minutes-cancel {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-body);
+}
+
+.copilot-prop-btn.secondary:hover:not(:disabled),
+.model-btn.ghost:hover:not(:disabled),
+.data-btn.ghost:hover:not(:disabled),
+.schedule-detail-minutes-cancel:hover:not(:disabled) {
+  background: var(--grid-line);
+}
+
+.copilot-prop-btn.secondary:active:not(:disabled),
+.model-btn.ghost:active:not(:disabled),
+.data-btn.ghost:active:not(:disabled),
+.schedule-detail-minutes-cancel:active:not(:disabled) {
+  filter: brightness(0.96);
+}
+
+/* —— 危险（拒绝 / 确认拒绝）：hover 红淡底 + 红描边 —— */
+.copilot-prop-btn.danger {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--danger-deep);
+}
+
+.copilot-prop-btn.danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: var(--danger-softer);
+}
+
+/* —— 弱化（收起 / 知道了 / 转收件箱等）：无边框玻璃弱底 —— */
+.copilot-prop-btn.ghost {
+  border: none;
+  background: var(--glass-track);
+  color: var(--text-secondary);
+  padding: 0 10px;
+}
+
+.copilot-prop-btn.ghost:hover:not(:disabled) {
+  background: var(--grid-line);
+  color: var(--text-body);
+}
+
+/* —— accent 描边档（连接 / 重新验证类）—— */
+.model-btn.ghost-accent,
+.data-btn.ghost-accent {
+  border: 1px solid var(--accent-border);
+  background: transparent;
+  color: var(--accent-deep);
+}
+
+.model-btn.ghost-accent:hover:not(:disabled),
+.data-btn.ghost-accent:hover:not(:disabled) {
+  background: var(--accent-softer);
+}

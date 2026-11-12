@@ -1,0 +1,239 @@
+/* 桌面小部件窗口样式。透明窗压制三选择器（照 reminder.css：窗口 transparent:true
+   时 WebView 默认白底 + tokens.css 暗色套给 body 上深色底，两者都必须压掉） */
+html,
+body,
+html[data-theme="dark"] body {
+  background: transparent;
+}
+
+/* 外壳：纯透明窗口直透壁纸/应用界面之上的 CSS tint 层（2026-09-17 窗口级合成三次
+   证伪后定稿直透路线，无窗口级模糊——壁纸清晰透出，明暗主题与文字可读性全靠 tint
+   浓度）。tint 浓度由"设置→通用偏好→外观→小部件透明度"驱动：WidgetWindow 把
+   --widget-transparency 注入 html，tokens.css 的 --glass-widget 经 calc 换算 alpha。
+   两条红线（改样式必读）：① 绝不往本选择器挂 backdrop-filter——Chromium
+   安全模型禁止采样窗口外的桌面（页内做不出壁纸模糊），挂了无效果还白付合成；
+   ② filter 非 none 的元素会成为 fixed 后代的包含块，QuickAdd 弹层是 fixed 定位，
+   挂了必炸坐标。圆角 8px 与 Rust 侧 DWMWCP_ROUND 的 DWM 圆角对齐——两者半径不一致
+   会在角部露透明缝隙 */
+.widget-shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-widget);
+  overflow: hidden;
+  position: relative; /* 热区定位锚 */
+}
+
+/* 边缘调整大小热区（8 向，pointerdown 在 tsx 里交 startResizeDragging 给系统
+   resize loop）。四边 5px 窄条 + 四角 12×12 角块，覆盖在最上层——右缘窄条与
+   列表 5px 滚动条区域重叠（拖滚动条会变成 resize）是登记取舍：滚动走滚轮为主
+   路径，与原生无边框应用边缘行为一致 */
+.widget-resize {
+  position: absolute;
+  z-index: 10;
+}
+
+.widget-resize.n {
+  top: 0;
+  left: 10px;
+  right: 10px;
+  height: 5px;
+  cursor: ns-resize;
+}
+
+.widget-resize.s {
+  bottom: 0;
+  left: 10px;
+  right: 10px;
+  height: 5px;
+  cursor: ns-resize;
+}
+
+.widget-resize.e {
+  right: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 5px;
+  cursor: ew-resize;
+}
+
+.widget-resize.w {
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 5px;
+  cursor: ew-resize;
+}
+
+.widget-resize.ne {
+  top: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nesw-resize;
+}
+
+.widget-resize.nw {
+  top: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+}
+
+.widget-resize.se {
+  bottom: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+}
+
+.widget-resize.sw {
+  bottom: 0;
+  left: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nesw-resize;
+}
+
+/* 头部 = 拖动区（手形光标；显式 pointerdown → start_dragging，落在非按钮区域即拖动） */
+.widget-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 8px 14px;
+  flex-shrink: 0;
+  user-select: none;
+  cursor: grab;
+}
+
+.widget-tabs {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 4px;
+}
+
+.widget-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.widget-tab:hover {
+  background: var(--glass-track);
+  color: var(--text-primary);
+}
+
+.widget-tab.on {
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+  font-weight: 600;
+}
+
+/* 徽标规格取自 .sidebar-badge（token 同源，不造新值） */
+.widget-tab-badge {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--badge-bg);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+}
+
+/* 右上角三钮（打开主界面/置顶切换/关闭）共用的图标按钮规格 */
+.widget-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.widget-icon-btn {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.widget-icon-btn:hover {
+  background: var(--glass-track);
+  color: var(--text-primary);
+}
+
+/* 置顶激活态：accent 高亮 */
+.widget-icon-btn.on {
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+}
+
+/* 页面区（双 tab 条件渲染） */
+.widget-page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 收件箱页：QuickAdd 上下文覆盖加外边距（原类无 margin，主界面由 console 的
+   padding 提供），固定高不参与压缩 */
+.widget-page .schedule-quick-add {
+  margin: 12px 12px 4px;
+  flex-shrink: 0;
+}
+
+.widget-inbox-list {
+  padding: 10px 12px 12px;
+}
+
+/* 待办卡（可编辑：悬停按钮组 + 编辑展开区 + 双击标题，类名 100% 复用 InboxPanel；
+   无手柄——widget 内无拖拽放置目标），收窄内距适配窄窗 */
+.widget-todo {
+  padding: 12px 14px;
+  cursor: default;
+}
+
+/* 收件箱编辑区窄窗适配：主界面 .inbox-todo-edit-row 已 flex-wrap 且全宽
+  （2026-10-26 布局优化，展开卡操作钮行内化后无让位需求），widget 窄卡自然
+   继承换行——原 wrap 覆盖退役；widget 自身的悬浮按钮组仍在卡右下角，
+   编辑区行尾与其叠压为既有形态（widget 无行内化双形态） */
+
+/* 今日详情浮层窄窗兜底：.schedule-detail 定宽 300px，窗口拖到最小宽 300 时加 8px
+   边距会溢出——min() 收窄（JS 的 DETAIL_W 恒按 300 估算 clamp，极窄窗下视觉差
+   ≤8px 可接受） */
+.widget-shell .schedule-detail {
+  width: min(300px, calc(100vw - 16px));
+}
+
+/* 今日页负载指示器：压掉主界面对翻页器的 13px 缩进，改作页面独立行。
+   padding-left 29.5px = 收件箱 tab 的 Inbox 图标中心线：14（header
+   padding-left）+ 9（tab padding-left）+ 13/2（图标半宽）——进度条从
+   logo 中间起画，视觉上与 header 纵向对齐（对齐 tab 盒左缘 14px 会偏左
+   越过图标，2026-09-17 用户反馈后修正） */
+.widget-load {
+  margin-left: 0;
+  padding: 10px 29.5px 6px;
+  flex-shrink: 0;
+}

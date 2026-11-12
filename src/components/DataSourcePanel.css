@@ -1,0 +1,260 @@
+/* 右栏 · 数据源页增量样式（骨架与卡盒复用 InboxPanel.css：.inbox-* 三段结构 +
+   .inbox-todo 待办卡体系——优先级色条/玻璃盒/编辑区控件/悬停操作组的显隐规则全部
+   继承，此处只放数据源页自有增量：源分组、卡头徽标、条目堆叠与编辑条目块） */
+
+/* 组列表：占满主区高度独立滚动（滚动条口径同 .inbox-list 惯例） */
+.ds-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.ds-list:hover {
+  scrollbar-color: var(--scrim-soft) transparent;
+}
+
+.ds-list::-webkit-scrollbar {
+  width: 5px;
+}
+
+.ds-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ds-list::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.ds-list:hover::-webkit-scrollbar-thumb {
+  background: var(--scrim-soft);
+}
+
+.ds-list::-webkit-scrollbar-thumb:hover {
+  background: var(--scrim);
+}
+
+/* 源分组 */
+.ds-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* 组头：源名 + 待确认卡数 + 「确认全部」；粘性顶吸（组多时滚动中组名不迷路） */
+.ds-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  background: var(--glass-panel); /* 顶吸底色遮住下滚的卡片 */
+}
+
+.ds-group-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ds-group-count {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--accent-softer);
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+/* 「确认全部」：弱化文字钮靠右，hover 才浮实（批量动作不抢视觉） */
+.ds-group-accept {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.ds-group-accept:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-softer);
+}
+
+/* 建议卡：盒体/优先级色条/悬停操作组全部继承 .inbox-todo（本文件在
+   InboxPanel.css 之后导入，此处只把收件箱的「grip + body 双列行布局」覆盖为
+   卡头 + 条目的纵向堆叠） */
+.ds-card {
+  display: block;
+}
+
+/* 卡头：源徽标（同 .inbox-todo-project 的轻 pill 形态 + 色点）+ 卡类型小字 + 溯源展开钮 */
+.ds-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.ds-src-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+.ds-src-badge i {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.ds-kind {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+/* 溯源展开钮（规格同 .inbox-todo-icon；箭头随展开旋转） */
+.ds-trace-toggle {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ds-trace-toggle:hover {
+  background: var(--grid-line);
+  color: var(--text-secondary);
+}
+
+.ds-trace-toggle svg {
+  transition: transform 0.15s;
+}
+
+.ds-trace-toggle.open svg {
+  transform: rotate(180deg);
+}
+
+/* 条目堆叠：每条 = 收件箱行排版（.inbox-todo-title / .inbox-todo-meta） */
+.ds-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  /* 悬停操作组（右下角 absolute）留出净空，末条 meta 不被钮压住 */
+  padding-right: 84px;
+}
+
+.ds-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 行内备注摘要：meta 长文截断（全文悬停 title 可见） */
+.ds-entry-note {
+  min-width: 0;
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 溯源区（口径同 CopilotPanel 建议卡的 .copilot-proposal-trace）。底部让位
+   （2026-10-26）：悬停操作组 absolute bottom:10px 贴卡底（钮高 22 → 顶至距底
+   32px），溯源展开后卡片增高、按钮会压住尾行文字——margin-bottom 20px 顶出
+   空白带（盒底距卡底 16+20=36px > 32px），按钮下探落空白内零重叠 */
+.ds-trace {
+  margin: 10px 0 20px;
+  padding: 8px 10px;
+  list-style: none;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ds-trace-row {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* 确认钮 hover 绿（.del 红已在 InboxPanel.css；.ok 是数据源页专用钮） */
+.ds-card .inbox-todo-icon.ok:hover {
+  color: var(--green);
+}
+
+/* —— 手动刷新钮（2026-11-04 手动刷新批）——————————————————————————— */
+
+/* 刷新钮复用 .inbox-collapse 盒形态（头部动作区同组），仅补禁用与转圈 */
+.ds-refresh:disabled {
+  cursor: default;
+}
+
+.ds-refresh:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+/* 采集中转圈（RefreshCw 图标旋转）；reduced-motion 关动画（全局惯例同收入
+   收件箱入场动画） */
+@keyframes ds-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ds-refresh .spin {
+  animation: ds-spin 1s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-refresh .spin {
+    animation: none;
+  }
+}
+
+/* 采集中文字提示（与转圈并行的第二反馈——单转圈不显眼，真机反馈易以为卡死） */
+.ds-refreshing-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}

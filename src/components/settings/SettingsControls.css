@@ -1,0 +1,357 @@
+/* "通用偏好"设置行四控件（结构见 SettingsControls.tsx）。规格复刻既有惯例：
+   开关 = .inbox-toggle、弹层 = .quick-add-pop；分段时间选 = 视图切换分段控件的弱化变体 */
+
+/* —— 开关（32×18 胶囊 + 14px 圆点位移 14px，规格复刻 .inbox-toggle）—— */
+.set-toggle {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 999px;
+  background: var(--toggle-track);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.set-toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+  transition: transform 0.15s;
+}
+
+.set-toggle.on {
+  background: var(--accent);
+}
+
+.set-toggle.on::after {
+  transform: translateX(14px);
+}
+
+/* 置灰禁点（AI 总闸关闭 / 信任门槛未达）：弱化口径同 .set-lunch-group.off */
+.set-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* —— 分段单选：灰底轨道（毛玻璃改版：半透明 track / 圆角 8 / padding 2）+ 选中块玻璃底圆角 6 凸起 —— */
+.set-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--glass-track);
+}
+
+.set-seg-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.set-seg-item:hover:not(.on) {
+  color: var(--text-primary);
+}
+
+.set-seg-item.on {
+  background: var(--glass-card);
+  color: var(--text-primary);
+  font-weight: 500;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.set-seg-item svg {
+  flex-shrink: 0;
+}
+
+/* —— 下拉单选：trigger + 右对齐弹层（right:0 防溢出右缘）—— */
+.set-select {
+  position: relative;
+  display: inline-flex;
+}
+
+.set-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.set-select-trigger:hover {
+  background: var(--glass-track);
+}
+
+/* 置灰禁点（同 .set-toggle:disabled） */
+.set-select-trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.set-select-trigger:disabled:hover {
+  background: var(--glass-input);
+}
+
+.set-select-trigger.open {
+  border-color: var(--accent-border);
+}
+
+.set-select-value {
+  white-space: nowrap;
+}
+
+.set-select-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+
+.set-select-chevron.flip {
+  transform: rotate(180deg);
+}
+
+/* 弹层：复刻 .quick-add-pop 规格；fixed 定位脱离 .settings-body 滚动容器
+   （absolute 会因底部行弹层向下溢出撑大 scrollHeight 引发程序滚动、弹层刚开即被
+   "滚动关闭"误杀），top/right/min-width/max-height 均由 JSX 内联（打开瞬间按
+   trigger 视口矩形算）；内容超高自身内滚兜住时间 49 档 */
+.set-select-pop {
+  position: fixed;
+  z-index: 60; /* 设置页 z-50 内部的局部层，压过右栏内容 */
+  overflow-y: auto;
+  padding: 5px;
+  /* 毛玻璃改版：fixed 叶子弹层直接挂 frost（filter 挂盒上，内滚不影响滤效） */
+  background: var(--glass-pop);
+  backdrop-filter: var(--glass-blur-pop);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--glass-rim), var(--shadow-pop);
+  /* 细滚动条（规格同 .schedule-scroll 惯例，时间 49 档超高内滚时）：Firefox 兜底 */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.set-select-pop:hover {
+  scrollbar-color: var(--scrim-soft) transparent;
+}
+
+/* Chromium/WebView2：5px 细滚动条，轨道透明，thumb 默认隐藏、悬停浮现 */
+.set-select-pop::-webkit-scrollbar {
+  width: 5px;
+}
+
+.set-select-pop::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.set-select-pop::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.set-select-pop:hover::-webkit-scrollbar-thumb {
+  background: var(--scrim-soft);
+}
+
+.set-select-pop::-webkit-scrollbar-thumb:hover {
+  background: var(--scrim);
+}
+
+.set-select-option {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.set-select-option:hover:not(:disabled) {
+  background: var(--grid-line);
+}
+
+.set-select-option.on {
+  color: var(--accent-deep);
+  font-weight: 500;
+}
+
+.set-select-option:disabled {
+  color: var(--text-muted);
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* —— 滑条：细轨 + 圆点 thumb + 右侧数值。轨道进度填充经 --fill 变量桥接（JSX 内联
+   百分比，CSS 变量继承进 track 伪元素——伪元素无法直接内联样式）；
+   thumb 复刻开关圆点规格（14px 白点 + 投影）；Firefox 以 moz 伪元素兜底同语义 —— */
+.set-slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.set-slider input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 150px;
+  height: 18px; /* 热区放宽（轨道实际 4px，thumb 14px 悬出居中） */
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.set-slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--fill, 0%),
+    var(--toggle-track) var(--fill, 0%)
+  );
+}
+
+.set-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px; /* (4 - 14) / 2，圆点压轨道居中 */
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.set-slider input[type="range"]:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+/* Firefox 兜底（WebKit 主用，规格同上） */
+.set-slider input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--fill, 0%),
+    var(--toggle-track) var(--fill, 0%)
+  );
+}
+
+.set-slider input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.set-slider-value {
+  min-width: 36px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+/* —— 时间对：两个下拉 + 连接符 —— */
+.set-time-range {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.set-time-range-sep {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* —— 文本输入（失焦提交；视觉基调同 set-select-trigger）—— */
+.set-input {
+  height: 28px;
+  width: 150px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.set-input:focus {
+  border-color: var(--accent-border);
+}
+
+.set-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* —— 多行文本（自定义哲学）：基调同 .set-input，整行宽 + resize 纵向 —— */
+.set-textarea-wrap {
+  position: relative;
+}
+
+.set-textarea {
+  width: 100%;
+  /* 底部 padding 加大给右下角计数让位，防正文压住 */
+  padding: 6px 10px 20px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+  outline: none;
+  resize: vertical;
+}
+
+.set-textarea:focus {
+  border-color: var(--accent-border);
+}
+
+.set-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.set-textarea-count {
+  position: absolute;
+  right: 10px;
+  bottom: 7px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  pointer-events: none;
+  user-select: none;
+}

@@ -1,0 +1,2042 @@
+/* 中栏 · 日程画布（flex:1，设计稿宽 700） */
+.schedule {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* 毛玻璃改版：中栏画布 = 最清透 tint（光斑主透出区）。不挂 backdrop-filter——
+     栏内有 fixed 详情浮层，filter 会改其坐标基准；且背后是平滑渐变，blur≈恒等 */
+  background: var(--glass-canvas);
+  border-right: 1px solid var(--border);
+}
+
+/* 顶部控制台 */
+.schedule-console {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px 24px 14px;
+}
+
+.schedule-date-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* 顶对齐（非垂直居中）：左日期块与右翻页器列同构两行（主行/按钮 26px + gap 5 + 辅助行），
+   行对行齐平——center 按两块各自总高居中，总高不同时副行与负载指示器错位约 3px */
+.schedule-date-nav {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.schedule-date-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px; /* 与 .schedule-pager-col 的 gap 一致：两侧第二行（副行/负载指示器）起点同高 */
+  /* 固定日期区宽度：内容（月份/日位数/休班/农历）变化不再推挤翻页器，
+     <今天> 横向位置恒定；150px 覆盖最长"2026年12月31日 班"(约140px)并留少量余量 */
+  min-width: 150px;
+}
+
+.schedule-date {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  line-height: 26px; /* 主行盒高对齐翻页器按钮（26px）：左主行与右按钮齐平，两侧第二行起点一致 */
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.1px;
+  color: var(--text-primary);
+}
+
+/* 日视图主行：休/班标记跟在日期串后基线并排（农历/节气/节日在副行末）；
+   .schedule-date 的 inline-flex baseline 同时兼容周/月模式的纯文本标题 */
+.schedule-date-mark {
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.schedule-date-mark.rest {
+  color: var(--green);
+}
+
+.schedule-date-mark.work {
+  color: var(--orange);
+}
+
+.schedule-week {
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.schedule-pager {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.schedule-pager-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.schedule-pager-btn:hover {
+  background: var(--grid-line);
+}
+
+/* "今天"按钮：14px/500/灰色 secondary（比日期主行 16px/600/主色整体弱一档，控件次级层级）；
+   盒高固定 26px + flex 居中（padding 撑高在放大字号下会撑破翻页器行高，破坏与日期/负载指示器的对齐） */
+.schedule-today {
+  height: 26px;
+  display: flex;
+  align-items: center;
+  padding: 0 9px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.schedule-today:hover {
+  background: var(--grid-line);
+}
+
+/* 翻页器纵向容器：日视图负载指示器排在翻页器下方，起点对齐 < 按钮中心 */
+.schedule-pager-col {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* 日视图负载指示器：日程数量 · 分段进度条 · 耗时占比；
+   margin-left 13px = 翻页按钮宽 26 的一半，起点落在 < 按钮中心线上
+  （纯左缘对齐会显得文字偏左） */
+.schedule-load {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 13px;
+}
+
+.schedule-load-count {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+/* 分段进度条（固定长度 120px）：高/中/低优先级耗时依次填充，颜色与 prio-* 色条
+   同变量（红/橙/绿）；比例分母 = max(总耗时, 8h)——超 8h 按总耗时归一化恒填满
+   （各优先级相对占比不失真），不足 8h 空闲段浅灰补尾；
+   负载率 > 80% 外包淡红描边提醒（常态透明描边防切换跳动） */
+.schedule-load-bar {
+  width: 120px;
+  height: 6px;
+  display: flex;
+  overflow: hidden;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+
+.schedule-load-bar.over {
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+.schedule-load-seg {
+  height: 100%;
+  flex-shrink: 0;
+}
+
+.schedule-load-seg.high {
+  background: var(--danger);
+}
+
+.schedule-load-seg.medium {
+  background: var(--orange);
+}
+
+.schedule-load-seg.low {
+  background: var(--green);
+}
+
+.schedule-load-seg.free {
+  background: var(--border);
+}
+
+/* 耗时占比文本：负载率 ≤50% 正常黑、51–80% 橙、>80% 红（含超载） */
+.schedule-load-text {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.schedule-load-text.warn {
+  color: var(--orange);
+}
+
+.schedule-load-text.danger {
+  color: var(--danger);
+}
+
+/* 分段控制器 */
+.schedule-segmented {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--glass-track);
+}
+
+.schedule-segment {
+  padding: 4px 13px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.schedule-segment.active {
+  background: var(--glass-card);
+  border: 1px solid var(--border);
+  font-weight: 600;
+  color: var(--text-active);
+}
+
+/* 头部右侧组："日/周/月"分段控件 + 右栏折叠后的展开按钮 */
+.schedule-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* 项目筛选 chip（2026-11-10）：项目页"已排期"开关联动激活，常显于视图切换器
+   左侧——彩色项目点 + 名 + ✕ 钮，一眼可见"日历正在被筛选"防"日程去哪了"
+   困惑；点 ✕ 回全量。pill 语言对齐项目标识（色点 6px + 名 11px）。
+   **宽度假死**（2026-11-10 用户反馈收窄）：max-width 96px（≈4 字即截断）+
+   自身可压缩（min-width:0 + flex-shrink）——中栏窄时随头部收缩、极端收成
+   色点+✕+省略号，**宁可名称显示不全也不撑宽顶部**（名称全称靠 chip 的
+   title 悬停可见） */
+.schedule-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 4px 0 9px;
+  border-radius: 999px;
+  background: var(--accent-softer);
+  max-width: 96px;
+  min-width: 0;
+  flex-shrink: 1;
+  flex-grow: 0;
+}
+
+.schedule-filter-chip > i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.schedule-filter-chip-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-deep);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.schedule-filter-chip-x {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--accent-deep);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.schedule-filter-chip-x:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* 展开 Copilot 入口：Sparkles 图标用 Copilot 标题同款紫色，醒目且标识归属 */
+.schedule-expand-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent-deep);
+  cursor: pointer;
+}
+
+.schedule-expand-btn:hover {
+  background: var(--grid-line);
+}
+
+/* AI 总闸关闭态：图标灰化不可用观感（点击仍走 onExpandCopilot——面板展示引导卡） */
+.schedule-expand-btn.disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.schedule-expand-btn.disabled:hover {
+  background: transparent;
+}
+
+/* 助手未读徽标（2026-11-04 通知分轨）：AI 产物收件箱轨的入口计数角标——
+   按钮右上角偏移小胶囊，与 Sidebar 待确认徽标同视觉语言 */
+.schedule-expand-btn {
+  position: relative; /* 角标定位锚 */
+}
+
+.schedule-expand-badge {
+  position: absolute;
+  top: -5px;
+  right: -7px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  pointer-events: none; /* 徽标不抢点击 */
+}
+
+/* 高频录入区（快捷录入框外壳：内部输入/镜像高亮/弹层见 QuickAdd.css）；
+   毛玻璃改版：玻璃内嵌输入语言（半透明底 + 描边，不挂 blur） */
+.schedule-quick-add {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 42px;
+  padding: 0 7px 0 13px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--glass-input);
+}
+
+/* 聚焦描边（对齐 sidebar-project-input 惯例）；提交校验失败红边闪（标题超长/后端失败） */
+.schedule-quick-add:focus-within {
+  border-color: var(--accent-border);
+}
+
+.schedule-quick-add.invalid {
+  border-color: var(--danger);
+}
+
+.schedule-quick-add-icon {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.schedule-enter-pill {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  background: var(--glass-track);
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+/* 时间轴流（横向不滚动：内容宽度完全随中栏伸缩，由 App 拖拽约束保证最小宽） */
+.schedule-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-top: 7px; /* 完整露出 08:00 刻度（刻度居中于网格线） */
+  /* Firefox 细滚动条兜底（默认隐藏，悬停浮现） */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.schedule-scroll:hover {
+  scrollbar-color: var(--scrim-soft) transparent;
+}
+
+/* Chromium/WebView2：5px 细滚动条，轨道透明，thumb 默认隐藏、悬停浮现 */
+.schedule-scroll::-webkit-scrollbar {
+  width: 5px;
+}
+
+.schedule-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.schedule-scroll::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.schedule-scroll:hover::-webkit-scrollbar-thumb {
+  background: var(--scrim-soft);
+}
+
+.schedule-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--scrim);
+}
+
+.timeline {
+  position: relative;
+  /* 高度由 JSX 内联 style 给出：区间小时数 × 80 + 底部余量 40（设置驱动） */
+}
+
+.timeline-tick {
+  position: absolute;
+  left: 14px;
+  width: 38px;
+  transform: translateY(-50%);
+  text-align: right;
+  font-size: 10.5px;
+  color: var(--tick-muted);
+}
+
+.timeline-grid {
+  position: absolute;
+  left: 64px;
+  right: 20px; /* 双锚定：网格线随中栏宽度伸缩 */
+  height: 1px;
+  background: var(--grid-line);
+}
+
+/* 日程块 */
+.timeline-event {
+  position: absolute;
+}
+
+/* —— 全天/跨天条（2026-11-06 批 B；二次真机批对齐根修）：复用 .timeline-event.card
+   盒子（唯一盒子约束），条内布局复刻普通卡两行结构 —— */
+
+/* 日视图条区：条的包含块（高度 JSX 内联 = 条数 × 行高步进）。条 absolute 双锚定
+   left:64px / right:20px——与泳道卡（laneLeft/laneRight 的字面锚点）同一计算式，
+   像素级对齐事件区，不经 flex/gutter 任何间接层（曾两轮错位的根修方案） */
+.schedule-allday-strip {
+  position: relative;
+  margin-bottom: 6px;
+}
+
+.schedule-allday-strip .timeline-event.card.allday {
+  position: absolute;
+  left: 64px;
+  right: 20px;
+  overflow: hidden; /* 固定条高（JSX 内联）下极端字号环境防溢出叠行 */
+}
+
+/* 条形变体（三次视觉批；四次批放宽内距）：单行细条，视觉完全回归普通卡语言——
+   白玻璃底 / 优先级左色条 / 圆角线宽全部继承 .timeline-event.card 通用规则，仅以
+   位置（时间轴上方全天区）与「全天」旗标区分类型；不参与小时拉伸 */
+.timeline-event.card.allday {
+  position: relative;
+  cursor: pointer;
+  height: auto;
+  display: flex;
+  flex-direction: row; /* 覆盖通用 column——单行横排 */
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px; /* 四次批：随条高 36px 放宽（26px 时代为 4px） */
+}
+
+.timeline-event.card.allday .timeline-event-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 「全天」旗标：轻量 accent 文字底 pill，类型标识 */
+.allday-flag {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--accent-deep);
+  background: var(--accent-softer);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+/* 右侧轻信息组（跨天数/重复/完成对号） */
+.allday-tail {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.allday-span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* 周视图全天行（二次根修）：几何链与事件区逐层同式——cols 是 .week-columns 的
+   字面复制（absolute left:64/right:20/top:0/bottom:0 + flex），cell 同 .week-col
+   （flex:1 + relative + min-width:0），条 absolute 占满列宽（同 0 列泳道卡）；
+   行高 JSX 内联 = 最多条数 × 步进，条按步进纵排 */
+.week-allday-row {
+  position: relative;
+  margin: 4px 0 6px;
+}
+
+.week-allday-cols {
+  position: absolute;
+  left: 64px;
+  right: 20px;
+  top: 0;
+  bottom: 0;
+  display: flex;
+}
+
+.week-allday-cell {
+  flex: 1;
+  position: relative; /* 列内条的包含块（同 .week-col 对卡片） */
+  min-width: 0;
+}
+
+.week-allday-cell + .week-allday-cell {
+  border-left: 1px solid var(--grid-line); /* 列分隔线同 .week-col 事件列 */
+}
+
+.week-allday-cell .timeline-event.card.allday {
+  position: absolute;
+  left: 0;
+  right: 0; /* 覆盖 .timeline-event.card 通用 right:20px——列内条占满列（同 0 列泳道卡） */
+  padding: 3px 7px; /* 列窄更紧凑（同 .week-col 密度适配口径） */
+  cursor: grab; /* 可拖（天级平移，真机批与月视图对齐；日视图条仍点击开浮层） */
+  touch-action: none; /* pointer 拖动优先于触摸滚动 */
+}
+
+.week-allday-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+
+.week-allday-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 周视图列内「全天」小旗标（与日视图同语言：accent 文字底，更小一号） */
+.week-allday-flag {
+  flex-shrink: 0;
+  font-style: normal;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--accent-deep);
+  background: var(--accent-softer);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* 详情浮层：全天开关 + 起止日期输入（止 = 最后一天，含当日） */
+.schedule-detail-allday {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px 2px;
+}
+
+.schedule-detail-allday-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.schedule-detail-allday-toggle input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+/* 已过时段的日程整体降淡（文字/按钮弱化，优先级色条保留原色仅变浅） */
+.timeline-event.past {
+  opacity: 0.6;
+}
+
+/* 已完成（详情浮层标记 / 提醒 Toast 按钮）：与 .past 平行的状态类——整卡降淡同
+   past，完成信号由右上角绿对号承担（2026-10-22 修订：替代标题删除线，更醒目且
+   不与项目名重叠——两者同组并排）；优先级色条保留原色同 past 惯例 */
+.timeline-event.done {
+  opacity: 0.6;
+}
+
+.timeline-event-title-right {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.timeline-event-done-mark {
+  color: var(--green);
+  flex-shrink: 0;
+}
+
+/* 优先级色条（卡片左缘，颜色即信号：高=红 中=琥珀 低=绿） */
+.timeline-event.card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: 4px;
+  border-radius: 2px;
+}
+
+.timeline-event.card.prio-high::before {
+  background: var(--danger);
+}
+
+.timeline-event.card.prio-medium::before {
+  background: var(--orange);
+}
+
+.timeline-event.card.prio-low::before {
+  background: var(--green);
+}
+
+/* 卡片式方块盒子（日程/午休共用：同圆角同线宽同内距，仅线型与配色不同） */
+.timeline-event.card,
+.timeline-event.suggestion {
+  right: 20px; /* 双锚定：卡片随中栏宽度伸缩 */
+  display: flex;
+  flex-direction: column;
+  gap: 6px; /* 标题行与时间行的间距 */
+  padding: 12px;
+  border-radius: 12px;
+  border-width: 1.5px;
+  border-style: solid;
+}
+
+/* 日程卡为中性基调（毛玻璃改版：半透明玻璃底 + backdrop frost + 顶缘高光），彩色仅留给
+   优先级色条；可抓取拖动。卡片无 fixed 后代，backdrop-filter 安全 */
+.timeline-event.card {
+  background: var(--glass-card);
+  border-color: var(--border);
+  backdrop-filter: var(--glass-blur-card);
+  box-shadow: var(--glass-rim);
+  cursor: grab;
+  user-select: none; /* 拖动时不选中文本 */
+  touch-action: none; /* pointer 拖动优先于触摸滚动 */
+}
+
+/* 拖动中：浮到最上层并加投影，其余卡片不动，松手后整体重排
+   （box-shadow 整体覆写，rim 高光在此重组） */
+.timeline-event.card.dragging {
+  cursor: grabbing;
+  z-index: 10;
+  opacity: 0.92;
+  box-shadow: var(--shadow-pop), var(--glass-rim);
+}
+
+/* 拖拽冲突（批 E2）：被拖卡落点与既有日程相交时红描边（提示性不阻止，
+   松手照常写入——自由拖拽语义不变）；限定 dragging 态，类也只在拖动中挂 */
+.timeline-event.card.dragging.conflict {
+  box-shadow: var(--shadow-pop), var(--glass-rim), 0 0 0 2px var(--danger);
+}
+
+/* 下边框拉伸把手：调结束时间（无结束时间的日程由此设置 end）；
+   hover 卡片或拉伸中显示居中抓手条 */
+.timeline-event-resize {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 10px;
+  cursor: ns-resize;
+}
+
+.timeline-event-resize::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  width: 26px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  opacity: 0;
+  transform: translateX(-50%);
+}
+
+.timeline-event.card:hover .timeline-event-resize::after,
+.timeline-event.card.dragging .timeline-event-resize::after {
+  opacity: 1;
+}
+
+.timeline-event-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.timeline-event-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0; /* flex 子项需允许收缩，超长标题以省略号截断（窄卡必需） */
+}
+
+/* 窄卡降级（泳道分列 ≥3 列）：隐藏项目 pill */
+.timeline-event.narrow .timeline-event-tag {
+  display: none;
+}
+
+.timeline-event-tag {
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--glass-track);
+  color: var(--text-secondary);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+}
+
+.timeline-event-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* 午休建议块：共用卡片盒子，虚线 + 有色玻璃（毛玻璃改版：半透明绿 tint） */
+.timeline-event.suggestion {
+  background: var(--lunch-glass);
+  border-style: dashed;
+  border-color: var(--lunch-border);
+}
+
+/* AI 排期草案幽灵方块：紫色系纯 tint + 虚线边框（不挂 backdrop-filter，同建议块
+   先例；与午休块同位不参与交互——拖拽微调 P0 仅视觉，取舍见 docs/tech-debt.md） */
+.timeline-event.ghost {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1.5px dashed var(--accent-border);
+  background: var(--ghost-glass);
+  pointer-events: none; /* 幽灵卡不挡底层时间轴的待办拖放 */
+}
+
+.timeline-ghost-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--accent-deep);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-ghost-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.timeline-suggestion-inner {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.timeline-suggestion-icon {
+  color: var(--lunch-icon);
+}
+
+.timeline-suggestion-text {
+  font-size: 12.5px;
+  color: var(--lunch-text);
+}
+
+/* 当前时间线 */
+.timeline-now-line {
+  position: absolute;
+  left: 64px;
+  right: 20px;
+  height: 1.6px;
+  background: var(--danger);
+}
+
+.timeline-now-dot {
+  position: absolute;
+  left: 60.2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.timeline-now-label {
+  position: absolute;
+  left: 14px;
+  width: 38px;
+  text-align: right;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+/* ===== 周视图 ===== */
+
+/* 周模式滚动容器：去顶部内距（由周头自带 padding 接管，避免 sticky 头下方露缝） */
+.schedule-scroll.week-mode {
+  padding-top: 0;
+}
+
+/* 周模式 timeline 下移补 7px：刻度 translateY(-50%) 居中于网格线，08:00 上半原本由容器
+   padding-top 让位（日视图），周模式归零后被 sticky 周头白底遮挡只显示一半；用 margin 而非
+   恢复容器 padding——sticky 周头粘住时容器 padding 区会在其上方露出滚动内容 */
+.schedule-scroll.week-mode .timeline {
+  margin-top: 7px;
+}
+
+/* 周头行：sticky 悬浮于滚动顶部，玻璃底 + backdrop frost 遮住底下滚过的网格与卡片
+   （毛玻璃改版招牌时刻：内容从头部下方滚过被模糊；周头无 fixed 后代，filter 安全） */
+.week-header {
+  position: sticky;
+  top: 0;
+  z-index: 20; /* 高于拖动中卡片的 z-index:10，滚出内容从头下穿过 */
+  display: flex;
+  align-items: stretch;
+  padding: 9px 0 7px;
+  background: var(--glass-pop);
+  backdrop-filter: var(--glass-blur-pop);
+  border-bottom: 1px solid var(--grid-line);
+}
+
+/* 左槽与时间刻度列（64px）对齐 */
+.week-head-gutter {
+  flex-shrink: 0;
+  width: 64px;
+}
+
+.week-head-cols {
+  flex: 1;
+  display: flex;
+  margin-right: 20px; /* 与事件区右留白对齐 */
+}
+
+/* 列头（2026-11-12 点击对齐批按钮化）：点击跳该日日视图（同日程日头/月格）——
+   reset 到原 div 观感 + hover 微底示可点 */
+.week-head-col {
+  flex: 1;
+  position: relative; /* 右上角休/班角标的定位上下文 */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.week-head-col:hover {
+  background: var(--glass-track);
+}
+
+/* 今天列：列头文字 accent 高亮（贴合设计稿，仅文字不着底色；农历小字保持辅助灰同月视图口径） */
+.week-head-col.today .week-head-weekday,
+.week-head-col.today .week-head-date {
+  color: var(--accent);
+}
+
+/* 星期小字：inline-flex 容纳尾挂的每日负载指示灯圆点（与文字同行居中） */
+.week-head-weekday {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+/* 每日负载指示灯（周头）：该列所有日程总耗时 / 8h——≤50% 绿、50–80% 橙、>80% 红
+  （口径同日视图负载指示器），无日程 = 0% → 绿 */
+.week-head-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.week-head-dot.green {
+  background: var(--green);
+}
+
+.week-head-dot.orange {
+  background: var(--orange);
+}
+
+.week-head-dot.red {
+  background: var(--danger);
+}
+
+/* 日期行：数字 + 农历/节气/节日小字基线对齐并排（口径同月视图 .month-date） */
+.week-head-date {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 农历小字（节气/节日优先替换日名，如 7 号"白露"）：同月视图 .month-date-lunar 规格 */
+.week-head-lunar {
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* 今天列的农历小字不随数字染 accent，保持辅助灰 */
+.week-head-col.today .week-head-lunar {
+  color: var(--text-muted);
+}
+
+/* 右上角休/班角标（配色同月视图 .month-mark）：法定假与周末=绿"休"，调休补班=橙"班" */
+.week-head-mark {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.week-head-mark.rest {
+  color: var(--green);
+}
+
+.week-head-mark.work {
+  color: var(--orange);
+}
+
+/* 7 个天列：定位于事件区（与日视图网格线同域），列间细分隔线 */
+.week-columns {
+  position: absolute;
+  left: 64px;
+  right: 20px;
+  top: 0;
+  bottom: 0;
+  display: flex;
+}
+
+.week-col {
+  flex: 1;
+  position: relative; /* 列内卡片的 containing block（泳道百分比锚定于此） */
+  min-width: 0;
+}
+
+.week-col + .week-col {
+  border-left: 1px solid var(--grid-line);
+}
+
+/* 周列内卡片密度适配：同一卡盒，仅上下文缩小内距适配窄列（不改 .timeline-event.card 自身规则） */
+.week-col .timeline-event.card {
+  padding: 8px 7px;
+}
+
+/* 窄列时间行溢出兜底（Clock + 时间文本不换行，超宽剪裁） */
+.week-col .timeline-event-meta {
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* ===== 月视图 ===== */
+
+/* 月模式滚动容器：无纵向滚动（7×6 网格撑满可视高度），flex 让面板占满 */
+.schedule-scroll.month-mode {
+  padding-top: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.month-board {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 8px 12px;
+}
+
+/* 星期头：与格列同 7 等分 */
+.month-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  padding-bottom: 6px;
+}
+
+.month-weekday {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  padding-left: 6px;
+}
+
+/* 7×6 月网格：行高 1fr 撑满剩余高度（无小时刻度/红线/午休块，网格全宽无左右槽） */
+.month-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-template-rows: repeat(6, 1fr);
+}
+
+/* 月格：紧凑卡的 containing block（% 平移锚定于此）+ 溢出直接截断 + 内格线 */
+.month-cell {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  border-top: 1px solid var(--grid-line);
+}
+
+.month-cell:not(:nth-child(7n + 1)) {
+  border-left: 1px solid var(--grid-line);
+}
+
+/* 跨格拖动中源格放行越界平移（松手恢复截断；被截断卡在拖动期间向下露出可接受） */
+.month-cell.drag-source {
+  overflow: visible;
+}
+
+/* 格左上日期行（公历数字 + 农历小字基线对齐并排；点击格空白/数字跳该天日视图） */
+.month-date {
+  position: absolute;
+  top: 4px;
+  left: 6px;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+/* 农历小字（节气/节日/农历月名/日名同一表现）：更小更浅，今天格随数字 accent 但农历保持辅助灰 */
+.month-date-lunar {
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+/* 每日负载指示灯（日期行尾）：该格所有日程总耗时 / 8h——≤50% 绿、50–80% 橙、
+   >80% 红（口径同日视图负载指示器），无日程 = 0% → 绿；行内 baseline 对齐下垂直居中 */
+.month-date-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.month-date-dot.green {
+  background: var(--green);
+}
+
+.month-date-dot.orange {
+  background: var(--orange);
+}
+
+.month-date-dot.red {
+  background: var(--danger);
+}
+
+/* 休/班角标（格右上角，与日期行同高）：法定假与周末=绿"休"，调休补班=橙"班"；非当月格不弱化（功能性信号） */
+.month-mark {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  font-size: 9px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.month-mark.rest {
+  color: var(--green);
+}
+
+.month-mark.work {
+  color: var(--orange);
+}
+
+/* 今天格：日期数字 accent 高亮 + 套正圆描边圈（仅圈数字，农历小字不圈；
+   圈为 inline-flex，其内数字文本 baseline 仍参与外层基线对齐，农历跟随对齐） */
+.month-cell.today .month-date {
+  color: var(--accent);
+}
+
+.month-cell.today .month-date-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+}
+
+/* 非当月格：日期数字弱化，卡片再降一档（与已过降淡 .past 叠加） */
+.month-cell.out .month-date {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.month-cell.out .timeline-event {
+  opacity: 0.5;
+}
+
+.month-cell.out .timeline-event.past {
+  opacity: 0.3;
+}
+
+/* 月格内紧凑卡密度适配：同一卡盒，仅上下文改单行居中 + 缩内距/圆角（不改 .timeline-event.card 自身规则）；
+   毛玻璃改版性能闸门：22px 高小卡关 backdrop-filter（blur 在此尺寸无意义、月视图卡数最多伤性能），
+   换更高不透明度 compact 档保小字锐度、去 rim（22px 高 6px 圆角小卡高光无意义） */
+.month-cell .timeline-event.card {
+  flex-direction: row;
+  align-items: center;
+  padding: 0 5px 0 8px; /* 左侧留出 4px 优先级色条 */
+  border-radius: 6px; /* 22px 高卡不适用 12px 圆角 */
+  backdrop-filter: none;
+  background: var(--glass-card-compact);
+  box-shadow: none;
+}
+
+/* 紧凑卡色条内缩（原上下 10px 在 22px 高卡上只剩 2px） */
+.month-cell .timeline-event.card::before {
+  top: 4px;
+  bottom: 4px;
+}
+
+/* 单行内容：muted 时间前缀 + 省略号标题 */
+.timeline-event-compact {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1;
+}
+
+.timeline-event-compact-time {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-event-compact-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* —— 日程详情浮层（点击卡片弹出；fixed 定位挂 section 根，不受滚动容器/月格 overflow 裁剪）—— */
+
+/* 浮层打开时对应卡片的 accent 描边（浮层与卡片的视觉关联） */
+.timeline-event.card.detailing {
+  border-color: var(--accent-border);
+}
+
+/* 毛玻璃改版·垫层模式：浮层本体内还有 fixed 删除确认气泡（坐标按视口计算），
+   本体直接挂 backdrop-filter 会改其坐标基准——frost 经 z-index:-1 的 ::before 垫层实现
+   （::before 非气泡祖先，不影响定位）。本体保留 tint 底：内容内滚超过 max-height 后
+   ::before 随内容滚走、可视区下部退化为仅 tint（可读性不破，低频可接受） */
+.schedule-detail {
+  position: fixed;
+  z-index: 30; /* 压过 sticky 周头 20 与拖动中卡片 10 */
+  width: 300px;
+  /* 高度上限由 inline maxHeight 动态给出（视口底 - top - 12，随定位钳位）；
+     此处静态值仅作 inline 缺席的兜底。内容超高自身内滚，滚动条照 .schedule-scroll
+     5px 细条惯例（透明轨道、thumb 悬停浮现——动态上限后内滚更常见，默认粗条
+     破坏观感） */
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  padding: 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--glass-pop);
+  box-shadow: var(--glass-rim), var(--shadow-float);
+  isolation: isolate; /* fixed+z-index 已建层，冗余保险：确保 ::before 不沉出本体 */
+}
+
+.schedule-detail:hover {
+  scrollbar-color: var(--scrim-soft) transparent;
+}
+
+.schedule-detail::-webkit-scrollbar {
+  width: 5px;
+}
+
+.schedule-detail::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.schedule-detail::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.schedule-detail:hover::-webkit-scrollbar-thumb {
+  background: var(--scrim-soft);
+}
+
+.schedule-detail::-webkit-scrollbar-thumb:hover {
+  background: var(--scrim);
+}
+
+.schedule-detail::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  backdrop-filter: var(--glass-blur-pop);
+  pointer-events: none;
+}
+
+/* 顶栏图标钮组（2026-10-22 修订：完成与关闭并列——轻动作聚合，删除回归底部
+   footer）：absolute 挂浮层右上角，两钮同形 22×22 圆角 6（规格承原关闭钮） */
+.schedule-detail-topbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.schedule-detail-topbar button {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.schedule-detail-topbar button:hover {
+  background: var(--grid-line);
+  color: var(--text-secondary);
+}
+
+/* 标记完成：完成态（含 hover）显绿——勾上的反馈靠按钮变色 + 卡片右上角绿对号 */
+.schedule-detail-topbar .schedule-detail-done:hover,
+.schedule-detail-topbar .schedule-detail-done.on {
+  color: var(--green);
+}
+
+.schedule-detail-title {
+  margin: 0;
+  padding-right: 58px; /* 给右上角顶栏两钮让位（22×2 + 间距 + 边距，2026-10-22 调整） */
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-emphasis);
+}
+
+/* 内联标题编辑：复刻标题字号字重避免切换跳版（口径同 .inbox-todo-title-input） */
+.schedule-detail-title-input {
+  width: 100%;
+  margin: 0;
+  padding: 2px 58px 2px 6px; /* 右侧给顶栏两钮让位（口径同 .schedule-detail-title） */
+  border: 1px solid var(--accent-border);
+  border-radius: 7px;
+  background: var(--glass-input);
+  outline: none;
+  font-family: inherit;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--text-emphasis);
+}
+
+/* 时间行（只读）：绝对日期 + 周几 + 时段，后可跟周期文本 */
+.schedule-detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.schedule-detail-meta svg {
+  flex-shrink: 0;
+}
+
+/* 项目标识（时间行尾部）：项目色点 + 项目名，规格同 .inbox-todo-project（色点与文字垂直居中） */
+.schedule-detail-project {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 2px;
+  font-size: 11px;
+}
+
+.schedule-detail-project i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* 备注输入（规格同 .inbox-todo-note：onBlur 提交，打开浮层不聚焦——查看优先） */
+.schedule-detail-note {
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  outline: none;
+  resize: none;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.schedule-detail-note::placeholder {
+  color: var(--text-muted);
+}
+
+.schedule-detail-note:focus {
+  border-color: var(--accent-border);
+}
+
+/* 备注输入与字数计数的外包：计数器叠在输入框内右下角的定位上下文 */
+.schedule-detail-note-wrap {
+  position: relative;
+}
+
+/* 任务属性 + 时间属性两行容器（2026-11-11 布局对齐批）：复用收件箱
+   inbox-todo-attr-row / inbox-todo-time-row 两列 grid 类族（InboxPanel.css
+   全局加载）——耗时｜优先级一行、重复｜日期一行；WhenPicker 面板的
+   `.inbox-todo-time-row > .inbox-todo-when-panel` 整行规则天然命中 */
+.schedule-detail-attrs {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 字数计数（当前/上限，如 100/500）：输入框内右下角，surface 底防与末行文字交叠突兀；
+   pointer-events 穿透，不挡框内点击与选区 */
+.schedule-detail-note-count {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  background: var(--glass-pop);
+  pointer-events: none;
+}
+
+/* 底部行：优先级圆点（左）+ 删除（右；完成迁顶栏后两组宽松） */
+.schedule-detail-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+/* 会后纪要录入区（2026-11-10）：已结束日程浮层的分隔区块——默认一行弱化入口，
+   展开为 textarea + 取消/提交（规格承 .schedule-detail-note 玻璃输入风格） */
+.schedule-detail-minutes {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* 字数计数容器与右下角计数（当前/上限）：同 .schedule-detail-note-wrap /
+   .schedule-detail-note-count 先例——surface 底防交叠，pointer-events 穿透
+   （原收起态文字钮 .schedule-detail-minutes-open 已随入口挪 footer 图标钮退役） */
+.schedule-detail-minutes-wrap {
+  position: relative;
+}
+
+.schedule-detail-minutes-count {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  background: var(--glass-pop);
+  pointer-events: none;
+}
+
+.schedule-detail-minutes-input {
+  width: 100%;
+  min-height: 72px;
+  max-height: 180px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  outline: none;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+
+.schedule-detail-minutes-input::placeholder {
+  color: var(--text-muted);
+}
+
+.schedule-detail-minutes-input:focus {
+  border-color: var(--accent-border);
+}
+
+/* 纪要双钮（cancel/submit）视觉已上收 tokens.css 全局文字按钮族
+   （2026-11-12 二次升级单源）——本文件只留操作行容器 */
+.schedule-detail-minutes-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.schedule-detail-minutes-error {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+/* 纪要行动项回看（2026-11-10 批 2）：已采纳行动项清单 + 完成态勾选可切换 */
+.schedule-detail-minutes-summary {
+  margin: 0 0 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.schedule-detail-minutes-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.schedule-detail-minutes-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.schedule-detail-minutes-done {
+  flex-shrink: 0;
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 50%;
+  background: none;
+  color: transparent;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.schedule-detail-minutes-done.on {
+  border-color: var(--green);
+  background: var(--green);
+  color: #fff;
+}
+
+.schedule-detail-minutes-done:hover {
+  border-color: var(--green);
+}
+
+.schedule-detail-minutes-title {
+  color: var(--text-body);
+  word-break: break-word;
+}
+
+.schedule-detail-minutes-title.done {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+/* 应用范围气泡（重复系列编辑三问）：待应用的编辑聚合在 pendingEdit，浮层底部叠出
+   纵向动作列请用户选范围；编辑范围选择不是危险操作——中性描边 hover 变 accent */
+.schedule-detail-apply {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 8px;
+  z-index: 2;
+  padding: 12px;
+  background: var(--glass-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-detail);
+}
+
+.schedule-detail-apply-message {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.schedule-detail-apply-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.schedule-detail-apply-action {
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.schedule-detail-apply-action:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.schedule-detail-apply-cancel {
+  margin-top: 2px;
+  padding: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.schedule-detail-apply-cancel:hover {
+  color: var(--text-secondary);
+}
+
+/* 删除按钮：hover 变危险红（点击弹二次确认气泡，见 ConfirmPopover） */
+/* 删除钮（footer 右端带「删除」文字；2026-10-22 曾短暂迁顶栏后回归——破坏性操作
+   远离关闭热区，底部空间宽裕用文字比纯图标更明确警示） */
+.schedule-detail-delete {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.schedule-detail-delete:hover {
+  background: var(--grid-line);
+  color: var(--danger);
+}
+
+/* 重复规则：摘要行 + 内嵌展开面板（radio 频率档 + weekly 的星期几圆钮多选） */
+/* 摘要行：整行按钮（label + 规则文本 + 展开箭头），点击切换面板
+   （2026-11-11 布局对齐批：由独立设置行挪入 time-row 左列，原容器
+   .schedule-detail-repeat-setting 退役） */
+.schedule-detail-repeat-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.schedule-detail-repeat-bar:hover {
+  background: var(--grid-line);
+}
+
+/* 例外行（"仅修改此日程"实体化的单次实体）不支持设置重复规则（后端 422 安全闸），
+   入口只读禁用——Chromium 中 disabled 元素的 :hover 仍会匹配，须显式压回 */
+.schedule-detail-repeat-bar:disabled,
+.schedule-detail-repeat-bar:disabled:hover {
+  cursor: default;
+  background: transparent;
+  opacity: 0.75;
+}
+
+.schedule-detail-repeat-bar-label {
+  color: var(--text-muted);
+}
+
+.schedule-detail-repeat-bar-value {
+  flex: 1;
+  text-align: left;
+  color: var(--accent);
+}
+
+.schedule-detail-repeat-bar-value.muted {
+  color: var(--text-muted);
+}
+
+/* 展开箭头旋转（同 .inbox-todo-chevron 先例） */
+.schedule-detail-repeat-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 0.15s;
+}
+
+.schedule-detail-repeat-chevron.open {
+  transform: rotate(180deg);
+}
+
+/* 频率档面板：细边容器，内含 radio 行（weekly 时后跟星期几圆钮行） */
+.schedule-detail-repeat-panel {
+  margin-top: 6px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.schedule-detail-repeat-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.schedule-detail-repeat-option:hover {
+  background: var(--grid-line);
+}
+
+.schedule-detail-repeat-option.on {
+  color: var(--text-primary);
+}
+
+/* radio 圆点：14px 空心圈，选中时 accent 外圈 + 6px 实心内点 */
+.schedule-detail-repeat-dot {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 50%;
+  position: relative;
+}
+
+.schedule-detail-repeat-option.on .schedule-detail-repeat-dot {
+  border-color: var(--accent);
+}
+
+.schedule-detail-repeat-option.on .schedule-detail-repeat-dot::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: translate(-50%, -50%);
+}
+
+/* 星期几多选圆钮行：margin-left 22px 与频率文案左对齐（圆点 14 + gap 8） */
+.schedule-detail-repeat-weekdays {
+  display: flex;
+  gap: 4px;
+  margin: 2px 0 6px 22px;
+}
+
+.schedule-detail-repeat-weekday {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.schedule-detail-repeat-weekday:hover {
+  background: var(--grid-line);
+}
+
+.schedule-detail-repeat-weekday.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-softer);
+}
+
+/* —— 日程视图（2026-11-06 批 C；2026-11-09 布局重排）：viewedDate 起 14 天按日分组。
+   自适应日卡网格铺满中栏（窄 1 列 / 宽自动多列，与月视图网格语言协调）；今天卡横跨
+   整行作视觉锚；空日轻量化为透明虚线单行条；项目标签所有日卡常显（可压缩让位）。
+   新增区块不动已定稿三视图；日组块走 tint 底不挂 blur（.schedule 为禁挂面，红线清单） —— */
+.agenda-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
+  gap: 10px;
+  align-items: start; /* 卡片自然高度，不随行内最高卡拉伸 */
+  padding: 6px 14px 24px;
+}
+
+.agenda-day {
+  min-width: 0; /* grid 子项防溢出，保住行内标题 ellipsis 链 */
+  background: var(--glass-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.agenda-day.today {
+  grid-column: 1 / -1; /* 横跨整行：视觉锚点，今天日程优先完整展示 */
+  border-color: var(--accent-border);
+}
+
+/* 空日轻量条：信息并入日头单行呈现，去底去分隔线让有日程的日卡成为主角 */
+.agenda-day.empty {
+  background: transparent;
+  border-style: dashed;
+}
+
+.agenda-day.empty .agenda-day-head {
+  border-bottom: none;
+}
+
+.agenda-day-none {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* 日头（2026-11-12 点击对齐批由 div 按钮化）：点击跳该日日视图——条目详情
+   浮层化后"深入这一天"的路径由日头接管；reset 到原 div 观感 + hover 微底 */
+.agenda-day-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px 6px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agenda-day-head:hover {
+  background: var(--glass-track);
+}
+
+.agenda-day.today .agenda-day-date {
+  color: var(--accent-deep);
+  font-weight: 600;
+}
+
+.agenda-day-date {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.agenda-day-weekday {
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.agenda-day-today {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--accent-deep);
+  background: var(--accent-softer);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.agenda-day-mark {
+  font-size: 10.5px;
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.agenda-day-mark.rest {
+  color: var(--green);
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+
+.agenda-day-mark.work {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.agenda-day-lunar {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.agenda-day .week-head-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.agenda-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 2026-11-12 拖拽批：行可拖（跨日改期/拖入日/周网格重排）——grab 示意 */
+.agenda-row:active {
+  cursor: grabbing;
+}
+
+.agenda-row:hover {
+  background: var(--glass-track);
+}
+
+.agenda-row.done {
+  opacity: 0.55;
+}
+
+.agenda-row-time {
+  flex-shrink: 0;
+  min-width: 86px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.agenda-row-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.agenda-row-dot.high {
+  background: var(--danger);
+}
+
+.agenda-row-dot.medium {
+  background: var(--orange);
+}
+
+.agenda-row-dot.low {
+  background: var(--green);
+}
+
+.agenda-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+/* 项目标签：pill 规格复制 .timeline-event-tag 语言（前缀自治不借类名）；所有日卡常显，
+   可压缩（flex-shrink + min-width:0），窄卡上与标题互相让位、各自省略号截断 */
+.agenda-row-project {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--glass-track);
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.agenda-row-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* —— 重复系列范围三问气泡（2026-11-12 拖拽三问批）——————————————————
+   拖动/拉伸重复实例落定后弹于落点（fixed，视口钳位见组件）；视觉语言承
+   .schedule-detail-apply 气泡（玻璃卡底 + 纵向动作钮 + 弱化取消） */
+.series-scope-ask {
+  position: fixed;
+  z-index: 40; /* 压过详情浮层 30 与拖动卡 10 */
+  width: 240px;
+  padding: 12px;
+  background: var(--glass-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-detail);
+}
+
+.series-scope-title {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.series-scope-btn {
+  width: 100%;
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.series-scope-btn + .series-scope-btn {
+  margin-top: 6px;
+}
+
+.series-scope-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.series-scope-btn.solid {
+  border-color: var(--accent-border);
+  color: var(--accent-deep);
+}
+
+.series-scope-btn.solid:hover {
+  background: var(--accent-softer);
+}
+
+.series-scope-cancel {
+  width: 100%;
+  margin-top: 2px;
+  padding: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.series-scope-cancel:hover {
+  color: var(--text-secondary);
+}

@@ -1,0 +1,867 @@
+/* 右栏 · 日程助手（阶段二激活：消息流 + 建议卡 + SSE 对话；组件/类名沿用阶段一）。
+   半透明 tint（栏内无 fixed 后代，但背后是平滑渐变，挂 blur 无增益——毛玻璃红线） */
+.copilot {
+  display: flex;
+  flex-direction: column;
+  background: var(--glass-panel);
+}
+
+/* 头部 */
+.copilot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--footer-line);
+}
+
+.copilot-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.copilot-title-icon {
+  color: var(--accent-deep);
+}
+
+.copilot-title-text {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 折叠按钮：盒尺寸/圆角对齐底部发送按钮（28×28 / 8px），图标 18px 匹配头部高度 */
+.copilot-collapse {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.copilot-collapse:hover {
+  background: var(--grid-line);
+  color: var(--text-secondary);
+}
+
+/* 头部右侧动作区：问号（常用语句）与折叠并排 */
+.copilot-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 问号按钮 + 悬停语句弹层的共同悬停域（弹层 absolute 于本层右对齐） */
+.copilot-hints {
+  position: relative;
+  display: flex;
+}
+
+/* 常用语句弹层：absolute 叶子（无 fixed 后代），直接挂 frost（ConfirmPopover 先例）；
+   ::before 透明桥覆盖按钮→弹层 8px 间隙，hover 移入不闪断。
+   背景不用 --glass-pop（0.78 观感近实色）——局部 0.55 更透，玻璃感明显（用户定，
+   不动全局变量防牵连其他浮层） */
+.copilot-hints-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30; /* 同日程详情浮层档（面板内无更高层） */
+  width: 248px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: var(--glass-blur-pop);
+  box-shadow: var(--glass-rim), var(--shadow-pop);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+html[data-theme="dark"] .copilot-hints-pop {
+  background: rgba(32, 33, 38, 0.55);
+}
+
+.copilot-hints-pop::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  right: 0;
+  left: 0;
+  height: 8px;
+}
+
+.copilot-hints-title {
+  padding: 4px 10px 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.copilot-hints-item {
+  padding: 7px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.copilot-hints-item:hover {
+  background: var(--grid-line);
+  color: var(--text-primary);
+}
+
+/* 消息流：占满主区独立滚动，细滚动条同 .schedule-scroll/.inbox-list 惯例 */
+.copilot-feed {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  padding: 18px;
+  /* Firefox 细滚动条兜底（默认隐藏，悬停浮现） */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.copilot-feed:hover {
+  scrollbar-color: var(--scrim-soft) transparent;
+}
+
+.copilot-feed::-webkit-scrollbar {
+  width: 5px;
+}
+
+.copilot-feed::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.copilot-feed::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.copilot-feed:hover::-webkit-scrollbar-thumb {
+  background: var(--scrim-soft);
+}
+
+.copilot-feed::-webkit-scrollbar-thumb:hover {
+  background: var(--scrim);
+}
+
+/* 气泡：user 右对齐自底色、assistant 左对齐玻璃卡 */
+.copilot-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.copilot-msg.user {
+  align-items: flex-end;
+}
+
+/* 来源渠道徽标（通讯工具轮的消息）：气泡上方小字标签，user/assistant 同构
+ * ——只标来源不改消息内容（统一上下文决策，docs/chat-comm.md） */
+.copilot-source {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 0 2px;
+  user-select: none;
+}
+
+.copilot-bubble {
+  max-width: 86%;
+  padding: 9px 13px;
+  border-radius: 12px;
+  font-size: 13.5px;
+  line-height: 1.65;
+  color: var(--text-active);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.copilot-msg.user .copilot-bubble {
+  /* 与统计问答面板统一的中和区分度：accent 浅底紫字（比灰底明显、比深底
+     柔和）——两面板 user 气泡同款（2026-11-08 统一定稿） */
+  background: var(--accent-softer);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-deep);
+  border-bottom-right-radius: 4px;
+}
+
+.copilot-msg.assistant .copilot-bubble {
+  background: var(--glass-card);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
+  box-shadow: var(--glass-rim);
+}
+
+/* 错误气泡（not_ready / agent_error / 网络失败）：警示 tint */
+.copilot-msg.error .copilot-bubble {
+  background: var(--danger-softer);
+  border-color: var(--danger);
+  color: var(--danger-deep);
+}
+
+/* 打字机流式光标：正文后随 ▍ 闪烁（reply 终帧撤 .streaming 切 md 渲染） */
+.copilot-bubble.streaming::after {
+  content: "▍";
+  margin-left: 1px;
+  color: var(--accent);
+  animation: copilot-blink 1s steps(2) infinite;
+}
+
+@keyframes copilot-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Markdown 气泡（assistant 终态）：解除 pre-wrap 防与块级元素换行双重显示；
+   样式族全部复用 tokens 变量，代码块滚动条走 5px 细条惯例（同 .copilot-feed） */
+.copilot-md {
+  white-space: normal;
+}
+
+.copilot-md > :first-child {
+  margin-top: 0;
+}
+
+.copilot-md > :last-child {
+  margin-bottom: 0;
+}
+
+.copilot-md p {
+  margin: 6px 0;
+}
+
+.copilot-md ul,
+.copilot-md ol {
+  margin: 6px 0;
+  padding-left: 20px;
+}
+
+.copilot-md li {
+  margin: 2px 0;
+}
+
+/* 标题/结论强调：strong 着色便于快速抓重点（与统计问答统一） */
+.copilot-md strong {
+  font-weight: 600;
+  color: var(--accent-deep);
+}
+
+/* GFM 任务列表：去掉项目符号，勾选框留原生样式 */
+.copilot-md li.task-list-item {
+  list-style: none;
+}
+
+.copilot-md h1,
+.copilot-md h2,
+.copilot-md h3,
+.copilot-md h4 {
+  margin: 10px 0 6px;
+  line-height: 1.4;
+}
+
+.copilot-md h1 {
+  font-size: 15px;
+}
+
+.copilot-md h2 {
+  font-size: 14.5px;
+}
+
+.copilot-md h3 {
+  font-size: 14px;
+}
+
+.copilot-md h4 {
+  font-size: 13.5px;
+}
+
+/* 行内代码（代码块内 code 见下一条，不叠底色） */
+.copilot-md code:not(pre code) {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  background: var(--glass-track);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.copilot-md pre {
+  margin: 6px 0;
+  padding: 10px 12px;
+  background: var(--glass-track);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.copilot-md pre:hover {
+  scrollbar-color: var(--scrim-soft) transparent;
+}
+
+.copilot-md pre::-webkit-scrollbar {
+  height: 5px;
+}
+
+.copilot-md pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.copilot-md pre::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.copilot-md pre:hover::-webkit-scrollbar-thumb {
+  background: var(--scrim-soft);
+}
+
+.copilot-md pre code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  background: none;
+  padding: 0;
+}
+
+.copilot-md blockquote {
+  margin: 6px 0;
+  padding-left: 10px;
+  border-left: 3px solid var(--border);
+  color: var(--text-muted);
+}
+
+.copilot-md table {
+  margin: 6px 0;
+  border-collapse: collapse;
+}
+
+.copilot-md th,
+.copilot-md td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  font-size: 12.5px;
+}
+
+.copilot-md a {
+  color: var(--accent);
+}
+
+.copilot-md hr {
+  margin: 8px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.copilot-md img {
+  max-width: 100%;
+}
+
+/* 空态与发送指示 */
+.copilot-empty {
+  margin: auto;
+  padding: 0 12px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.copilot-typing {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* 零激活引导卡 */
+.copilot-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--glass-card);
+  border: 1px solid var(--accent-border);
+  box-shadow: var(--glass-rim);
+}
+
+.copilot-guide-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.copilot-guide-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.copilot-guide-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.copilot-guide-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 建议卡（气泡下结构化卡片） */
+.copilot-proposal {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  align-self: stretch;
+  max-width: 92%;
+  padding: 11px 13px;
+  border-radius: 12px;
+  background: var(--glass-card);
+  border: 1px solid var(--border);
+  box-shadow: var(--glass-rim);
+}
+
+.copilot-proposal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.copilot-proposal-kind {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: var(--accent-deep);
+}
+
+/* 删除确认卡徽标：警示色（不可逆动作） */
+.copilot-proposal-kind.danger {
+  color: var(--danger-deep);
+}
+
+.copilot-proposal-headline {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-strong);
+}
+
+.copilot-proposal-items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.copilot-proposal-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+}
+
+.copilot-proposal-item-title {
+  color: var(--text-body);
+  word-break: break-word;
+}
+
+.copilot-proposal-item-meta {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* 邀请卡补记录入（2026-11-10 批 3）：玻璃输入风格同浮层纪要 textarea；
+   wrap + 右下角字数计数同 .schedule-detail-minutes-wrap / _count 先例 */
+.copilot-invite-wrap {
+  position: relative;
+}
+
+.copilot-invite-count {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  padding: 0 4px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  background: var(--glass-pop);
+  pointer-events: none;
+}
+
+.copilot-invite-input {
+  width: 100%;
+  min-height: 72px;
+  max-height: 180px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  outline: none;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-body);
+  box-sizing: border-box;
+  /* 垂直间距由 .copilot-proposal-preflight 容器 gap 统一提供（间距统一批） */
+}
+
+.copilot-invite-input:focus {
+  border-color: var(--accent-border);
+}
+
+.copilot-invite-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+/* 溯源切换（卡头右侧；有 evidence/source_ref 的卡才渲染）与源链列表（M2-④） */
+.copilot-proposal-trace-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: transform 0.15s ease, color 0.15s ease;
+}
+
+.copilot-proposal-trace-toggle:hover {
+  color: var(--text-body);
+}
+
+.copilot-proposal-trace-toggle.open {
+  transform: rotate(180deg);
+}
+
+.copilot-proposal-trace {
+  margin: 0;
+  padding: 7px 10px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-radius: 8px;
+  background: var(--scrim-soft);
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.copilot-proposal-trace-row {
+  word-break: break-word;
+}
+
+/* 会前准备多会议分组（2026-10-20）：组间间距由 .copilot-proposal-preflight
+   容器 gap 统一提供（间距统一批，原 margin-top 叠加移除） */
+
+/* 卡内次级说明行（2026-10-20 增）：prep 各会议准备重点 / hardtask 建议与采纳提示 */
+/* 信息卡容器（minutes_invite / preflight / prep / brief 共用；2026-11-12 间距
+   统一批）：headline / 说明行 / 条目清单 / 内嵌按钮行统一 9px 垂直间距——与卡根
+   .copilot-proposal 的 gap 同口径（此前容器无布局，minutes_invite 的说明文字与
+   「补记纪要」按钮行紧贴零间距） */
+.copilot-proposal-preflight {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.copilot-proposal-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* 建议卡按钮族（引导卡复用） */
+.copilot-prop-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 已决徽标 */
+.copilot-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--badge-bg);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.copilot-badge.accepted,
+.copilot-badge.modified {
+  background: var(--lunch-bg);
+  color: var(--lunch-text);
+}
+
+.copilot-badge.rejected {
+  background: var(--danger-softer);
+  color: var(--danger-deep);
+}
+
+/* 拒绝理由行 */
+.copilot-reject-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.copilot-reject-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.copilot-reject-input:focus {
+  border-color: var(--accent-border);
+}
+
+/* 底部输入舱 */
+.copilot-footer {
+  position: relative; /* 指令联想弹层的定位锚 */
+  flex-shrink: 0;
+  padding: 14px 18px 18px;
+  background: var(--glass-panel);
+}
+
+/* 指令联想弹层（2026-10-21）：输入 / 前缀过滤，向上弹；frost 毛玻璃（弹层红线） */
+.copilot-cmd-pop {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 14px;
+  right: 14px;
+  z-index: 30;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: var(--glass-blur-pop);
+  box-shadow: var(--glass-rim), var(--shadow-pop);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+html[data-theme="dark"] .copilot-cmd-pop {
+  background: rgba(32, 33, 38, 0.55);
+}
+
+.copilot-cmd-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12.5px;
+}
+
+.copilot-cmd-item.active {
+  background: var(--grid-line);
+}
+
+.copilot-cmd-name {
+  font-weight: 600;
+  color: var(--accent-deep);
+}
+
+.copilot-cmd-desc {
+  color: var(--text-muted);
+}
+
+.copilot-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 6px 0 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--glass-input);
+}
+
+.copilot-input:focus-within {
+  border-color: var(--accent-border);
+}
+
+.copilot-input-text {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.copilot-input-text::placeholder {
+  color: var(--text-muted);
+}
+
+.copilot-send {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  cursor: pointer;
+}
+
+.copilot-send:disabled {
+  background: var(--badge-bg);
+  cursor: default;
+}
+
+.copilot-send:not(:disabled):hover {
+  background: var(--accent-deep);
+}
+
+.copilot-send-icon {
+  color: #ffffff;
+}
+
+.copilot-send:disabled .copilot-send-icon {
+  color: var(--text-muted);
+}
+
+/* —— 草案逐条编辑区（2026-10-25「修改」真编辑入口；2026-10-26 收件箱编辑区
+   UI 对齐：白底面板 + WhenPicker 日期药丸 + 耗时/优先级药丸行，控件复用
+   InboxPanel.css 类族单源）———————————————————————————————— */
+
+/* 白底面板（2026-10-26 用户修订：旧 scrim-soft 灰底不好看）——--surface 浅色
+   主题纯白 / 暗色主题面板色跟随，细边框与玻璃卡底区分 */
+.copilot-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.copilot-edit-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 多条目分隔（2026-10-26 用户反馈：条目堆在一起难区分）——相邻条目间细分隔
+   线 + 拉开纵向留白；线色用 --grid-line（同收件箱列表行分隔惯例，比面板外框
+   --border 弱一档不混淆层级），单条目无线 */
+.copilot-edit-row + .copilot-edit-row {
+  margin-top: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--grid-line);
+}
+
+.copilot-edit-title {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.copilot-edit-title:focus {
+  border-color: var(--accent-border);
+}
+
+/* 标题行组合（2026-11-11）：标题输入 + 条目删除/恢复钮——编辑态逐条删除
+   「还不想排/没想好」的草案条目，标删行灰化划线可恢复再确认 */
+.copilot-edit-titleline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.copilot-edit-titleline .copilot-edit-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.copilot-edit-del {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.copilot-edit-del:hover {
+  color: var(--danger);
+  background: var(--grid-line);
+}
+
+.copilot-edit-row.removed {
+  opacity: 0.45;
+}
+
+.copilot-edit-row.removed .copilot-edit-title {
+  text-decoration: line-through;
+}
+
+/* 耗时 + 优先级药丸双列（同收件箱 attr-row 的 Grid 1fr 1fr 轨道模板）；药丸
+   组内控件全部复用 InboxPanel.css 的 inbox-pill-group / inbox-todo-duration /
+   inbox-todo-prio-item 类族（全局加载单源，勿在此重写） */
+.copilot-edit-attr {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.copilot-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

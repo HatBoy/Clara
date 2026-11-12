@@ -1,0 +1,25 @@
+<!-- Clara 页面侧品牌图标（favicon + 侧栏 28px 迷你 logo）· 与 brand/clara-icon.svg 同源（C 时钟），改设计后两处同步 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- 底 tile：青 → 靛 → 紫 三段 135° 对角渐变（白字形落在中段靛色，对比最强） -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38BDF8"/>
+      <stop offset="0.5" stop-color="#6366F1"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 底：圆角方形 tile（rx=224 ≈ 22% 圆角，四角透明） -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#bg)"/>
+
+  <!-- C 时间环：270° 大弧，θ45° 顺时针经 90/180/270 至 θ315°；断口居右成字母 C 口 -->
+  <path d="M 688.8 688.8 A 250 250 0 1 1 688.8 335.2" fill="none"
+        stroke="#FFFFFF" stroke-width="110" stroke-linecap="round"/>
+
+  <!-- 指针：自圆心朝 θ-60°（钟面 2 点位），尖端含圆头止于环内缘留 17px 气口 -->
+  <path d="M 512 512 L 587 382.1" fill="none"
+        stroke="#FFFFFF" stroke-width="56" stroke-linecap="round"/>
+
+  <!-- 中心轴点：锚定指针尾端 -->
+  <circle cx="512" cy="512" r="46" fill="#FFFFFF"/>
+</svg>

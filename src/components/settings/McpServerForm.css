@@ -1,0 +1,300 @@
+/* MCP 服务表单（手动添加 McpServerForm / 精选模板 McpTemplateForm 共用；
+   尺寸取 ModelSettings.css 的 model-* 同款值）。容器 = DataSettings 的
+   FormModal 配置模态（2026-09-18 由内联展开改模态，内距由模态 body 提供）。
+   全局骨架类（.data-btn / .set-toggle）在 DataSettings.css / SettingsControls.css，
+   本文件只管 mcp- / kv- 前缀的增量样式 */
+
+/* —— 表单骨架（模态内容列） —— */
+
+.mcp-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.mcp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.mcp-field-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.mcp-field-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 文本输入：规格对齐 .model-input（玻璃内嵌底） */
+.mcp-input {
+  height: 30px;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.mcp-input::placeholder {
+  color: var(--text-muted);
+}
+
+.mcp-input:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+
+.mcp-input.mono,
+.mcp-adv-preview.mono {
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+/* stdio 参数 textarea：每行一个参数；高度按典型三行参数自适应。
+   JSON 配置 textarea（2026-09-19 增）复用同款规格，仅加高放下整段配置 */
+.mcp-args-textarea,
+.mcp-json-textarea {
+  min-height: 76px;
+  padding: 7px 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  resize: vertical;
+}
+
+.mcp-json-textarea {
+  min-height: 180px;
+}
+
+.mcp-args-textarea::placeholder,
+.mcp-json-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.mcp-args-textarea:focus,
+.mcp-json-textarea:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+
+/* 密钥行：眼睛钮内嵌输入框右侧（规格同 .model-key-wrap/.model-key-eye） */
+.mcp-key-wrap {
+  position: relative;
+}
+
+.mcp-key-wrap .mcp-input {
+  width: 100%;
+  padding-right: 32px;
+}
+
+.mcp-key-eye {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.mcp-key-eye:hover {
+  color: var(--text-secondary);
+}
+
+/* 启用开关行（编辑表单 / 本地文件夹面板共用）：label + 开关 + hint 横排 */
+.mcp-form-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* env 值显隐切换（链接式小按钮，防凭据旁观） */
+.mcp-eye-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.mcp-eye-btn:hover {
+  color: var(--text-secondary);
+}
+
+/* —— 键值行编辑器（env / headers） —— */
+
+.kv-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.kv-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kv-row .mcp-input {
+  flex: 1;
+  min-width: 0; /* 允许窄卡内压缩 */
+}
+
+/* 键列收窄到 35%：值通常更长（token/URL） */
+.kv-row .kv-key {
+  flex: 0 0 35%;
+}
+
+.kv-del {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.kv-del:hover {
+  background: var(--grid-line);
+  color: var(--danger);
+}
+
+.kv-add {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--accent-deep);
+  cursor: pointer;
+}
+
+.kv-add:hover {
+  text-decoration: underline;
+}
+
+/* —— 「高级」折叠与只读配置预览（模板表单） —— */
+
+.mcp-adv-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.mcp-adv-head:hover {
+  color: var(--text-primary);
+}
+
+.mcp-adv-chevron {
+  transition: transform 0.15s;
+}
+
+.mcp-adv-chevron.open {
+  transform: rotate(180deg);
+}
+
+.mcp-adv-preview {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all; /* 长 URL / token 不撑破卡片 */
+  overflow-x: auto;
+}
+
+/* —— 错误提示与底部按钮行（规格同 .model-form-error / .model-form-footer） —— */
+
+.mcp-form-error {
+  font-size: 12px;
+  color: var(--orange);
+}
+
+.mcp-form-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.mcp-form-test {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 表单按钮行（四个表单共用：MCP 服务 / MCP 模板 / 自定义命令 / 本地文件夹）：
+   流程钮（取消/保存）靠右对齐；工具钮（自定义命令「测试」）加 .push-left 推到
+   左缘——左工具右流程（2026-10-16 定稿） */
+.mcp-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.mcp-form-actions .push-left {
+  margin-right: auto;
+}
+
+/* 表单内联测试结果：ok 绿 / bad 橙 + 省略号截断（错误文案可能较长） */
+.mcp-test-result {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-test-result.ok {
+  color: var(--green);
+}
+
+.mcp-test-result.bad {
+  color: var(--orange);
+}

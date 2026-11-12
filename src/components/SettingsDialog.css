@@ -1,0 +1,166 @@
+/* "设置"悬浮页：半透明遮罩 + 居中浮层（左菜单灰底 + 右内容白底）；
+   毛玻璃改版：遮罩加 backdrop frost（frost + scrim 双层 = 磨砂模态语言）——
+   遮罩 fixed inset:0 与视口重合，成为 fixed 后代（设置下拉）的包含块后坐标换算不变；
+   浮层本体同为真磨砂（::before 垫层 frost，见下） */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50; /* 模态层级最高：压过确认气泡 40 与日程详情浮层 30 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+  backdrop-filter: var(--glass-blur-modal);
+}
+
+/* 浮层盒：规格对齐浮层族（毛玻璃改版：真磨砂面板——本体降为 panel 档 tint + ::before 垫层挂
+   backdrop-filter；dialog 自身不滚动（.settings-body 才内滚），垫层恒完整覆盖可视区，无
+   schedule-detail 垫层的内滚退化）。本体不直接挂 backdrop-filter——盒内有 fixed 设置下拉弹层
+   （.set-select-pop 视口坐标，filter 会改其包含块致坐标漂移）；垫层是独立盒子无后代，弹层
+   仍以视口为基准。1160×760 占主窗口约八成（2026-09-20 用户反馈太小由 960×640 调大），
+   窗口缩小时各留 64px 边距兜底；overflow 裁剪让左栏灰底贴合圆角 */
+.settings-dialog {
+  position: relative; /* 垫层定位基准 */
+  isolation: isolate; /* 建层叠上下文：垫层 z-index:-1 落在本体底色之上、内容之下 */
+  display: flex;
+  width: min(1160px, calc(100vw - 64px));
+  height: min(760px, calc(100vh - 64px));
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--glass-panel);
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+}
+
+/* frost 垫层：把透过本体 tint 的遮罩/主界面光斑糊成无纹理磨砂面 */
+.settings-dialog::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  backdrop-filter: var(--glass-blur-modal);
+  pointer-events: none;
+}
+
+/* 左菜单：灰轨玻璃底 + 右分隔线，宽度对齐主侧栏 200px——复刻"灰侧栏 + 白内容"布局语言 */
+.settings-menu {
+  display: flex;
+  flex-direction: column;
+  width: 200px;
+  flex-shrink: 0;
+  padding: 16px 14px;
+  background: var(--glass-rail);
+  border-right: 1px solid var(--border);
+}
+
+/* 页面标题（16px/600/主色——分组小字规格压不住页面标题；原对齐侧栏品牌名，品牌盒已撤） */
+.settings-menu-title {
+  padding: 0 10px 10px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 菜单项：三态规格复刻 .sidebar-nav-item（基线 border transparent，active 换色不跳动） */
+.settings-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 13.5px;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-menu-item:hover:not(.active) {
+  background: var(--grid-line);
+}
+
+.settings-menu-item.active {
+  background: var(--glass-card);
+  border-color: var(--border);
+}
+
+.settings-menu-icon {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.settings-menu-item.active .settings-menu-icon {
+  color: var(--text-active);
+}
+
+.settings-menu-label {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+}
+
+.settings-menu-item.active .settings-menu-label {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* 右内容区：纵向布局承载滚动的内容流（通用偏好）或空占位，右上角关闭钮悬浮 */
+.settings-content {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 关闭钮（规格同 .schedule-detail-close：22×22 圆角 6，hover 灰底） */
+.settings-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.settings-close:hover {
+  background: var(--grid-line);
+  color: var(--text-secondary);
+}
+
+/* 空占位：当前分区名 + 开发中提示（父级改纵向布局后自居中） */
+.settings-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 6px;
+}
+
+.settings-empty-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-empty-hint {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}

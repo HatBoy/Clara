@@ -1,0 +1,1177 @@
+/* 统计报告页（中栏）：自有骨架 .report-page / .report-page-head / .report-body
+   （滚动），增量样式一律 .report-* 前缀；图表容器样式（.multi-line-* /
+   .health-radar / .habit-heatmap-*）随组件收编于此。背景走画布档 tint
+   （--glass-canvas）——统计页在视觉上接替中栏 */
+.report-page {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--glass-canvas);
+}
+
+.report-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 15px 24px 11px;
+}
+
+.report-head-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.report-page-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 范围切换：分段小钮（复刻 .schedule-segmented 视觉，尺寸缩小） */
+.report-range {
+  display: flex;
+  gap: 2px;
+  background: var(--glass-track);
+  border-radius: 8px;
+  padding: 2px;
+}
+
+.report-range-btn {
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  padding: 3px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.report-range-btn.active {
+  background: var(--surface);
+  color: var(--accent-deep);
+  font-weight: 500;
+}
+
+/* 页头「问助手」纯图标钮：打开/收起右侧统计对话面板（active = 面板已开），
+   尺寸规格同日程页头部图标钮 */
+.report-ask-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.report-ask-toggle:hover,
+.report-ask-toggle.active {
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+}
+
+/* 滚动主体：细滚动条同 .schedule-scroll 全局惯例（5px、默认隐藏悬停浮现） */
+.report-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+  /* Firefox 细滚动条兜底（默认隐藏，悬停浮现） */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.report-body:hover {
+  scrollbar-color: var(--scrim-soft) transparent;
+}
+
+/* Chromium/WebView2：5px 细滚动条，轨道透明，thumb 默认隐藏、悬停浮现 */
+.report-body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.report-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.report-body::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.report-body:hover::-webkit-scrollbar-thumb {
+  background: var(--scrim-soft);
+}
+
+.report-body::-webkit-scrollbar-thumb:hover {
+  background: var(--scrim);
+}
+
+/* 内容列：限宽居中（超宽屏图表可读性），flex 纵列排卡 */
+.report-body-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 4px 28px 36px;
+}
+
+.report-loading {
+  padding: 48px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  animation: reportBreathe 1.6s ease-in-out infinite;
+}
+
+@keyframes reportBreathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* 组标：分区节标题（时间去向/执行与协作/周期复盘）——accent 色点 + 标签 +
+   右侧发丝线（divider-with-label 节拍，替代孤零零一行灰字；字号对齐
+   .settings-group-title 12.5px） */
+.report-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.5px;
+  padding: 14px 2px 0;
+}
+
+.report-group::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+
+.report-group::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* —— ① AI 洞察卡：扁平化（去渐变）+ accent 顶条 hero 卡 —— */
+.report-insight {
+  background: var(--glass-card);
+  border-color: var(--accent-border);
+  border-top: 2px solid var(--accent);
+}
+
+.report-insight-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 范围标签与刷新钮推到右端一组 */
+.report-insight-range {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+/* 手动重新生成（跳过后端缓存） */
+.report-insight-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.report-insight-refresh:hover:not(:disabled) {
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+}
+
+.report-insight-refresh:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.report-insight-refresh .spinning {
+  animation: insightSpin 0.9s linear infinite;
+}
+
+@keyframes insightSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.report-insight-loading {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 12px 0;
+}
+
+.report-insight-content {
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--text-primary);
+}
+
+.report-insight-content p {
+  margin: 4px 0;
+}
+
+.report-insight-content strong {
+  font-weight: 600;
+  color: var(--accent-deep);
+}
+
+.report-insight-content ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.report-insight-content li {
+  margin: 2px 0;
+}
+
+/* 【X】段首经 mdEmphasis 转 ## 小节头：accent 竖条（与报告正文 h2 同语言） */
+.report-insight-content h2 {
+  font-size: 12.5px;
+  font-weight: 600;
+  margin: 10px 0 4px;
+  padding-left: 8px;
+  border-left: 3px solid var(--accent);
+  color: var(--text-primary);
+}
+
+.report-insight-content h2:first-child {
+  margin-top: 0;
+}
+
+/* 列表 marker 与优先级 chip（[高优] 类标签经 mdEmphasis 转行内 code 上色） */
+.report-insight-content li::marker,
+.report-md li::marker {
+  color: var(--accent);
+}
+
+.report-insight-content code,
+.report-md code {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--glass-track);
+}
+
+.report-insight-content code.high,
+.report-md code.high {
+  color: var(--danger);
+  background: var(--danger-softer);
+}
+
+.report-insight-content code.mid,
+.report-md code.mid {
+  color: var(--orange);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.report-insight-content code.low,
+.report-md code.low {
+  color: var(--green);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+/* —— ② 总览带：雷达（定宽）+ KPI 网格（自适应）；窄窗雷达收顶 —— */
+.report-overview-band {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) 1fr;
+  gap: 16px;
+  align-items: stretch;
+}
+
+@media (max-width: 860px) {
+  .report-overview-band {
+    grid-template-columns: 1fr;
+  }
+}
+
+.report-radar-card {
+  align-items: center;
+}
+
+/* KPI 网格：auto-fit 自适应（窄窗两行整齐换行，不设固定列） */
+.report-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  align-content: stretch;
+}
+
+/* KPI 瓷砖：左对齐大数字 + 下方灰标签（现代读法，替代居中小瓷砖） */
+.report-kpi {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px 14px;
+  background: var(--glass-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--glass-rim);
+  text-align: left;
+}
+
+/* KPI 头部（tooltip 帮助图标） */
+.report-kpi-head {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.report-kpi-help {
+  color: var(--text-muted);
+  opacity: 0.5;
+  cursor: help;
+  transition: opacity 0.15s ease;
+}
+
+.report-kpi-help:hover {
+  opacity: 1;
+}
+
+.report-kpi-value-row {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.report-kpi-value {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  animation: countUp 0.6s ease-out;
+}
+
+@keyframes countUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* 环比 soft 色 pill（涨绿/跌红；rgba 软底先例同 habit warn chip） */
+.report-kpi-delta {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-kpi-delta.up {
+  color: var(--green);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.report-kpi-delta.down {
+  color: var(--danger);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.report-kpi-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 历史基线对比箭头（个人平均） */
+.report-compare {
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 2px;
+}
+
+.report-compare.good {
+  color: var(--green);
+}
+
+.report-compare.bad {
+  color: var(--orange);
+}
+
+/* 积压格下钻（button 复用 tile 视觉）：字体继承 + hover 边框提示可点 */
+.report-kpi.clickable {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.report-kpi.clickable:hover {
+  border-color: var(--accent-border);
+}
+
+/* —— 通用卡片 / 网格 —— */
+.report-grid-even {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+/* 趋势行：每日趋势折线（左大）+ 习惯分析热力图（右窄）同排——两张时间分布
+   图互补；两卡等高（stretch），趋势图 flex:1 拉满卡片高度（与右列等高无
+   卡内空白）；窄屏纵排 */
+.report-trend-row {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+@media (max-width: 1000px) {
+  .report-trend-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.report-trend-row > section:first-child .multi-line-trend {
+  flex: 1;
+  min-height: 264px; /* 容器高 − 图例预留后 canvas ≥ 220 */
+  justify-content: space-between;
+}
+
+.report-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--glass-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  box-shadow: var(--glass-rim);
+}
+
+.report-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* 数据卡标题图标（灰阶；AI 卡走 badge） */
+.report-title-ico {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* AI 能力卡头徽标：accent 软底方徽（洞察/报告两卡，一眼可辨 AI 产出）——
+   同 .model-card-icon 方徽语言（缩小规格） */
+.report-card-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 8px;
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+  flex-shrink: 0;
+}
+
+.report-empty {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  opacity: 0.8;
+  text-align: center;
+  padding: 4px 0;
+}
+
+/* stat list：label 左灰 / value 右重（tabular 对齐）——「改期 …… 12 次」式两列读法 */
+.report-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.report-kv-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  line-height: 1.6;
+}
+
+.report-kv-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.report-kv-val {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* —— 习惯分析卡（趋势行右列）：洞察 chips 横排在上 + 热力图在下 —— */
+.report-habits-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.report-habit-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.report-habit-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-secondary);
+  background: var(--glass-track);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 拖延类洞察警示色（与 accent chip 区分） */
+.report-habit-chip.warn {
+  color: var(--orange);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+/* —— AI 报告区 —— */
+.report-ai-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.report-ai-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* 生成按钮：描边小钮（低频动作——周日晚自动生成，不占主视觉） */
+.report-gen-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--accent-deep);
+  cursor: pointer;
+}
+
+.report-gen-btn:hover:not(:disabled) {
+  background: var(--accent-softer);
+}
+
+.report-gen-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 最新一期前置：头行（徽标 + 区间 + 生成时间 + 操作钮）+ 全文正文 */
+.report-latest {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.report-latest-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* 历史留档折叠块（默认收起） */
+.report-history-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.report-history-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.report-history-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.report-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.report-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.15s ease;
+}
+
+.report-item:hover {
+  border-color: var(--accent-border);
+}
+
+/* 周期类型徽标（周报/月报） */
+.report-item-type {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--accent-deep);
+  background: var(--accent-softer);
+  border-radius: 5px;
+  padding: 4px 7px;
+}
+
+.report-item-type.month {
+  color: var(--orange);
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.report-item-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* 留档条目头：div 容器（图标钮不能嵌套 button）——内层 toggle 钮承载折叠与
+   hover，右侧复制/导出图标钮 + 导出结果提示 */
+.report-item-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--glass-track);
+  padding: 3px 5px 3px 2px;
+}
+
+.report-item-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.report-item-toggle:hover {
+  background: var(--glass-input);
+}
+
+.report-icon-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.report-icon-btn:hover {
+  background: var(--glass-input);
+  color: var(--text-primary);
+}
+
+.report-item-hint {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--green);
+}
+
+.report-item-hint.bad {
+  color: var(--danger);
+}
+
+.report-item-meta {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.report-item-chev {
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.report-item-chev.open {
+  transform: rotate(180deg);
+}
+
+/* 报告正文 Markdown：阅读排版（最新一期全文 + 历史展开共用） */
+.report-md {
+  padding: 2px 2px 4px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: var(--text-primary);
+}
+
+/* 首行【总评】经 mdEmphasis 转 blockquote：accent 粗线导读引言块 */
+.report-md blockquote {
+  margin: 0 0 8px;
+  padding: 9px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background: var(--accent-softer);
+}
+
+.report-md blockquote p {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.7;
+  color: var(--text-primary);
+}
+
+/* 分节标题：左侧 accent 竖条节拍（## 概述/完成情况…与洞察【X】段头同语言） */
+.report-md h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 12px 0 4px;
+  padding-left: 8px;
+  border-left: 3px solid var(--accent);
+  color: var(--text-primary);
+}
+
+.report-md h2:first-child {
+  margin-top: 0;
+}
+
+/* 历史条目展开区：与条头分隔线划界 + 浅底 */
+.report-item .report-md {
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--glass-input);
+}
+
+.report-md p {
+  margin: 4px 0;
+}
+
+.report-md ul,
+.report-md ol {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.report-md li {
+  margin: 2px 0;
+}
+
+.report-md strong {
+  font-weight: 600;
+}
+
+/* —— 健康度总分趋势（雷达卡底部 mini 折线）—— */
+.report-health-trend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--border);
+}
+
+.report-health-trend-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.report-health-trend svg {
+  display: block;
+  flex: 1;
+  min-width: 0;
+}
+
+.report-health-trend-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+/* 统计卡脚注（口径说明——时间花费的"按计划时长"诚实标注） */
+.report-card-footnote {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* —— 建议打卡清单（报告正文上方）：完成/放弃回流 payload，下期对照点评 —— */
+.report-advice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--glass-track);
+}
+
+/* 历史条目展开区内的打卡清单贴着浅底正文（去掉自身描边底、靠分隔线划界） */
+.report-item .report-advice {
+  margin: 0;
+  padding: 10px 14px;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--glass-input);
+}
+
+.report-advice-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.report-advice-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+}
+
+.report-advice-text {
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.report-advice-text.done {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.report-advice-text em {
+  font-style: normal;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.report-advice-item.completed em {
+  color: var(--green);
+}
+
+.report-advice-item.dropped .report-advice-text {
+  color: var(--text-muted);
+}
+
+.report-advice-item.dropped em {
+  color: var(--danger);
+}
+
+.report-advice-ops {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.report-advice-ops button {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.report-advice-ops button:hover:not(:disabled) {
+  color: var(--text-secondary);
+  border-color: var(--accent-border);
+}
+
+.report-advice-ops button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 点亮态：完成 = accent 实底；放弃 = danger 描边 */
+.report-advice-ops button.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.report-advice-ops button.on.danger {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* —— 图表容器：多维度折线 —— */
+.multi-line-trend {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.multi-line-trend canvas {
+  display: block;
+  cursor: crosshair;
+}
+
+.multi-line-tooltip {
+  position: absolute;
+  background: var(--glass-pop);
+  backdrop-filter: var(--glass-blur-pop);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 11px;
+  pointer-events: none;
+  transform: translate(-50%, -100%) translateY(-8px);
+  z-index: 10;
+  box-shadow: var(--shadow-pop);
+}
+
+.multi-line-tooltip-date {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  text-align: center;
+}
+
+.multi-line-tooltip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  margin: 2px 0;
+}
+
+.multi-line-tooltip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.multi-line-tooltip-dot.c1 {
+  background: var(--chart-1);
+}
+
+.multi-line-tooltip-dot.c2 {
+  background: var(--chart-2);
+}
+
+.multi-line-tooltip-dot.c3 {
+  background: var(--chart-3);
+}
+
+.multi-line-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.multi-line-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.multi-line-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.multi-line-legend-dot.c1 {
+  background: var(--chart-1);
+}
+
+.multi-line-legend-dot.c2 {
+  background: var(--chart-2);
+}
+
+.multi-line-legend-dot.c3 {
+  background: var(--chart-3);
+}
+
+/* —— 图表容器：健康度雷达 —— */
+.health-radar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.health-radar canvas {
+  display: block;
+}
+
+.health-radar-score {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.health-radar-score-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.health-radar-score-value {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--accent-deep);
+  line-height: 1;
+}
+
+/* —— 图表容器：习惯热力图 —— */
+.habit-heatmap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.habit-heatmap canvas {
+  display: block;
+  cursor: crosshair;
+}
+
+.habit-heatmap-tip {
+  position: absolute;
+  background: var(--glass-pop);
+  backdrop-filter: var(--glass-blur-pop);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 9px;
+  font-size: 11px;
+  color: var(--text-primary);
+  pointer-events: none;
+  transform: translate(-50%, -100%) translateY(-6px);
+  z-index: 10;
+  box-shadow: var(--shadow-pop);
+  white-space: nowrap;
+}
+
+.habit-heatmap-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.habit-heatmap-legend-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* 图例行前缀说明（替代卡内小标题，减少一层文字） */
+.habit-heatmap-legend-label.lead {
+  margin-right: 8px;
+  color: var(--text-secondary);
+}
+
+.habit-heatmap-legend-bar {
+  width: 80px;
+  height: 8px;
+  border-radius: 4px;
+}
+
+.habit-heatmap-legend-bar.done {
+  background: linear-gradient(to right, var(--accent-softer), var(--accent));
+}
+
+.habit-heatmap-legend-bar.defer {
+  background: linear-gradient(to right, var(--danger-softer), var(--danger));
+}

@@ -1,0 +1,68 @@
+/* "关于我们"页专属：骨架（.settings-* 族）走 GeneralSettings.css，本文件只补
+   品牌抬头与两行值的少量样式。 */
+.about-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 2px 2px;
+}
+
+/* 与应用图标同源矢量（侧栏品牌盒 2026-11-05 撤除后，这里成为主窗口内品牌展示位） */
+.about-logo {
+  width: 44px;
+  height: 44px;
+}
+
+.about-name {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--text-primary);
+}
+
+/* 版本号值：行值区右对齐，字重与行名同档偏重 */
+.about-value {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* 开源地址：纯文字链接（无边框方框，用户拍板 2026-11-06）——accent 色 +
+   悬停下划线；URL 长串 nowrap 省略 */
+.about-link {
+  max-width: 260px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--accent-deep);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.about-link:hover {
+  text-decoration: underline;
+}
+
+/* 数据备份行（批 A）：control 元素多（双钮 + 结果文案 + 确认/取消链），横排会
+   挤爆行宽——竖排两段：按钮组一行（.about-backup-actions）、结果文案一行
+   （右对齐），hint 放宽窄栏 150px 截断（导出路径长文案需要 ~300px 换行空间） */
+.about-backup-row .settings-row-control {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.about-backup-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.about-backup-row .settings-action-hint {
+  max-width: 300px;
+  line-height: 1.5;
+}
+

@@ -1,0 +1,258 @@
+/* "通用偏好"页面：纵向滚动内容流（页头 + 四组卡片九行）；行结构 = 左信息右控件 */
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 22px 28px 32px;
+  /* 细滚动条（规格同 .schedule-scroll/.inbox-list 惯例）：Firefox 兜底默认隐藏悬停浮现 */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+.settings-body:hover {
+  scrollbar-color: var(--scrim-soft) transparent;
+}
+
+/* Chromium/WebView2：5px 细滚动条，轨道透明，thumb 默认隐藏、悬停浮现 */
+.settings-body::-webkit-scrollbar {
+  width: 5px;
+}
+
+.settings-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.settings-body::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.settings-body:hover::-webkit-scrollbar-thumb {
+  background: var(--scrim-soft);
+}
+
+.settings-body::-webkit-scrollbar-thumb:hover {
+  background: var(--scrim);
+}
+
+/* 页头：标题 + 副标题 + 底部分隔线（右侧留白给悬浮的 X 钮） */
+.settings-page-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 32px 16px 1px;
+  border-bottom: 1px solid var(--grid-line);
+}
+
+.settings-page-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.settings-page-sub {
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* 分组：组标题 + 卡片 */
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-group-title {
+  padding-left: 2px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+/* 毛玻璃改版：卡内含 fixed 下拉弹层（.set-select-pop 视口坐标）——不挂 backdrop-filter */
+.settings-card {
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  background: var(--glass-card);
+  box-shadow: var(--glass-rim);
+}
+
+/* 行：左名称+说明 / 右控件；行间细分隔线 */
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 13px 16px;
+}
+
+.settings-row + .settings-row {
+  border-top: 1px solid var(--grid-line);
+}
+
+.settings-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-row-name {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.settings-row-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.settings-row-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* 午休关闭态：时间对整体弱化并禁交互（开关本身在外层不受影响） */
+.set-lunch-group.off {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+/* 服务端口输入框：复刻 .set-select-trigger 盒子（surface 底 / --border 边框 /
+   圆角 8 / 高 28 / 12.5px），定宽 90 + 居中等宽数字；禁用态（dev 固定 8000）半透明 */
+.set-port-input {
+  width: 90px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.set-port-input:hover:not(:disabled) {
+  background: var(--glass-track);
+}
+
+.set-port-input:focus {
+  outline: none;
+  border-color: var(--accent-border);
+}
+
+.set-port-input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 设置卡内通用小动作按钮（先例=智能体页"立即采集"；视觉对齐 model-btn ghost-accent
+   小一号）与动作行内结果文案（ok 绿 / bad 橙，右对齐窄栏截断） */
+.settings-action-btn {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--accent-deep);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.settings-action-btn:hover {
+  background: var(--accent-softer);
+}
+
+.settings-action-hint {
+  max-width: 150px;
+  font-size: 11.5px;
+  text-align: right;
+  word-break: break-word;
+  color: var(--text-muted);
+}
+
+.settings-action-hint.ok {
+  color: var(--green);
+}
+
+.settings-action-hint.bad {
+  color: var(--orange);
+}
+
+/* —— 个性化页：自定义哲学编辑区（行无右控件；textarea 占卡片宽，仅底部留白）—— */
+.personalize-custom-row {
+  align-items: flex-start;
+}
+
+.personalize-custom-editor {
+  padding: 0 16px 14px;
+}
+
+/* —— 个性化页：管理哲学卡片网格（一行两列；卡头=名称+开关，锁定 = 与已选冲突置灰）—— */
+.personalize-philo-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  /* 顶部留白对齐 settings-row 的 13px 节奏，不贴卡片容器顶缘 */
+  padding: 13px 16px 16px;
+}
+
+.personalize-philo-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--glass-input);
+  transition: border-color 0.15s;
+}
+
+.personalize-philo-card.on {
+  border-color: var(--accent);
+}
+
+.personalize-philo-card.locked {
+  opacity: 0.45;
+}
+
+.philo-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.philo-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 0;
+}
+
+.philo-desc {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.personalize-philo-hint {
+  margin: 0 16px 14px;
+  font-size: 11.5px;
+  color: var(--orange);
+}

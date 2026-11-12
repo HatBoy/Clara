@@ -1,0 +1,123 @@
+/* 删除二次确认气泡（ConfirmPopover）：气泡体 fixed 定位相对视口，坐标由组件内联
+   style 给出（top 弹时带 translateY(-100%) 底对齐，故入场动画只用 opacity 防冲突）。
+   视觉规格对齐日程详情浮层一族（毛玻璃改版：玻璃底 + frost + --border 边框），小一号；
+   气泡自身是 fixed 叶子（无 fixed 后代），直接挂 backdrop-filter 不影响任何坐标 */
+.confirm-wrap {
+  display: contents; /* 不参与布局：触发按钮仍是父级 flex 的直接子项 */
+}
+
+.confirm-pop {
+  position: fixed;
+  z-index: 40; /* 压过日程详情浮层 30 / sticky 周头 20 / 拖动中卡片 10 */
+  width: 200px;
+  padding: 12px 14px 11px;
+  background: var(--glass-pop);
+  backdrop-filter: var(--glass-blur-pop);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--glass-rim), var(--shadow-pop);
+  animation: confirm-pop-in 0.12s ease;
+}
+
+/* 纵向动作列模式（重复系列三选删除）：加宽容纳全宽动作按钮 */
+.confirm-pop.wide {
+  width: 240px;
+}
+
+@keyframes confirm-pop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.confirm-pop-message {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+
+.confirm-pop-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm-pop-cancel,
+.confirm-pop-alt,
+.confirm-pop-ok {
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.confirm-pop-cancel {
+  border: 1px solid var(--border);
+  background: var(--glass-card);
+  color: var(--text-secondary);
+}
+
+.confirm-pop-cancel:hover {
+  background: var(--grid-line);
+}
+
+/* 纵向动作列模式：全宽动作按钮自上而下排布，末尾中性"取消"钮收底。
+   实底 danger = 最重动作（"删除所有"）；描边 outline = 较弱（"仅删本次 / 及后续"） */
+.confirm-pop-actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.confirm-pop-action {
+  width: 100%;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 6px;
+  background: var(--danger);
+  color: #fff;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+}
+
+.confirm-pop-action:hover {
+  background: var(--danger-deep);
+}
+
+.confirm-pop-action.outline {
+  border: 1px solid var(--danger);
+  background: var(--glass-card);
+  color: var(--danger);
+}
+
+.confirm-pop-action.outline:hover {
+  background: var(--danger-softer);
+}
+
+.confirm-pop-action.cancel {
+  margin-top: 2px;
+  border: 1px solid var(--border);
+  background: var(--glass-card);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.confirm-pop-action.cancel:hover {
+  background: var(--grid-line);
+}
+
+.confirm-pop-ok {
+  border: none;
+  background: var(--danger);
+  color: #fff;
+}
+
+.confirm-pop-ok:hover {
+  background: var(--danger-deep);
+}

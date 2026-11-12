@@ -1,0 +1,387 @@
+/* 左栏 · 全局导航（默认 200px，宽度由 App 拖拽控制）。顶部 padding 22px 对齐
+   中栏日期区起点（.schedule-console 同 22px）——品牌盒撤除后首个导航项与之平齐 */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  padding: 22px 14px 20px;
+  /* 毛玻璃改版：灰轨半透明 tint（背后 .app 光斑透出；不挂 backdrop-filter——
+     栏内有 fixed 确认气泡，filter 会改其坐标基准） */
+  background: var(--glass-rail);
+  border-right: 1px solid var(--border);
+  box-shadow: var(--glass-rim);
+}
+
+/* 间距结构（2026-11-06 搜索批）：顶部三段 = 搜索框 / 导航 / 项目区。搜索框与
+   导航贴近（14px），项目区用上边距补偿回原 26px 的视觉间隔 */
+.sidebar-top {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sidebar-projects {
+  margin-top: 12px;
+}
+
+/* 搜索入口按钮：搜索框形态（复刻项目输入框观感：玻璃底 + 边框 + 圆角），
+   右端 Ctrl K 键位角标提示等价快捷键 */
+.sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--glass-input);
+  font-family: inherit;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.sidebar-search:hover {
+  border-color: var(--accent-border);
+  background: var(--glass-track);
+}
+
+.sidebar-search-label {
+  flex: 1;
+  text-align: left;
+  font-size: 13px;
+}
+
+.sidebar-search-kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--grid-line);
+  border-radius: 5px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+/* 主导航 */
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-nav-item:hover:not(.active) {
+  background: var(--grid-line);
+}
+
+.sidebar-nav-item.active {
+  background: var(--glass-card);
+  border: 1px solid var(--border);
+}
+
+.sidebar-nav-icon {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.sidebar-nav-item.active .sidebar-nav-icon {
+  color: var(--text-active);
+}
+
+.sidebar-nav-label {
+  font-size: 13.5px;
+  color: var(--text-secondary);
+}
+
+.sidebar-nav-item.active .sidebar-nav-label {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.sidebar-badge {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--badge-bg);
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+/* 项目列表 */
+.sidebar-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-projects-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+}
+
+.sidebar-projects-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  color: var(--text-muted);
+}
+
+/* 新建项目按钮（标题行右侧） */
+.sidebar-projects-add {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sidebar-projects-add:hover {
+  background: var(--grid-line);
+  color: var(--text-secondary);
+}
+
+/* 新建项目输入框（标题行下方内联出现，回车创建 / Esc 或失焦取消） */
+.sidebar-project-input {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: 7px;
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
+  outline: none;
+}
+
+.sidebar-project-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* 项目项容器（div：主按钮 + hover 操作组——button 内不能嵌套交互元素故拆两层；
+   容器承接拖拽放置与 hover/active/drop-target 态） */
+.sidebar-project-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+}
+
+/* hover/active 沿用 nav-item 惯例 */
+.sidebar-project-item:hover:not(.active) {
+  background: var(--grid-line);
+}
+
+.sidebar-project-item.active {
+  background: var(--glass-card);
+  border-color: var(--border);
+}
+
+/* 待办拖入悬停高亮 */
+.sidebar-project-item.drop-target {
+  background: var(--accent-softer);
+  border-color: var(--accent-border);
+}
+
+/* 主按钮：点击进项目页，占满余宽（名称双击进入重命名） */
+.sidebar-project-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-project-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.sidebar-project-name {
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+
+/* hover 操作组（标记重点项目 / 删除项目）：纯布局容器——显隐控制下移到按钮级，
+   星标可随 starred 单独常显（父组 opacity 会整体合成，子元素设回 1 穿不透）；
+   align-items 居中不可省：默认 stretch 会把计数 span 拉到按钮高、文本贴顶错位 */
+.sidebar-project-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+/* 操作图标按钮（22×22 圆角 6，同 .sidebar-projects-add 规格）：默认隐藏，
+   hover 行或键盘 focus 时浮现 */
+.sidebar-project-icon {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.sidebar-project-item:hover .sidebar-project-icon,
+.sidebar-project-item:focus-within .sidebar-project-icon {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 删除确认气泡打开期间：删除按钮常显（鼠标移向气泡离开项目行也不消失，
+   否则触发器没了气泡悬空）；:has 由气泡包裹层的 confirming 类联动 */
+.sidebar-project-item:has(.confirm-wrap.confirming) .sidebar-project-icon {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sidebar-project-icon:hover {
+  background: var(--grid-line);
+  color: var(--text-secondary);
+}
+
+/* 重点项目的星标：金色（--orange）常显——鼠标移开仍可见；删除按钮不随之常显（防误删），
+   恒仅 hover/focus 浮现；特异性高于通用 hover，悬停不变灰 */
+.sidebar-project-item.starred .sidebar-project-icon.star {
+  opacity: 1;
+  pointer-events: auto;
+  color: var(--orange);
+}
+
+/* 删除按钮 hover 变红（与任务删除一致） */
+.sidebar-project-icon.del:hover {
+  color: var(--danger);
+}
+
+/* 删除与计数共用的尾格（22×22）：两者互斥显示（hover/focus 删除、平时计数），
+   绝对定位叠放同一位置——尾部布局恒两格（星标 + 尾格），不再三格并排占位 */
+.sidebar-project-tail {
+  position: relative;
+  width: 36px;
+  height: 22px;
+  flex-shrink: 0;
+}
+
+/* 尾格内的删除按钮右贴齐保持 22×22（2026-11-10 尾格加宽容「x/y」计数后，按钮
+   不再填满尾格——计数右对齐与其右缘共线，淡入淡出互换位置自然） */
+.sidebar-project-tail .sidebar-project-icon {
+  position: absolute;
+  inset: 0 0 0 auto;
+}
+
+/* 项目计数徽标（2026-11-10 改「待排期/总数」）：右对齐常显浅灰纯文本（字体对齐
+   收件箱徽标 10.5px/600，tabular-nums 防数字抖动），分母斜杠段弱化一档防喧宾
+   夺主；hover/focus 删除按钮浮现时淡出让位，确认气泡打开期间同让位；
+   与按钮同为 opacity 切换、占位恒定，无布局跳动 */
+.sidebar-project-count {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  transition: opacity 0.15s;
+}
+
+/* 分母（/总数）：弱化一档——分子（待排期）才是行动信号 */
+.sidebar-project-count .sidebar-project-total {
+  font-style: normal;
+  font-weight: 500;
+  opacity: 0.6;
+}
+
+.sidebar-project-item:hover .sidebar-project-count,
+.sidebar-project-item:focus-within .sidebar-project-count,
+.sidebar-project-item:has(.confirm-wrap.confirming) .sidebar-project-count {
+  opacity: 0;
+  /* 让位必须同时禁命中：opacity 0 的元素仍接收点击——计数 span 盖在删除按钮
+     上层（DOM 后者在上），不禁则删除按钮看得到点不到（2026-11-06 真机批修复） */
+  pointer-events: none;
+}
+
+/* 重命名输入框（双击名称内联出现）：规格同新建输入框，flex 占满余宽 */
+.sidebar-project-rename {
+  flex: 1;
+  min-width: 0;
+  margin: 2px 4px 2px 3px;
+  padding: 3px 8px;
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  background: var(--glass-input);
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
+  outline: none;
+}
+
+/* 弹性留白 + 底部 */
+.sidebar-spacer {
+  flex: 1;
+}
+
+/* 设置与记忆入口（button 化：打开悬浮设置页），hover 态对齐 nav-item 惯例 */
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-footer:hover {
+  background: var(--grid-line);
+}
+
+.sidebar-footer-icon {
+  color: var(--text-secondary);
+}
+
+.sidebar-footer-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}

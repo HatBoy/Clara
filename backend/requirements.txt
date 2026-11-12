@@ -1,0 +1,31 @@
+# 运行时
+fastapi
+uvicorn
+sqlalchemy
+httpx
+litellm
+openai
+composio-langchain  # 提供 composio SDK（已验证 0.21.1；SDK API 变动频繁，升级须回归 tests/test_integrations.py）
+mcp
+markitdown[docx,pdf,xlsx,xls,pptx]  # bare 安装无 word/pdf/excel 格式能力（MissingDependencyException）
+langchain-mcp-adapters
+langchain-core  # 直接依赖 BaseChatModel / 消息类型（原本随 langgraph 间接安装，显式声明）
+langchain-litellm>=0.11,<0.12  # ChatLiteLLM 引擎（services/llm.py）；Beta 期钉小版本段防行为漂移
+langgraph
+langchain-openai
+lark-oapi>=1.0  # 飞书机器人长连接（ws 收发 + im 卡片回复；services/chat_channels.py）
+dingtalk-stream>=0.20  # 钉钉机器人 Stream 模式（回调 + session_webhook 回帖）
+wecom-aibot-python-sdk  # 企业微信智能机器人长连接（导入名 aibot；ws 订阅认证 + reply 回帖）
+
+# 打包
+pyinstaller
+
+# 开发 / 测试
+pytest
+
+# 搜索拼音/首字母匹配（2026-11-06 搜索批 120 分档；纯 Python 无二进制，PyInstaller 无需 collect）
+pypinyin
+
+# .ics 日历文件导入（2026-11-11 批；纯 Python，自带折叠行展开/转义还原/TZID 解析）。
+# 随带 python-dateutil + tzdata——Windows 无系统 IANA 库，zoneinfo 全靠 tzdata 包
+icalendar>=6,<7
