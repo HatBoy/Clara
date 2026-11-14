@@ -145,7 +145,7 @@ export function searchAll(q: string, includeDone = false): Promise<SearchReply> 
   );
 }
 
-// ── 关于页两件套（2026-11-06 批 A）：检查更新 / 备份导出 / 恢复准备 ──
+// ── 关于页（2026-11-06 批 A）：检查更新。备份两件套已迁 /api/sync（见下节）──
 
 export type LatestRelease = {
   available: boolean;
@@ -154,19 +154,109 @@ export type LatestRelease = {
   reason: string | null;
 };
 
+export const checkLatestRelease = () => getJson<LatestRelease>("/api/about/latest-release");
+
+// ── 同步备份（2026-11-14，「设置 → 同步备份」）：配置 / 测试 / 手动同步 /
+//    备份两件套（自关于页迁入）/ 合并导入。密码明文回显——本地单用户定调 ──
+
+export type SyncConfig = {
+  webdav_enabled: boolean;
+  webdav_url: string | null;
+  webdav_username: string | null;
+  webdav_password: string | null;
+  auto_backup_enabled: boolean;
+  auto_backup_dir: string | null;
+  auto_backup_dir_resolved: string;
+  auto_backup_last_at: string | null;
+  device_id: string | null;
+  last_sync_at: string | null;
+  last_sync_ok: boolean | null;
+  last_sync_error: string | null;
+  last_test_at: string | null;
+  last_test_ok: boolean | null;
+  last_test_ms: number | null;
+  syncing: boolean;
+};
+
+export type SyncConfigPatch = Partial<{
+  webdav_enabled: boolean;
+  webdav_url: string | null;
+  webdav_username: string | null;
+  webdav_password: string | null;
+  auto_backup_enabled: boolean;
+  auto_backup_dir: string | null;
+}>;
+
+export type SyncTestResult = { ok: boolean; ms: number; message: string };
+
+export type SyncRunResult = {
+  started: boolean;
+  error?: string | null;
+  needs_confirm?: boolean;
+  local_rows?: number | null;
+  remote_rows?: number | null;
+  reason?: string | null; // first_sync | snapshot_missing
+};
+
+export type MergeConflict = {
+  table: string;
+  pk: string;
+  local_updated_at: string | null;
+  backup_updated_at: string | null;
+};
+
+export type MergeAnalyzeResult = {
+  ok: boolean;
+  new_count: number;
+  updated_count: number;
+  tables: Record<string, { new: number; updated: number }>;
+  conflicts: MergeConflict[];
+};
+
+export type MergeApplyResult = {
+  ok: boolean;
+  inserted: number;
+  updated: number;
+  skipped: number;
+  message: string;
+};
+
 export type BackupResult = { ok: boolean; size_bytes: number; files: string[] };
 
 export type RestoreResult = { ok: boolean; requires_restart: boolean; message: string };
 
-export const checkLatestRelease = () => getJson<LatestRelease>("/api/about/latest-release");
+export const fetchSyncConfig = () => getJson<SyncConfig>("/api/sync");
+
+export const updateSyncConfig = (patch: SyncConfigPatch) =>
+  request<SyncConfig>("PATCH", "/api/sync", patch);
+
+/** 测试连接（可带未保存的草稿凭证；失败也 200——message 直显）。 */
+export const testWebdav = (body: { url?: string; username?: string; password?: string }) =>
+  request<SyncTestResult>("POST", "/api/sync/test", body, 30_000);
+
+/** 手动「立即同步」：needs_confirm 时前端确认后带 confirm 重发。 */
+export const runSyncNow = (confirm = false) =>
+  request<SyncRunResult>("POST", "/api/sync/run", { confirm }, 30_000);
+
+/** 重置同步基线（清本地快照——守卫拦截后/远端换库后的重对齐出口）。 */
+export const resetSyncBase = () => request<{ ok: boolean }>("POST", "/api/sync/reset-base", {});
 
 /** 导出备份到用户选定路径（saveBackupPath 先取路径）；version 来自 getVersion()。 */
 export const createBackup = (path: string, version: string | null) =>
-  request<BackupResult>("POST", "/api/about/backup", { path, version }, 60_000);
+  request<BackupResult>("POST", "/api/sync/backup", { path, version }, 60_000);
 
-/** 恢复第一阶段（staging 落盘）；成功后走 restartBackend 编排（dev 提示手动）。 */
+/** 恢复第一阶段（staging 落盘）；成功后走 restartBackend 编排（dev 提示手动）。
+ *  双格式：备份 zip 与同步目录手压 zip 均可。 */
 export const restoreBackup = (path: string) =>
-  request<RestoreResult>("POST", "/api/about/restore", { path }, 60_000);
+  request<RestoreResult>("POST", "/api/sync/restore", { path }, 60_000);
+
+/** 合并导入第一阶段（dry-run）：新增/更新统计 + 冲突明细。 */
+export const analyzeMerge = (path: string) =>
+  request<MergeAnalyzeResult>("POST", "/api/sync/merge-analyze", { path }, 60_000);
+
+/** 合并导入第二阶段：strategy=overwrite（冲突用备份覆盖）/ skip（保留本地）。 */
+export const applyMerge = (path: string, strategy: "overwrite" | "skip") =>
+  request<MergeApplyResult>("POST", "/api/sync/merge-apply", { path, strategy }, 120_000);
 
 // ── 统计报告（2026-11-06 批 D；2026-11 扩口径：环比/负载率/分列/AI 协作/滞后）──
 

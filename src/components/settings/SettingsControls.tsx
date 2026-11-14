@@ -36,10 +36,16 @@ export function SetInput({
   value,
   placeholder,
   onChange,
+  maxLength = 50,
+  type = "text",
 }: {
   value: string;
   placeholder?: string;
   onChange: (v: string) => void;
+  /** 长度上限（默认 50 同旧口径；URL 等长字段放宽，2026-11-14 同步备份） */
+  maxLength?: number;
+  /** 输入类型（默认 text；密码行传 password，2026-11-14 同步备份） */
+  type?: "text" | "password";
 }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]); // 外部回填（首载/别处变更）同步草稿
@@ -50,9 +56,10 @@ export function SetInput({
   return (
     <input
       className="set-input"
+      type={type}
       value={draft}
       placeholder={placeholder}
-      maxLength={50}
+      maxLength={maxLength}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {

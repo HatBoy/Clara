@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   AlarmClock,
   Bot,
+  CloudUpload,
   Database,
   Fingerprint,
   Info,
@@ -23,6 +24,7 @@ import MemorySettings from "./settings/MemorySettings";
 import ModelSettings from "./settings/ModelSettings";
 import PersonalizeSettings from "./settings/PersonalizeSettings";
 import ShortcutSettings from "./settings/ShortcutSettings";
+import SyncSettings from "./settings/SyncSettings";
 import "./SettingsDialog.css";
 
 // 设置页左栏菜单（右栏内容随选中项切换，具体设置项按模块逐步填充）
@@ -35,6 +37,7 @@ const SETTINGS_MENUS = [
   { id: "chat", label: "聊天通讯", icon: MessageSquare },
   { id: "memory", label: "记忆画像", icon: Fingerprint },
   { id: "jobs", label: "定时任务", icon: AlarmClock },
+  { id: "sync", label: "同步备份", icon: CloudUpload },
   { id: "shortcut", label: "快捷键", icon: Keyboard },
   { id: "about", label: "关于我们", icon: Info },
 ] as const;
@@ -59,7 +62,8 @@ function SettingsDialog({
   // 重查激活态：零激活引导卡随配置即时消失/出现，不再等到下一轮问答
   onModelChange?: () => void;
   // 记忆页刷新信号（2026-11-03 记忆重构）：夜间工作流广播后 App 递增
-  // aiRefreshKey——设置页若开着，记忆规则与情节事实即时重拉（新归纳可见）
+  // aiRefreshKey——设置页若开着，记忆规则与情节事实即时重拉（新归纳可见）。
+  // 同步备份页共用同一信号（2026-11-14：SSE sync 事件驱动状态行刷新）
   memoryRefreshKey?: number;
 }) {
   // 当前选中菜单项（打开默认第一项；id 用 string 而非字面量联合——setActiveMenu 接收同宽类型）
@@ -129,6 +133,8 @@ function SettingsDialog({
             <MemorySettings refreshKey={memoryRefreshKey} />
           ) : activeMenu === "jobs" ? (
             <JobsSettings settings={settings} onUpdate={onUpdateSettings} />
+          ) : activeMenu === "sync" ? (
+            <SyncSettings refreshKey={memoryRefreshKey} />
           ) : activeMenu === "shortcut" ? (
             <ShortcutSettings />
           ) : activeMenu === "about" ? (

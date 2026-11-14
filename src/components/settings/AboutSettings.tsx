@@ -1,21 +1,13 @@
-// "关于我们"设置页：版本号 + 开源地址 + 检查更新 + 数据备份/恢复（2026-11-06
-// 批 A 两件套）。骨架复用 GeneralSettings.css（.settings-* 族 + 动作钮
-// .settings-action-btn / 结果文案 .settings-action-hint）。
+// "关于我们"设置页：版本号 + 开源地址 + 检查更新（2026-11-06 批 A）。
+// 数据备份/恢复两件套已于 2026-11-14 同步备份迁至"同步备份"页
+//（SyncSettings.tsx，端点 /api/sync/*）。骨架复用 GeneralSettings.css。
 // 版本号经 getVersion() 动态读自 tauri.conf.json（升级只改该文件一处）；
 // 纯浏览器 dev / 读取失败回落常量。检查更新走后端出网（weather 同款通道），
-// 版本比较在前端做（本页持有 getVersion 真源）。恢复为两段式：staging 落盘
-// 后打包版经 Rust restart_backend 编排重启（dev 提示手动重启 uvicorn）。
+// 版本比较在前端做（本页持有 getVersion 真源）。
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
-import { checkLatestRelease, createBackup, restoreBackup } from "../../lib/api";
-import { API_BASE } from "../../lib/api";
-import {
-  isTauri,
-  openExternal,
-  pickBackupZip,
-  restartBackend,
-  saveBackupPath,
-} from "../../lib/tauri";
+import { checkLatestRelease } from "../../lib/api";
+import { openExternal } from "../../lib/tauri";
 import "./GeneralSettings.css";
 import "./AboutSettings.css";
 
@@ -41,18 +33,9 @@ type UpdateState =
   | { kind: "newer"; tag: string; url: string }
   | { kind: "failed"; reason: string };
 
-type BackupState =
-  | { kind: "idle" }
-  | { kind: "busy" }
-  | { kind: "ok"; text: string }
-  | { kind: "bad"; text: string }
-  // 恢复确认态：zip 路径已选定，等用户二次确认（覆盖性操作必须显式点确认）
-  | { kind: "confirm"; path: string };
-
 export default function AboutSettings() {
   const [version, setVersion] = useState(FALLBACK_VERSION);
   const [update, setUpdate] = useState<UpdateState>({ kind: "idle" });
-  const [backup, setBackup] = useState<BackupState>({ kind: "idle" });
 
   useEffect(() => {
     getVersion()
@@ -78,60 +61,6 @@ export default function AboutSettings() {
     }
   };
 
-  const doExport = async () => {
-    const path = await saveBackupPath();
-    if (!path) return; // 用户取消 / 非桌面
-    setBackup({ kind: "busy" });
-    try {
-      const res = await createBackup(path, version);
-      setBackup({ kind: "ok", text: `已导出到 ${path}（${(res.size_bytes / 1048576).toFixed(1)} MB）` });
-    } catch (e) {
-      setBackup({ kind: "bad", text: e instanceof Error ? e.message : "导出失败" });
-    }
-  };
-
-  /** 恢复后端就绪探测：restart_backend 杀旧拉新有秒级窗口，轮询 health 再刷新页面 */
-  const waitBackendReady = async (rounds = 40): Promise<boolean> => {
-    for (let i = 0; i < rounds; i++) {
-      try {
-        const res = await fetch(`${API_BASE}/api/health`);
-        if (res.ok) return true;
-      } catch { /* 尚未监听，继续轮询 */ }
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    return false;
-  };
-
-  const doRestore = async (path: string) => {
-    setBackup({ kind: "busy" });
-    try {
-      const res = await restoreBackup(path);
-      if (!res.ok) {
-        setBackup({ kind: "bad", text: res.message });
-        return;
-      }
-      if (!(isTauri() && import.meta.env.PROD)) {
-        // dev：后端是终端手动 uvicorn，宿主编排不适用——数据已就绪待重启
-        setBackup({ kind: "ok", text: "备份已就绪，请重启后端进程（终端 1）后刷新页面" });
-        return;
-      }
-      const r = await restartBackend();
-      if (!r.ok) {
-        setBackup({ kind: "bad", text: `${r.message}；备份已就绪，重启后生效` });
-        return;
-      }
-      setBackup({ kind: "ok", text: "正在重启后端并应用备份…" });
-      const ready = await waitBackendReady();
-      if (!ready) {
-        setBackup({ kind: "bad", text: "后端重启超时，请手动重启应用完成恢复" });
-        return;
-      }
-      window.location.reload(); // 数据全量刷新（库已被替换）
-    } catch (e) {
-      setBackup({ kind: "bad", text: e instanceof Error ? e.message : "恢复失败" });
-    }
-  };
-
   const updateHint = () => {
     if (update.kind === "checking") return <span className="settings-action-hint">检查中…</span>;
     if (update.kind === "latest")
@@ -151,29 +80,6 @@ export default function AboutSettings() {
       );
     if (update.kind === "failed")
       return <span className="settings-action-hint bad">{update.reason}</span>;
-    return null;
-  };
-
-  const backupHint = () => {
-    if (backup.kind === "busy") return <span className="settings-action-hint">处理中…</span>;
-    if (backup.kind === "ok") return <span className="settings-action-hint ok">{backup.text}</span>;
-    if (backup.kind === "bad") return <span className="settings-action-hint bad">{backup.text}</span>;
-    if (backup.kind === "confirm")
-      return (
-        <>
-          <span className="settings-action-hint bad">将覆盖当前全部数据，确认恢复？</span>
-          <button
-            type="button"
-            className="about-link"
-            onClick={() => doRestore(backup.path)}
-          >
-            确认恢复
-          </button>
-          <button type="button" className="about-link" onClick={() => setBackup({ kind: "idle" })}>
-            取消
-          </button>
-        </>
-      );
     return null;
   };
 
@@ -235,38 +141,6 @@ export default function AboutSettings() {
               >
                 {REPO_URL}
               </button>
-            </div>
-          </div>
-          <div className="settings-row about-backup-row">
-            <div className="settings-row-info">
-              <span className="settings-row-name">数据备份</span>
-              <span className="settings-row-desc">
-                导出数据快照，或从备份包恢复（恢复前自动留存当前数据副本）
-              </span>
-            </div>
-            <div className="settings-row-control">
-              <div className="about-backup-actions">
-                <button
-                  type="button"
-                  className="settings-action-btn"
-                  disabled={backup.kind === "busy" || backup.kind === "confirm"}
-                  onClick={doExport}
-                >
-                  导出备份
-                </button>
-                <button
-                  type="button"
-                  className="settings-action-btn"
-                  disabled={backup.kind === "busy" || backup.kind === "confirm"}
-                  onClick={async () => {
-                    const path = await pickBackupZip();
-                    if (path) setBackup({ kind: "confirm", path });
-                  }}
-                >
-                  恢复备份
-                </button>
-              </div>
-              {backupHint()}
             </div>
           </div>
         </div>

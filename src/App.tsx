@@ -329,6 +329,14 @@ function App() {
         reloadTasks();
         return;
       }
+      // WebDAV 同步完成（2026-11-14 同步备份）：拉入的数据横跨任务/消息/项目等
+      // 全部域——重拉任务 + 递增刷新信号（助手面板/设置页状态行即时更新）；
+      // 同属直写库轨：不进未读、不响提示音
+      if (ev.type === "sync") {
+        reloadTasks();
+        setAiRefreshKey((k) => k + 1);
+        return;
+      }
       if (ev.type !== "morning" && ev.type !== "ingest" && ev.type !== "nightly" && ev.type !== "overload" &&
           ev.type !== "prep" && ev.type !== "hardtask" && ev.type !== "brief" && ev.type !== "chat_sync" &&
           ev.type !== "weekly_report" && ev.type !== "minutes")
