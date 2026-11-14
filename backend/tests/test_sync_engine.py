@@ -27,6 +27,7 @@ class FakeDav:
         self.push_count = 0
         self.get_count = 0
         self.ensure_count = 0
+        self.readme_writes = 0
 
     def ensure_dirs(self):
         self.ensure_count += 1
@@ -46,6 +47,9 @@ class FakeDav:
         if if_none_match and self.manifest is not None:
             raise WebDavError("__PRECONDITION_412__")
         self.manifest = manifest
+
+    def put_readme(self, content: str) -> None:
+        self.readme_writes += 1
 
     def manifest_hashes(self):
         return {t: v.get("sha1") for t, v in (self.manifest or {}).get("tables", {}).items()}
@@ -157,6 +161,7 @@ def test_cold_force_push():
         rows = json.loads(json.dumps(dav.tables["tasks"]["rows"]))
         assert [r["title"] for r in rows] == ["本地任务"]
         assert dav.manifest["app"] == "clara-sync"
+        assert dav.readme_writes == 1  # 首同步落云端使用说明（一次）
         assert se.has_base()  # 快照已落
         assert se._load_base("tasks")
 

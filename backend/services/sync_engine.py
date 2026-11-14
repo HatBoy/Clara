@@ -76,6 +76,24 @@ MAX_PERIOD_S = 1800   # 失败退避上限（300→600→1200→1800，成功复
 # —— 守卫阈值 —————————————————————————————————————————————————————
 DELETE_GUARD_MIN = 100  # 删除行数绝对下限
 
+# 首同步落在云端的使用说明（回答「打开 WebDAV 全是 json，数据在哪里」——
+# tables/*.json 即数据文件；附手动恢复路径）。仅 manifest 404 时写一次
+_README = """\
+这是 Clara（AI 日程助手）的同步数据目录，由设备的「设置 → 同步备份 → WebDAV 同步」自动维护。
+
+数据在哪：tables/ 目录下每个 .json 文件就是一张数据表（tasks=日程任务、
+messages=聊天记录、app_settings=设置项、memory_rules=记忆画像……），
+文件内的 rows 数组就是行数据；manifest.json 只是各表版本的索引。
+
+如何手动恢复（设备丢失/换新设备的灾难恢复路径）：
+1. 把整个 clara-sync 目录（或其上级目录）下载后压缩为 zip；
+2. 在 Clara 的「设置 → 同步备份 → 导入导出」中选「覆盖恢复」或「合并导入」，
+   选择该 zip 即可——两种压缩方式（zip 根就是本目录 / 多包一层目录）都能识别。
+
+请勿手动编辑这些 json 文件——多设备同步按内容指纹增量合并，手改会被
+下一次同步覆盖或引发保守拦截。
+"""
+
 
 class SyncAbort(RuntimeError):
     """守卫命中：中止同步（中文 message 落 last_sync_error 直显用户）。"""
@@ -512,6 +530,7 @@ def run_sync(db: Session, client: WebDavClient, cfg, *, force_confirm: bool = Fa
                  "tables": {}}
         try:
             client.push_manifest(probe, if_none_match=True)
+            client.put_readme(_README)  # 云端自说明（仅首同步一次）
         except WebDavError as e:
             if "__PRECONDITION_412__" in str(e):
                 # 对端抢先写入：重拉 manifest，按首同步确认语义重新判定

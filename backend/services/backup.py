@@ -1,5 +1,5 @@
 """数据备份与恢复服务（关于页两件套之二，2026-11-06 批 A；2026-11-14 同步备份
-扩自动备份/双格式恢复/恢复后清同步快照）。
+扩自动备份/双格式恢复/恢复后清同步快照，同日真机批移除 Tauri 偏好）。
 
 导出 = SQLite backup API 一致性快照（WAL 常开，运行中直接拷 .db 不安全）
 + 配置文件 zip 成单文件。恢复 = 两段式——本进程无法安全替换自己正打开的
@@ -7,16 +7,17 @@
 由宿主重启后端进程后，新进程 lifespan 最前 apply_pending_restore() 原子
 替换（打包版走 Rust restart_backend 命令；dev 形态提示手动重启 uvicorn）。
 
-备份范围取舍：clara.db（业务+配置同库主体）+ config_snapshot.json（配置
-冗余快照，同 data 目录）+ Tauri 侧用户偏好 JSON（shortcuts/layout/widget，
-经 %APPDATA%/com.hat.clara 可达）。**不含** server_port.json（端口是本机
-环境配置，恢复到异机无意义甚至冲突）与 .window-state.json（窗口几何本机
-相关）。清单即 _TAURI_FILES，恢复时同名写回。
+备份范围：clara.db（业务+配置同库主体）+ config_snapshot.json（配置冗余
+快照，同 data 目录）。**不含 Tauri 侧任何文件（2026-11-14 真机批移除：
+快捷键/栏宽布局/小部件与窗口几何同属设备本地属性——不同设备分辨率不同，
+跨设备恢复无意义）与 server_port.json（端口是本机环境配置）**。
 
 双格式恢复（2026-11-14）：除备份格式外兼容「同步格式」zip——用户手动把
 WebDAV 同步目录（manifest.json + tables/*.json）压成 zip 也能直接恢复：
 _materialize_sync_zip 把散表 JSON 物化为临时 SQLite 后走同一条两段式链；
-不动本机 config_snapshot / Tauri 偏好（同步范围本就不含它们）。
+不动本机 config_snapshot（同步范围本就不含它）。**手压 zip 通常多包一层
+目录（右键压缩 clara-sync/ 文件夹）**：_normalize_members 按 manifest.json
+所在深度 strip 公共前缀，两种压法（根布局 / 多一层目录）均识别。
 
 自动备份（2026-11-14）：auto_backup 按时间戳落 zip（复用 create_backup），
 prune_auto_backups 只保留最近 7 天——**红线：文件名 pattern 严格匹配
@@ -28,7 +29,6 @@ clara-autobackup-*.zip，同目录 pre-restore-*.db 安全副本绝不能被波�
 
 import json
 import logging
-import os
 import re
 import shutil
 import sqlite3
@@ -40,13 +40,9 @@ from config import DATABASE_PATH, IS_PACKAGED, get_data_dir
 
 logger = logging.getLogger(__name__)
 
-# zip 内 Tauri 侧偏好文件（→ %APPDATA%/com.hat.clara/<文件名>）；与导出范围一致
-_TAURI_FILES = ("shortcuts.json", "layout.json", "widget.json")
-# zip 成员白名单（manifest + 库 + 快照 + Tauri 偏好）——prepare_restore 校验
-# 全部成员都在此列，防 "../" 路径穿越与夹带任意文件
-_ZIP_MEMBERS = {"manifest.json", "clara.db", "config_snapshot.json"} | {
-    f"tauri/{name}" for name in _TAURI_FILES
-}
+# zip 成员白名单（manifest + 库 + 快照）——prepare_restore 校验全部成员都在
+# 此列，防 "../" 路径穿越与夹带任意文件
+_ZIP_MEMBERS = {"manifest.json", "clara.db", "config_snapshot.json"}
 _STAGING_DIR = "restore_staging"
 _PENDING_FLAG = "PENDING.restore"
 # 自动备份文件名（时间戳命名；prune 的严格匹配 pattern——红线见模块头）
@@ -54,14 +50,18 @@ AUTO_BACKUP_PREFIX = "clara-autobackup-"
 _AUTO_BACKUP_TS = re.compile(r"^clara-autobackup-(\d{8})-(\d{6})\.zip$")
 
 
-def _tauri_config_dir() -> Path | None:
-    """Tauri 侧配置目录（Windows %APPDATA%/com.hat.clara）；不存在返回 None
-    （如纯后端环境 / 首启动未生成），导出静默跳过、恢复静默忽略。"""
-    base = os.environ.get("APPDATA")
-    if not base:
-        return None
-    dir_path = Path(base) / "com.hat.clara"
-    return dir_path if dir_path.is_dir() else None
+def _normalize_members(names) -> dict[str, str]:
+    """zip 成员名归一化：手压 zip 常多包一层目录（右键压缩 clara-sync/ 文件夹
+    → 成员是 "clara-sync/manifest.json"）。按 manifest.json 所在深度 strip 公共
+    前缀，返回 {归一名: zip 内原名}；无 manifest.json 返回 {}。目录条目
+    （尾 / 的占位）被剔除。自产备份 zip（根布局）前缀为空串零影响。"""
+    cleaned = {n for n in names if not n.endswith("/")}
+    manifests = sorted(
+        n for n in cleaned if n == "manifest.json" or n.endswith("/manifest.json"))
+    if not manifests:
+        return {}
+    prefix = manifests[0][: -len("manifest.json")]
+    return {n[len(prefix):]: n for n in cleaned if n.startswith(prefix)}
 
 
 def _snapshot_db_to(tmp_db: Path) -> None:
@@ -95,7 +95,6 @@ def create_backup(dest: str, version: str | None = None) -> dict:
     _snapshot_db_to(tmp_db)
 
     files: list[str] = ["manifest.json", "clara.db"]
-    tauri_dir = _tauri_config_dir()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
         manifest = {
             "app": "clara",
@@ -109,12 +108,6 @@ def create_backup(dest: str, version: str | None = None) -> dict:
         if snapshot.is_file():
             zf.write(snapshot, "config_snapshot.json")
             files.append("config_snapshot.json")
-        if tauri_dir is not None:
-            for name in _TAURI_FILES:
-                member = f"tauri/{name}"
-                if (tauri_dir / name).is_file():
-                    zf.write(tauri_dir / name, member)
-                    files.append(member)
     tmp_db.unlink()
     size = out.stat().st_size
     logger.info("备份已导出：%s（%.1f MB，%d 个成员）", out, size / 1048576, len(files))
@@ -126,16 +119,18 @@ def prepare_restore(src: str) -> dict:
     标记 → 预写安全副本。返回 {ok, requires_restart: True, message}。
     双格式分流（2026-11-14）：备份格式（manifest.app=="clara"，白名单校验）与
     同步格式（app=="clara-sync"，tables/*.json 物化为 clara.db——不动本机
-    config_snapshot / Tauri 偏好）。zip 不合法 / 缺关键成员 / 库损坏抛
-    ValueError（router 翻 422）。"""
+    config_snapshot）。成员名经 _normalize_members 归一（手压 zip 多包一层
+    目录也识别）。zip 不合法 / 缺关键成员 / 库损坏抛 ValueError（router 翻 422）。"""
     archive = Path(src)
     if not archive.is_file() or not zipfile.is_zipfile(archive):
         raise ValueError("所选文件不是有效的备份包")
     with zipfile.ZipFile(archive) as zf:
-        names = set(zf.namelist())
+        norm = _normalize_members(zf.namelist())
+        if not norm:
+            raise ValueError("备份包缺少 manifest.json，无法识别格式")
         try:
-            manifest: dict = json.loads(zf.read("manifest.json")) if "manifest.json" in names else {}
-        except (ValueError, OSError):
+            manifest: dict = json.loads(zf.read(norm["manifest.json"]))
+        except (KeyError, ValueError, OSError):
             raise ValueError("备份包 manifest 损坏，无法恢复")
 
         data_dir = get_data_dir()
@@ -145,16 +140,18 @@ def prepare_restore(src: str) -> dict:
         staging.mkdir(parents=True)
 
         if manifest.get("app") == "clara-sync":
-            _materialize_sync_zip(zf, staging)
+            _materialize_sync_zip(zf, staging, norm)
         elif manifest.get("app") == "clara":
-            illegal = names - _ZIP_MEMBERS
+            illegal = set(norm) - _ZIP_MEMBERS
             if illegal:
                 shutil.rmtree(staging, ignore_errors=True)
                 raise ValueError(f"备份包含未知成员，拒绝恢复：{sorted(illegal)[:3]}")
-            if "clara.db" not in names:
+            if "clara.db" not in norm:
                 shutil.rmtree(staging, ignore_errors=True)
                 raise ValueError("备份包缺少数据库文件，无法恢复")
-            zf.extractall(staging)  # 成员已全量白名单校验，无穿越风险
+            # 按归一名落盘（成员已全量白名单校验，无穿越风险）
+            for norm_name, orig in norm.items():
+                (staging / norm_name).write_bytes(zf.read(orig))
         else:
             shutil.rmtree(staging, ignore_errors=True)
             raise ValueError("这不是 Clara 的备份包")
@@ -188,17 +185,18 @@ def prepare_restore(src: str) -> dict:
     }
 
 
-def _materialize_sync_zip(zf: zipfile.ZipFile, staging: Path) -> None:
+def _materialize_sync_zip(zf: zipfile.ZipFile, staging: Path,
+                          norm: dict[str, str]) -> None:
     """同步格式 zip → staging/clara.db：校验成员白名单（manifest + tables/
-    <SYNC_TABLES>.json，防穿越与未知表）→ 建临时 SQLite（create_all 全新
-    schema + sorted_tables 序插入 + defer FK 解 tasks.parent_id 自引用）→
-    行内键按目标表列集过滤（旧版数据列少不炸 NOT NULL）。"""
+    <SYNC_TABLES>.json，防穿越与未知表；norm 为归一化后的成员名映射）→
+    建临时 SQLite（create_all 全新 schema + sorted_tables 序插入 + defer FK
+    解 tasks.parent_id 自引用）→ 行内键按目标表列集过滤（旧版数据列少不炸
+    NOT NULL）。"""
     from database import Base
     from services.sync_engine import SYNC_TABLES, _revive_row
 
-    names = set(zf.namelist())
     allowed = {"manifest.json"} | {f"tables/{t}.json" for t in SYNC_TABLES}
-    illegal = names - allowed
+    illegal = set(norm) - allowed
     if illegal:
         raise ValueError(f"同步备份包含未知成员，拒绝恢复：{sorted(illegal)[:3]}")
 
@@ -211,9 +209,9 @@ def _materialize_sync_zip(zf: zipfile.ZipFile, staging: Path) -> None:
         meta = {t.name: t for t in Base.metadata.sorted_tables}
         for name in SYNC_TABLES:
             member = f"tables/{name}.json"
-            if member not in names:
+            if member not in norm:
                 continue
-            data = json.loads(zf.read(member))
+            data = json.loads(zf.read(norm[member]))
             rows = data.get("rows") if isinstance(data, dict) else None
             if not isinstance(rows, list):
                 raise ValueError(f"同步表文件格式异常（{name}）")
@@ -323,13 +321,6 @@ def apply_pending_restore() -> bool:
     snapshot = staging / "config_snapshot.json"
     if snapshot.is_file():
         shutil.copy2(snapshot, get_data_dir() / "config_snapshot.json")
-    tauri_src = staging / "tauri"
-    tauri_dir = _tauri_config_dir()
-    if tauri_src.is_dir() and tauri_dir is not None:
-        for name in _TAURI_FILES:
-            member = tauri_src / name
-            if member.is_file():
-                shutil.copy2(member, tauri_dir / name)
     shutil.rmtree(staging, ignore_errors=True)
     # 同步快照失效（2026-11-14 同步备份）：数据回到过去，旧 Base 与现库不再同源，
     # 下轮同步按冷启动语义重新对齐（防旧数据凭旧快照被判定为「远端已删」）。
@@ -337,5 +328,5 @@ def apply_pending_restore() -> bool:
     from services.sync_engine import clear_snapshot
 
     clear_snapshot()
-    logger.info("已从备份恢复数据（clara.db / 配置快照 / Tauri 偏好），同步快照已重置")
+    logger.info("已从备份恢复数据（clara.db / 配置快照），同步快照已重置")
     return True

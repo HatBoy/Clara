@@ -57,3 +57,9 @@
 .sync-error {
   color: var(--bad, #e07a5f);
 }
+
+/* 账号+密码双输入并排（2026-11-14 真机批：合一行省空间） */
+.sync-cred-group {
+  display: flex;
+  gap: 8px;
+}

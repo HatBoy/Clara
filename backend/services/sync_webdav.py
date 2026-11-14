@@ -15,9 +15,12 @@
 """
 
 import base64
+import logging
 import xml.etree.ElementTree as ET
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # 单个表文件响应体上限（200MB）：损坏/恶意大文件拉爆内存的防御
 MAX_TABLE_BYTES = 200 * 1024 * 1024
@@ -156,6 +159,17 @@ class WebDavClient:
                              content=content, timeout=self._file_timeout)
         if resp.status_code >= 400:
             raise WebDavError(f"推送表文件失败（{name}，HTTP {resp.status_code}）")
+
+    def put_readme(self, content: str) -> None:
+        """推送「使用说明.txt」到同步根（2026-11-14 真机批：用户打开 WebDAV
+        目录就能知道这些 json 是什么、如何手动恢复——回答「数据在哪里」）。
+        仅首同步时调用一次（manifest 404 = 从未同步过），不参与每轮同步。"""
+        resp = self._request("PUT", "/clara-sync/使用说明.txt",
+                             headers={"Content-Type": "text/plain; charset=utf-8"},
+                             content=content.encode("utf-8"))
+        if resp.status_code >= 400:
+            # 非致命：说明文件缺失不影响同步语义（部分服务器对中文文件名兼容差）
+            logger.warning("使用说明推送失败（HTTP %s）", resp.status_code)
 
     def push_manifest(self, manifest: dict, *, if_none_match: bool = False) -> None:
         """推送 manifest（提交点：推序铁律保证它滞后于全部表文件）。首次推送

@@ -26,7 +26,6 @@ from services.sync_config import effective_backup_dir
 def _isolate_fs(monkeypatch, tmp_path):
     monkeypatch.setattr(backup_svc, "DATABASE_PATH", tmp_path / "clara.db")
     monkeypatch.setattr(backup_svc, "get_data_dir", lambda: tmp_path)
-    monkeypatch.setattr(backup_svc, "_tauri_config_dir", lambda: None)
     _make_db(tmp_path / "clara.db")
     yield
 
@@ -125,6 +124,9 @@ def test_backup_creates_zip(client, tmp_path):
     with zipfile.ZipFile(dest) as zf:
         names = set(zf.namelist())
         assert {"manifest.json", "clara.db"} <= names
+        # 2026-11-14 真机批：Tauri 偏好（窗口/布局/快捷键）是设备本地属性，
+        # 备份不再携带 tauri/ 目录
+        assert not any(n.startswith("tauri/") for n in names)
         manifest = json.loads(zf.read("manifest.json"))
         assert manifest["app"] == "clara" and manifest["version"] == "v1.0.0"
         probe = tmp_path / "probe.db"
@@ -237,6 +239,41 @@ def test_restore_rejects_corrupt_db(client, tmp_path):
     res = client.post("/api/sync/restore", json={"path": str(path)})
     assert res.status_code == 422
     assert not (tmp_path / "restore_staging").exists()
+
+
+def test_restore_accepts_sync_zip_with_extra_dir_prefix(client, tmp_path):
+    """手压 zip 常见形态：右键压缩 clara-sync 文件夹 → 成员多一层目录前缀。
+    覆盖恢复与合并导入都必须识别（用户实测反馈的可用性坑）。"""
+    members = {
+        "clara-sync/manifest.json": json.dumps({"app": "clara-sync", "format": 1}),
+        "clara-sync/tables/app_settings.json": json.dumps(
+            {"table": "app_settings", "rows": []}),
+        "clara-sync/": b"",  # 目录占位条目（部分压缩工具会写）
+    }
+    path = _zip_of_raw(tmp_path, "wrapped.zip", members)
+    res = client.post("/api/sync/restore", json={"path": str(path)})
+    assert res.status_code == 200
+    assert res.json()["ok"] is True
+    staging = tmp_path / "restore_staging"
+    assert (staging / "clara.db").is_file()  # 物化成功
+
+    # 合并导入同口径
+    res = client.post("/api/sync/merge-analyze", json={"path": str(path)})
+    assert res.status_code == 200
+    assert res.json()["new_count"] == 0  # 空行集：仅验证解析通过
+
+
+def _zip_of_raw(tmp_path, name, members: dict):
+    path = tmp_path / name
+    with zipfile.ZipFile(path, "w") as zf:
+        for member, data in members.items():
+            if member.endswith("/"):
+                zf.writestr(zipfile.ZipInfo(member), b"")  # 目录条目
+            elif isinstance(data, str):
+                zf.writestr(member, data.encode("utf-8"))
+            else:
+                zf.writestr(member, data)
+    return path
 
 
 # —— 自动备份（services/backup.py auto_backup / prune；槽位在 test 层直测谓词）——

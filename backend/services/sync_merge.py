@@ -38,16 +38,20 @@ logger = logging.getLogger(__name__)
 
 def load_zip_tables(path: str) -> dict[str, list[dict]]:
     """双格式统一出口：{表名: [行 dict, ...]}（滤 sync_settings；只含 SYNC_TABLES
-    内的表）。非法 zip / 缺 manifest / 异应用包抛 ValueError（router 翻 422）。"""
+    内的表）。非法 zip / 缺 manifest / 异应用包抛 ValueError（router 翻 422）。
+    成员名经 backup._normalize_members 归一——手压 WebDAV 目录多包一层
+    `clara-sync/` 前缀也识别。"""
+    from services.backup import _normalize_members
+
     archive = Path(path)
     if not archive.is_file() or not zipfile.is_zipfile(archive):
         raise ValueError("所选文件不是有效的备份包")
     with zipfile.ZipFile(archive) as zf:
-        names = zf.namelist()
-        if "manifest.json" not in names:
+        norm = _normalize_members(zf.namelist())
+        if not norm:
             raise ValueError("备份包缺少 manifest.json，无法识别格式")
         try:
-            manifest = json.loads(zf.read("manifest.json"))
+            manifest = json.loads(zf.read(norm["manifest.json"]))
         except (ValueError, OSError) as e:
             raise ValueError(f"备份包 manifest 损坏：{e}") from e
         app = manifest.get("app")
@@ -56,15 +60,15 @@ def load_zip_tables(path: str) -> dict[str, list[dict]]:
         if app == "clara-sync":
             # 同步格式：tables/<t>.json 散文件
             member_map = {}
-            for member in names:
-                if member.startswith("tables/") and member.endswith(".json"):
-                    member_map[member[len("tables/"):-len(".json")]] = member
+            for norm_name, orig in norm.items():
+                if norm_name.startswith("tables/") and norm_name.endswith(".json"):
+                    member_map[norm_name[len("tables/"):-len(".json")]] = orig
             unknown = set(member_map) - set(SYNC_TABLES)
             if unknown:
                 raise ValueError(f"备份包含未知表文件：{sorted(unknown)[:3]}")
-            for name, member in member_map.items():
+            for name, orig in member_map.items():
                 try:
-                    data = json.loads(zf.read(member))
+                    data = json.loads(zf.read(orig))
                 except ValueError as e:
                     raise ValueError(f"表文件损坏（{name}）：{e}") from e
                 rows = data.get("rows") if isinstance(data, dict) else None
@@ -73,11 +77,11 @@ def load_zip_tables(path: str) -> dict[str, list[dict]]:
                 tables[name] = rows
         elif app == "clara":
             # 备份格式：zip 内整库 clara.db → tmp 解包只读 dump
-            if "clara.db" not in names:
+            if "clara.db" not in norm:
                 raise ValueError("备份包缺少数据库文件，无法导入")
             tmp_dir = Path(tempfile.mkdtemp(prefix="clara-merge-"))
             try:
-                zf.extract("clara.db", tmp_dir)
+                (tmp_dir / "clara.db").write_bytes(zf.read(norm["clara.db"]))
                 tables = _dump_sqlite_tables(tmp_dir / "clara.db")
             finally:
                 shutil.rmtree(tmp_dir, ignore_errors=True)

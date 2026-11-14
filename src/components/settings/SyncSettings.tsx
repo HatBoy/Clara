@@ -316,7 +316,8 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
     );
   if (!cfg) return null;
 
-  const testHint = () => {
+  /** 操作行 hint 区（三按钮共用户一行，结果轮显）：本次测试 > 本次同步 > 上次测试静态回显 */
+  const actionHints = () => {
     if (test.kind === "busy") return <span className="settings-action-hint">测试中…</span>;
     if (test.kind === "done")
       return (
@@ -324,17 +325,13 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
           {test.ok ? `连接成功（${test.ms}ms）` : test.message}
         </span>
       );
+    if (run.kind === "polling") return <span className="settings-action-hint">同步中…</span>;
+    if (run.kind === "done")
+      return <span className={`settings-action-hint ${run.ok ? "ok" : "bad"}`}>{run.text}</span>;
     if (cfg.last_test_ok === true)
       return <span className="settings-action-hint ok">上次测试 {fmtTime(cfg.last_test_at)} · {cfg.last_test_ms}ms</span>;
     if (cfg.last_test_ok === false)
       return <span className="settings-action-hint bad">上次测试 {fmtTime(cfg.last_test_at)} 失败</span>;
-    return null;
-  };
-
-  const runHint = () => {
-    if (run.kind === "polling") return <span className="settings-action-hint">同步中…</span>;
-    if (run.kind === "done")
-      return <span className={`settings-action-hint ${run.ok ? "ok" : "bad"}`}>{run.text}</span>;
     return null;
   };
 
@@ -382,8 +379,10 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
             <div className="settings-row-info">
               <span className="settings-row-name">启用同步</span>
               <span className="settings-row-desc">
-                同步全部数据（功能设置、日程任务、聊天记录、记忆画像等）；快捷键与
-                窗口布局等本机偏好不在其列。变更后自动增量同步
+                同步全部数据（功能设置、日程任务、聊天记录、记忆画像等）到 WebDAV
+                上的 tables/*.json 散文件（云端附有使用说明.txt），变更自动增量同步；
+                快捷键与窗口布局等本机偏好（分辨率相关）不在其列。云端目录可随时
+                手动压成 zip，经下方「导入导出」恢复——设备丢失时的灾备路径
               </span>
             </div>
             <div className="settings-row-control">
@@ -411,24 +410,18 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
           </div>
           <div className="settings-row">
             <div className="settings-row-info">
-              <span className="settings-row-name">账号</span>
-              <span className="settings-row-desc">用户名（匿名服务可留空）</span>
+              <span className="settings-row-name">账号与密码</span>
+              <span className="settings-row-desc">
+                用户名（匿名服务可留空）+ 应用密码（坚果云等请在服务端生成；本地明文存储）
+              </span>
             </div>
-            <div className="settings-row-control">
+            <div className="settings-row-control sync-cred-group">
               <SetInput
                 value={cfg.webdav_username ?? ""}
                 placeholder="用户名"
                 maxLength={100}
                 onChange={(v) => save({ webdav_username: v || null })}
               />
-            </div>
-          </div>
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <span className="settings-row-name">密码</span>
-              <span className="settings-row-desc">应用密码（坚果云等请在服务端生成；本地明文存储）</span>
-            </div>
-            <div className="settings-row-control">
               <SetInput
                 type="password"
                 value={cfg.webdav_password ?? ""}
@@ -440,28 +433,11 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
           </div>
           <div className="settings-row">
             <div className="settings-row-info">
-              <span className="settings-row-name">连接测试</span>
-              <span className="settings-row-desc">验证服务可达且账号有写入权限</span>
-            </div>
-            <div className="settings-row-control">
-              <button
-                type="button"
-                className="settings-action-btn"
-                disabled={test.kind === "busy" || !cfg.webdav_url}
-                onClick={doTest}
-              >
-                测试连接
-              </button>
-              {testHint()}
-            </div>
-          </div>
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <span className="settings-row-name">立即同步</span>
+              <span className="settings-row-name">同步操作</span>
               <span className="settings-row-desc">
                 {cfg.last_sync_at
                   ? `最近同步 ${fmtTime(cfg.last_sync_at)} · ${cfg.last_sync_ok ? "成功" : "失败"}`
-                  : "尚未同步过"}
+                  : "尚未同步过（开启开关后自动进行首次同步）"}
                 {cfg.last_sync_error ? ` · ${cfg.last_sync_error}` : ""}
               </span>
               {saveError && <span className="settings-row-desc sync-error">{saveError}</span>}
@@ -470,12 +446,19 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
               <button
                 type="button"
                 className="settings-action-btn"
-                disabled={run.kind === "polling" || cfg.syncing || !cfg.webdav_enabled}
+                disabled={test.kind === "busy"}
+                onClick={doTest}
+              >
+                测试连接
+              </button>
+              <button
+                type="button"
+                className="settings-action-btn"
+                disabled={run.kind === "polling" || cfg.syncing}
                 onClick={() => doRun(false)}
               >
                 {run.kind === "polling" || cfg.syncing ? "同步中…" : "立即同步"}
               </button>
-              {runHint()}
               {!resetConfirm ? (
                 <button
                   type="button"
@@ -492,6 +475,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                   <button type="button" className="about-link" onClick={() => setResetConfirm(false)}>取消</button>
                 </>
               )}
+              {actionHints()}
             </div>
           </div>
         </div>
