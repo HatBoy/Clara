@@ -46,7 +46,7 @@ def fresh_db(monkeypatch):
     database.SessionLocal 替换为内存库会话（chat 轮次任务自开 SessionLocal 落库，
     不再经 Depends(get_db)——不替换会写进真实 dev 库）+ 复位轮次锁（TestClient
     每测试新事件循环，旧锁跨循环绑定会炸）。"""
-    from services import chat_channels, chat_turn, llm as llm_svc, mcp_session
+    from services import chat_channels, chat_turn, llm as llm_svc, mcp_session, sync_engine
 
     import database
 
@@ -54,16 +54,19 @@ def fresh_db(monkeypatch):
     chat_turn.reset_turn_lock()
     chat_channels._reset_for_tests()  # epoch/去重/关闭位/主循环引用复位
     llm_svc._init_cache = None  # init_llm 微缓存（2026-10-26 提速批 3）防跨用例吃到上例激活模型
+    sync_engine._reset_for_tests()  # 脏表/唤醒信号/锁复位（2026-11-14 同步备份）
     monkeypatch.setattr(database, "SessionLocal", TestingSessionLocal)
     # episodic FTS 虚表（2026-11-03 记忆重构）：create_all 不认识虚表、drop_all
     # 也不删它——主表重建后虚表残留上例 rowid 索引会串台，须先 DROP 再随 create_all
-    # 重建主表后补建（init_db 同款出口）
+    # 重建主表后补建（init_db 同款出口）；updated_at 触发器同理——drop_all 随表
+    # 删除，create_all 重建表后须补挂（2026-11-14 同步备份地基）
     from sqlalchemy import text
 
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE IF EXISTS episodic_facts_fts"))
     Base.metadata.create_all(engine)
     database._ensure_episodic_fts(engine)
+    database._ensure_updated_at_triggers(engine)
     yield
     Base.metadata.drop_all(engine)
 

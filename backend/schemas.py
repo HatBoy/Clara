@@ -1391,3 +1391,130 @@ class RestoreOut(BaseModel):
     ok: bool
     requires_restart: bool
     message: str
+
+
+# —— 同步备份（2026-11-14 增，「设置 → 同步备份」）：WebDAV 同步 / 合并导入 /
+#    自动备份。备份两件套（BackupRequest/Out、RestoreRequest/Out）从关于页迁入
+#    /api/sync 复用上方契约；本节是配置读写、测试、手动同步与合并导入。
+
+
+class SyncConfigOut(BaseModel):
+    """同步备份配置行（GET /api/sync）。密码明文回显——本地单用户定调
+    （同 ChatChannel.app_secret 口径，docs/sync-backup.md 安全注记）。
+    auto_backup_dir_resolved / auto_backup_last_at / syncing 是 GET 组装字段
+    （非库列）：目录解析默认值、最近一次自动备份文件时刻、同步互斥锁状态。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    webdav_enabled: bool
+    webdav_url: Optional[str] = None
+    webdav_username: Optional[str] = None
+    webdav_password: Optional[str] = None
+    auto_backup_enabled: bool
+    auto_backup_dir: Optional[str] = None
+    auto_backup_dir_resolved: str = ""
+    auto_backup_last_at: Optional[datetime] = None
+    device_id: Optional[str] = None
+    last_sync_at: Optional[datetime] = None
+    last_sync_ok: Optional[bool] = None
+    last_sync_error: Optional[str] = None
+    last_test_at: Optional[datetime] = None
+    last_test_ok: Optional[bool] = None
+    last_test_ms: Optional[int] = None
+    syncing: bool = False
+
+
+class SyncConfigUpdate(BaseModel):
+    """配置部分更新入参（PATCH /api/sync）：键不出现 = 不动。凭证三件任一变更
+    即清 last_test_*（旧探测结果对新配置是谎言）；开启 webdav_enabled 时凭证须
+    已配齐（服务层校验），开启即调度首同步。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    webdav_enabled: Optional[bool] = None
+    webdav_url: Optional[str] = Field(default=None, max_length=300)
+    webdav_username: Optional[str] = Field(default=None, max_length=100)
+    webdav_password: Optional[str] = Field(default=None, max_length=200)
+    auto_backup_enabled: Optional[bool] = None
+    auto_backup_dir: Optional[str] = Field(default=None, max_length=500)
+
+
+class SyncTestIn(BaseModel):
+    """测试连接入参：可带草稿凭证（用户填一半未保存即点测试）；任一为空回落
+    库内配置，库内也无 → 服务层 422 提示先填配置。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    url: Optional[str] = Field(default=None, max_length=300)
+    username: Optional[str] = Field(default=None, max_length=100)
+    password: Optional[str] = Field(default=None, max_length=200)
+
+
+class SyncTestOut(BaseModel):
+    """测试连接结果（探测失败也 200——前端 hint 直显 message；结果落 last_test_*）。"""
+
+    ok: bool
+    ms: int
+    message: str
+
+
+class SyncRunIn(BaseModel):
+    """手动「立即同步」入参：confirm 仅在上一轮返回 needs_confirm（本地与远端
+    均有数据的首同步/快照丢失，不可逆混库操作）后由前端确认携带。"""
+
+    confirm: bool = False
+
+
+class SyncRunOut(BaseModel):
+    """手动同步触发结果（后台化：触发即返回，进度看 GET /api/sync 的 syncing 与
+    last_sync_*）。needs_confirm 时 local_rows/remote_rows/reason 必填供前端弹确认。"""
+
+    started: bool
+    error: Optional[str] = None
+    needs_confirm: bool = False
+    local_rows: Optional[int] = None
+    remote_rows: Optional[int] = None
+    reason: Optional[str] = None  # first_sync | snapshot_missing
+
+
+class MergeAnalyzeIn(BaseModel):
+    """合并导入第一阶段（dry-run）：zip 路径来自前端原生文件选择对话框，
+    兼容备份格式（manifest.app=="clara"）与同步格式（"clara-sync"）两种包。"""
+
+    path: str = Field(min_length=4, max_length=500)
+
+
+class MergeConflictOut(BaseModel):
+    """单条冲突明细（同主键且内容不同）：pk 截断展示，两侧时间供用户判断。"""
+
+    table: str
+    pk: str
+    local_updated_at: Optional[str] = None
+    backup_updated_at: Optional[str] = None
+
+
+class MergeAnalyzeOut(BaseModel):
+    """合并导入分析结果：new_count 库内没有的新行，updated_count 同键内容不同的
+    行（strategy=overwrite 时覆盖本地，skip 保留），冲突明细前 50 条。"""
+
+    ok: bool
+    new_count: int
+    updated_count: int
+    tables: dict[str, dict]  # {表名: {new: n, updated: n}}
+    conflicts: list[MergeConflictOut]
+
+
+class MergeApplyIn(BaseModel):
+    path: str = Field(min_length=4, max_length=500)
+    strategy: str = Field(pattern="^(overwrite|skip)$")  # 冲突行：覆盖本地 | 保留本地
+
+
+class MergeApplyOut(BaseModel):
+    """合并导入应用结果（写当前库单事务，不需重启；不删除本地行——两路合并
+    无法区分「备份没有=新数据」与「已删除」，安全默认）。"""
+
+    ok: bool
+    inserted: int
+    updated: int
+    skipped: int
+    message: str

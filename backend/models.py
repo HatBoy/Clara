@@ -150,6 +150,10 @@ class StatsReport(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, server_default=func.now(), comment="生成时间"
     )
+    # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据；只 default 不 onupdate——
+    # 更新单点在数据库触发器（database._ensure_updated_at_triggers，WHEN 守卫防同步
+    # 引擎显式写远端时间戳被本地 now 覆盖），ORM / 裸 SQL / 恢复导入全路径统一盖章
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
 
 
 class Subtask(Base):
@@ -177,6 +181,8 @@ class Subtask(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, server_default=func.now(), comment="创建时间"
     )
+    # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据；触发器单点盖章（同 StatsReport.updated_at 注）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
 
 
 class AppSettings(Base):
@@ -293,6 +299,8 @@ class Reminder(Base):
     task_id: Mapped[str] = mapped_column(String(36), ForeignKey("tasks.id"), nullable=False, comment="任务 id（重复系列指向主行）")
     fire_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="计划触发时刻 = 实例开始 − 提前量")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="入列时刻")
+    # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据；触发器单点盖章（同 StatsReport.updated_at 注）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
 
     __table_args__ = (
         UniqueConstraint("task_id", "fire_at", name="uq_reminders_task_fire"),
@@ -546,6 +554,8 @@ class Proposal(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="创建时刻")
     # 回写 outcome 的时刻（待处理恒空）
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, comment="处理时刻；空 = 未处理")
+    # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据；触发器单点盖章（同 StatsReport.updated_at 注）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
 
     def __repr__(self) -> str:
         return f"<Proposal id={self.id} {self.kind} {self.outcome!r}>"
@@ -570,6 +580,8 @@ class Message(Base):
     # ——仅展示层徽标，统一上下文不区分渠道
     source: Mapped[str | None] = mapped_column(String(20), nullable=True, comment="来源渠道；空 = 桌面端")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="创建时刻")
+    # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据；触发器单点盖章（同 StatsReport.updated_at 注）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
 
     def __repr__(self) -> str:
         return f"<Message id={self.id} {self.role}>"
@@ -668,6 +680,9 @@ class MemoryDismissal(Base):
     # 被删规则的 source（全 source 记账——用户删手写规则后 AI 再归纳同义也是打扰）
     source: Mapped[str] = mapped_column(String(20), nullable=False, comment="被删规则来源")
     dismissed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="删除时刻")
+    # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据（本表无 created_at，backfill
+    # 源取 dismissed_at）；触发器单点盖章（同 StatsReport.updated_at 注）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
 
     __table_args__ = (
         Index("ix_memory_dismissals_time", "dismissed_at"),
@@ -698,6 +713,8 @@ class EpisodicFact(Base):
     # 过期时刻（NULL = 永久）；检索与注入恒过滤已过期行
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, comment="过期时刻；空=永久")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="创建时间")
+    # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据；触发器单点盖章（同 StatsReport.updated_at 注）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
 
     __table_args__ = (
         Index("ix_episodic_facts_expires", "expires_at"),
@@ -733,6 +750,8 @@ class BehaviorEvent(Base):
     # 环境快照：{weekday, period 清晨/上午/下午/晚上, before_meeting, after_meeting}
     context: Mapped[dict | None] = mapped_column(JSON, nullable=True, comment="环境快照（周几/时段/前后会议）")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="事件时刻")
+    # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据；触发器单点盖章（同 StatsReport.updated_at 注）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
 
     __table_args__ = (
         Index("ix_behavior_events_created", "created_at"),
@@ -764,6 +783,8 @@ class WorkflowRun(Base):
     # 运行归属日（当日判定键，与 name 联合唯一）
     run_date: Mapped[date] = mapped_column(Date, nullable=False, comment="运行归属日")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="认领时刻")
+    # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据；触发器单点盖章（同 StatsReport.updated_at 注）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
 
     __table_args__ = (
         UniqueConstraint("name", "run_date", name="uq_workflow_runs_name_date"),
@@ -888,6 +909,9 @@ class IngestionItem(Base):
     # 直通判定 = 源行 trusted ∧ 本列 ∈ {todo, calendar}：笔记/文档提炼条目域为
     # doc 仍须进数据源页确认（提取的不准确，用户定案）
     domain: Mapped[str | None] = mapped_column(String(10), nullable=True, comment="条目域 todo/calendar/doc；空=未声明")
+    # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据（本表无 created_at，backfill
+    # 源取 last_seen_at）；触发器单点盖章（同 StatsReport.updated_at 注）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
 
     __table_args__ = (
         UniqueConstraint("source_key", "fingerprint", name="uq_ingestion_items_key_fp"),
@@ -896,3 +920,50 @@ class IngestionItem(Base):
 
     def __repr__(self) -> str:
         return f"<IngestionItem {self.source_key} {self.fingerprint[:8]}>"
+
+
+class SyncSettings(Base):
+    """同步备份配置表（2026-11-14 增，「设置 → 同步备份」）：单行宽表 id 恒 1，
+    首次 GET 时 get_or_create 落行。凭证域隔离先例（同 integration_settings）：
+    不混入 /api/settings 契约，走独立 GET/PATCH /api/sync。
+
+    **不参与 WebDAV 同步与合并导入**（sync_engine.SYNC_TABLES 排除）——WebDAV
+    凭证绝不上 WebDAV 服务器（否则密码躺在它自己保护的服务器上）；备份目录、
+    同步开关等属设备本地行为配置，跨设备无意义。device_id 是本设备在 manifest
+    里的署名（uuid4，get_or_create 时生成）。webdav_password 明文存库 + 原样
+    回显：本地单用户桌面应用（同 ChatChannel.app_secret / ModelProvider.api_key
+    口径）；注意 config_snapshot.json 随库同目录会带走凭据（docs/sync-backup.md
+    有安全注记）。last_* 回显态由服务层写（PATCH 白名单外）。
+    """
+
+    __tablename__ = "sync_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    # WebDAV 同步总开关（默认关——同步会外发数据到用户配置的服务器，须显式开启）
+    webdav_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"), comment="WebDAV 同步开关")
+    # 服务地址（可含子目录，如 https://dav.example.com/dav/clara/；同步根=URL+/clara-sync/）
+    webdav_url: Mapped[str | None] = mapped_column(String(300), nullable=True, comment="WebDAV 服务地址；空=未配置")
+    webdav_username: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="WebDAV 用户名；空=匿名")
+    # 明文存库（本地单用户定调，同 app_secret 口径）
+    webdav_password: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="WebDAV 密码（明文，本地单用户定调）")
+    # 自动备份（默认开——2026-11-14 需求：每天早/中/晚三次，详见 workflows._claim_autobackup）
+    auto_backup_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"), comment="自动备份开关（默认开）")
+    # 备份目录；空 = 默认 get_data_dir()/backups（与 pre-restore 安全副本同目录）
+    auto_backup_dir: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="自动备份目录；空=数据目录/backups")
+    # 本设备署名（manifest.device_id 的来源；跨设备识别「远端最后写入方」）
+    device_id: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="本设备 UUID 署名")
+    # 同步状态回显（sync_engine 写）
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, comment="上次同步时刻；空=从未")
+    last_sync_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True, comment="上次同步结果；空=从未")
+    last_sync_error: Mapped[str | None] = mapped_column(String(400), nullable=True, comment="上次同步错误摘要")
+    # 测试连接回显（PATCH 改凭证即清空——旧结果对新配置是谎言）
+    last_test_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, comment="上次测试连接时刻；空=从未")
+    last_test_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True, comment="上次测试结果；空=从未")
+    last_test_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="上次测试往返毫秒")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now(), comment="创建时间")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间"
+    )
+
+    def __repr__(self) -> str:
+        return f"<SyncSettings id={self.id} webdav={self.webdav_enabled}>"

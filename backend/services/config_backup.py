@@ -42,6 +42,11 @@ _CONFIG_TABLES = [
     # 亦属「配置」）；不进 _EMPTY_TRIGGER_TABLES 判定（记忆表空是合法常态，如 seed 前）
     "memory_rules",
     "memory_dismissals",
+    # 2026-11-14 同步备份补：WebDAV 配置与自动备份目录（含明文密码——快照随库
+    # 同目录，安全注记同 chat_channels 行）；不进 _EMPTY_TRIGGER_TABLES（开关/目录
+    # 是设备本地配置，恢复回来无害且应该恢复）；**不参与 WebDAV 同步与合并导入**
+    # （sync_engine.SYNC_TABLES 排除——凭证绝不上服务器）
+    "sync_settings",
 ]
 # 「库刚重建」判定表（同时空 = 删库重灌特征）
 _EMPTY_TRIGGER_TABLES = ["model_providers", "mcp_servers", "cli_tools",

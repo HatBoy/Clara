@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import HOST, PORT
 from database import SessionLocal, init_db
-from routers import about, ai_coach, chat_channels, cli_tools, ingest, integrations, jobs, mcp_servers, model_providers, projects, reminders, search, settings, stats, tasks
+from routers import about, ai_coach, chat_channels, cli_tools, ingest, integrations, jobs, mcp_servers, model_providers, projects, reminders, search, settings, stats, sync, tasks
 from services import chat_channels as chat_channel_workers
 from services import local_folder
 from services.ai_data import seed_memory_rules_if_empty
@@ -24,6 +24,7 @@ from services.backup import apply_pending_restore
 from services.config_backup import maybe_restore_and_snapshot
 from services.reminders import reminder_loop
 from services.seed import refill_seed_proposals, seed_if_empty
+from services.sync_engine import sync_loop
 from services.tasks import purge_expired_soft_deletes
 from services.workflows import agent_loop, note_activity
 
@@ -71,6 +72,9 @@ async def lifespan(app: FastAPI):
     purge_task = asyncio.create_task(_purge_loop())
     reminder_task = asyncio.create_task(reminder_loop())
     agent_task = asyncio.create_task(agent_loop())
+    # WebDAV 同步循环（2026-11-14 同步备份）：脏表防抖 + 周期兜底 + 失败退避，
+    # 启动延迟 15s 避开建库/恢复/seed（services/sync_engine.py 有节奏说明）
+    sync_task = asyncio.create_task(sync_loop())
     # 聊天通讯 worker（2026-10-23 批 5）：捕获主循环引用 + 按 enabled 行启动
     # SDK 长连接线程——须在快照恢复之后（恢复带回的凭据才是 worker 读到的最终态）。
     # 后台化（2026-11-04 真机批）：create_task 仍在快照恢复之后创建（顺序保证
@@ -88,6 +92,7 @@ async def lifespan(app: FastAPI):
     purge_task.cancel()
     reminder_task.cancel()
     agent_task.cancel()
+    sync_task.cancel()
 
 
 app = FastAPI(title="Clara Local Engine", lifespan=lifespan)
@@ -130,6 +135,7 @@ app.include_router(chat_channels.router)
 app.include_router(search.router)
 app.include_router(about.router)
 app.include_router(stats.router)
+app.include_router(sync.router)
 
 
 @app.get("/api/health")

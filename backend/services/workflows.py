@@ -69,6 +69,8 @@ _INGEST_SLOT_OFFSETS: dict[int, tuple[int, ...]] = {
 }
 # 夜间重要整理（2026-10-26 重写，替代旧碎片块聚合）：单轮预排待办条数上限
 NIGHT_PICK_MAX = 5
+# 自动备份三槽时刻（分钟，2026-11-14 同步备份）：早 08:00 / 中 12:00 / 晚 18:00
+_AUTOBACKUP_SLOT_MIN = (480, 720, 1080)
 
 
 # —— 空闲检测（main.py 的 HTTP middleware 调 note_activity 刷新活动信号） ——————————
@@ -288,6 +290,39 @@ def _claim_weekly_report(db: Session, now: datetime) -> bool:
     if now.hour * 60 + now.minute < settings.nightly_start_min:
         return False
     return _claim_run(db, "weekly_report", now.date())
+
+
+def _claim_autobackup(db: Session, now: datetime) -> bool:
+    """自动备份（2026-11-14 同步备份）：早/中/晚三槽（_AUTOBACKUP_SLOT_MIN），
+    槽位认领键 "autobackup"/"autobackup@2"/"autobackup@3" 零表迁移复用
+    (name, run_date) 唯一键；错过补账语义同采集槽位（启动首 tick 逐槽补领）。
+    纯规则零 LLM——不受 ai_enabled 闸（heartbeat 先例）。auto_backup_enabled
+    关 = 永不认领不落行（开关只管这一个流）。不进 jobs.py 注册表——展示收敛
+    在「设置 → 同步备份」页（避免两页口径分叉，docs/scheduled-jobs.md 注记）。"""
+    from services.sync_config import get_sync_config
+
+    if not get_sync_config(db).auto_backup_enabled:
+        return False
+    cur = now.hour * 60 + now.minute
+    for slot, minute in enumerate(_AUTOBACKUP_SLOT_MIN):
+        if cur < minute:
+            continue
+        name = "autobackup" if slot == 0 else f"autobackup@{slot + 1}"
+        if _claim_run(db, name, now.date()):
+            return True
+    return False
+
+
+async def _run_autobackup() -> None:
+    """自动备份执行体：备份 + 7 天清理；异常只 log（备份失败不重试当日——
+    下个槽位自然再试，同 LLM 流「失败次日再说」口径）。"""
+    from services.backup import auto_backup, prune_auto_backups
+
+    try:
+        auto_backup()
+        prune_auto_backups()
+    except Exception:
+        logger.exception("自动备份失败")
 
 
 def _claim_custom_briefs(db: Session, now: datetime) -> list[str]:
@@ -1190,6 +1225,7 @@ async def agent_loop() -> None:
                 weekly = _claim_weekly_report(db, now)
                 minutes_invite = _claim_minutes_invite(db, now)
                 briefs = _claim_custom_briefs(db, now)
+                autobackup = _claim_autobackup(db, now)
             if morning:
                 asyncio.create_task(_run_morning())
             if ingest:
@@ -1208,6 +1244,8 @@ async def agent_loop() -> None:
                 asyncio.create_task(_run_custom_brief(brief_id))
             if _claim_heartbeat(now):
                 asyncio.create_task(_run_heartbeat())
+            if autobackup:
+                asyncio.create_task(_run_autobackup())
         except Exception:
             logger.exception("工作流调度循环异常")
         await asyncio.sleep(AGENT_TICK_SECONDS)

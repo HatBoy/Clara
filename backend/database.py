@@ -446,6 +446,69 @@ def _drop_task_dependencies(eng) -> None:
         conn.execute(text("DROP TABLE IF EXISTS task_dependencies"))
 
 
+# 同步地基（2026-11-14 同步备份）：10 张表补 updated_at 列 + WHEN 守卫触发器。
+# backfill 源按表映射——memory_dismissals / ingestion_items 无 created_at（分别是
+# dismissed_at / first_seen_at），其余默认 created_at
+_NEEDS_UPDATED_AT = [
+    "stats_reports", "subtasks", "reminders", "proposals", "messages",
+    "memory_dismissals", "episodic_facts", "behavior_events",
+    "workflow_runs", "ingestion_items",
+]
+_BACKFILL_TS = {"memory_dismissals": "dismissed_at", "ingestion_items": "last_seen_at"}
+
+
+def _migrate_updated_at_columns(eng) -> None:
+    """10 张表补 updated_at（同步备份地基：行级 LWW 时间判据）。机制同 app_settings
+    版列清单驱动 ADD COLUMN；加列当次顺带 backfill（旧行取源列时刻，无源归本地 now
+    ——datetime('now','localtime') 与 ORM datetime.now 同为本地 naive 口径）。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(eng)
+    tables = inspector.get_table_names()
+    for name in _NEEDS_UPDATED_AT:
+        if name not in tables:
+            continue
+        cols = {c["name"] for c in inspector.get_columns(name)}
+        if "updated_at" in cols:
+            continue
+        src = _BACKFILL_TS.get(name, "created_at")
+        with eng.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {name} ADD COLUMN updated_at DATETIME"))
+            conn.execute(text(
+                f"UPDATE {name} SET updated_at = COALESCE({src}, datetime('now','localtime')) "
+                "WHERE updated_at IS NULL"))
+
+
+def _ensure_updated_at_triggers(eng) -> None:
+    """updated_at 的 WHEN 守卫触发器（同步备份地基，机制同 _ensure_episodic_fts：
+    create_all 不建触发器，新库老库恒经本函数；IF NOT EXISTS 幂等，drop_all 后
+    随表删除、重建后由 init_db / conftest 再挂）。
+
+    WHEN NEW.updated_at IS OLD.updated_at 的两向语义：
+    - 业务写路径（ORM UPDATE 不含未修改列）→ NEW==OLD → 触发器盖本地 now ✓
+    - 同步引擎显式写远端 updated_at → NEW!=OLD → 不触发（否则每次 pull 都把远端
+      时间戳污染成本地 now，三路合并的 LWW 判据变脏）✓
+    recursive_triggers 默认 OFF：内层 UPDATE 不会再触发自身，也不会连锁本表其他
+    触发器（如 episodic_facts 的 FTS 三触发器——FTS 只索引 topic/fact 无碍）。
+    主键名经 Base.metadata 取（cli_tools 是 adapter_id），不硬编码。"""
+    from sqlalchemy import inspect, text
+
+    tables = set(inspect(eng).get_table_names())
+    with eng.begin() as conn:
+        for name in _NEEDS_UPDATED_AT:
+            if name not in tables:
+                continue
+            pk_cols = list(Base.metadata.tables[name].primary_key.columns)
+            if not pk_cols:
+                continue
+            pk = pk_cols[0].name
+            conn.execute(text(
+                f"CREATE TRIGGER IF NOT EXISTS trg_{name}_sync_ua AFTER UPDATE ON {name} "
+                "WHEN NEW.updated_at IS OLD.updated_at "
+                f"BEGIN UPDATE {name} SET updated_at = datetime('now','localtime') "
+                f"WHERE {pk} = NEW.{pk}; END"))
+
+
 def init_db() -> None:
     """按 models 建表（已存在的表不会被改动，新增列由 _migrate_task_columns 补齐，
     旧 cancelled_dates 数据由墓碑迁移一次性转换）。"""
@@ -466,6 +529,8 @@ def init_db() -> None:
     _migrate_local_folder_paths(engine)
     _migrate_cancelled_dates_to_tombstones(engine)
     _drop_task_dependencies(engine)
+    _migrate_updated_at_columns(engine)
+    _ensure_updated_at_triggers(engine)
     _ensure_episodic_fts(engine)
 
 

@@ -149,6 +149,9 @@ def test_settings_handler_no_facts_no_note(monkeypatch):
     monkeypatch.setattr(llm, "call_llm_aux", lambda *a, **kw: json.dumps({
         "action": "unclear", "question": "想改哪一项？", "facts": []},
         ensure_ascii=False))
+    # SessionLocal 隔离同上例（settings_handler 内部会查最近消息做上下文——
+    # 漏 patch 会打到真实 dev 库；2026-11-14 messages 补 updated_at 列后显形）
+    monkeypatch.setattr(nodes, "SessionLocal", TestingSessionLocal)
     out = nodes.settings_handler({"user_input": "嗯嗯"})
     assert "已记下" not in out["final_reply"]
 
