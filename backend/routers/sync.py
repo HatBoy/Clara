@@ -36,6 +36,10 @@ from services.sync_webdav import WebDavClient
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 
+# /run 后台任务引用（asyncio 只持弱引用——无引用的 task 可能被 GC 中途蒸发，
+# 保存引用 + done 回调自清是官方文档要求的写法）
+_bg_tasks: set[asyncio.Task] = set()
+
 
 def _config_out(db: Session, row) -> SyncConfigOut:
     """ORM 行 → 出参（组装目录解析 / 最近备份时刻 / 同步锁状态三个非库字段）。"""
@@ -86,7 +90,9 @@ async def run_now():
     last_sync_error，前端底部行显示——按钮不做禁用拦截）。"""
     if sync_engine.is_syncing():
         return SyncRunOut(started=False, error="上一轮同步仍在进行，请稍候")
-    asyncio.create_task(asyncio.to_thread(sync_engine.sync_now))
+    task = asyncio.create_task(asyncio.to_thread(sync_engine.sync_now))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
     return SyncRunOut(started=True)
 
 

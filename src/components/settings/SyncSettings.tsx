@@ -118,6 +118,16 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
     if (refreshKey > 0) reload();
   }, [refreshKey, reload]);
 
+  // 测试结果是瞬时反馈：8s 自动消退回 idle——长期停留会压住底部行的
+  // 「同步中/失败/最近同步」显示（真机批三根因之一）
+  useEffect(() => {
+    if (test.kind !== "done") return;
+    const t = window.setTimeout(() => {
+      if (mounted.current) setTest({ kind: "idle" });
+    }, 8_000);
+    return () => window.clearTimeout(t);
+  }, [test]);
+
   // 手动同步轮询：syncing 变 false → 完成态（结果看 last_sync_*）
   const pollRunDone = useCallback((rounds = 0) => {
     if (!mounted.current || rounds > RUN_POLL_MAX) return;
@@ -159,6 +169,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
 
   const doTest = async () => {
     if (!cfg) return;
+    setRun({ kind: "idle" }); // 动作互斥：新动作清掉上一动作的残留态（防压制）
     setTest({ kind: "busy" });
     try {
       // 带草稿三件（未保存的输入即时可测；后端回落库内值）
@@ -176,6 +187,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
   };
 
   const doRun = async () => {
+    setTest({ kind: "idle" }); // 动作互斥：测试残留态会压住同步结果（真机批三根因）
     setRun({ kind: "polling" });
     try {
       const res = await runSyncNow();
@@ -195,8 +207,11 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
     setResetConfirm(false);
     try {
       await resetSyncBase();
-      if (mounted.current) setRun({ kind: "done", ok: true, text: "同步基线已重置，下轮同步将重新对齐" });
+      if (!mounted.current) return;
+      // 重置即重新对齐（真机批三）：一条龙自动触发同步，不用再手动点一次
+      setRun({ kind: "done", ok: true, text: "同步基线已重置，正在重新同步…" });
       reload();
+      doRun();
     } catch (e) {
       if (mounted.current) setRun({ kind: "done", ok: false, text: extractDetail(e) });
     }
