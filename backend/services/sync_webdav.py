@@ -53,14 +53,27 @@ class WebDavClient:
 
     def _request(self, method: str, path: str, *, headers: dict | None = None,
                  content: bytes | None = None, timeout: httpx.Timeout | None = None) -> httpx.Response:
+        """单请求 + 限频重试：503/429（坚果云等免费服务的频率限制，2026-11-16
+        真机实测：一轮 22 表全量 PUT 即可触发）短退避重试至多 2 次——限频是
+        暂态，立刻失败会让整轮同步作废且下一轮（退避后）又撞同一窗口。"""
+        import time
+
         url = f"{self._base}{path}"
         merged = {**self._headers, **(headers or {})}
-        try:
-            with httpx.Client(trust_env=False, transport=self._transport) as client:
-                return client.request(method, url, headers=merged, content=content,
-                                      timeout=timeout or self._timeout)
-        except httpx.HTTPError as e:
-            raise WebDavError(f"WebDAV 请求失败（{method} {path}）：{e}") from e
+        last: httpx.Response | None = None
+        for attempt in range(3):  # 首发 + 2 次重试
+            if attempt:
+                time.sleep(1.5 * attempt)
+            try:
+                with httpx.Client(trust_env=False, transport=self._transport) as client:
+                    resp = client.request(method, url, headers=merged, content=content,
+                                          timeout=timeout or self._timeout)
+            except httpx.HTTPError as e:
+                raise WebDavError(f"WebDAV 请求失败（{method} {path}）：{e}") from e
+            if resp.status_code not in (429, 503):
+                return resp
+            last = resp
+        return last  # 重试仍限频：按原语义上抛给调用方判状态码
 
     def _propfind(self, path: str, depth: str) -> httpx.Response:
         return self._request("PROPFIND", path, headers={"Depth": depth})
