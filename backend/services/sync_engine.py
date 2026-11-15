@@ -570,15 +570,17 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
             if base_exists and base is not None and remote_hash == base_hash:
                 if len(del_remote) > max(DELETE_GUARD_MIN, len(remote) // 2):
                     raise SyncAbort(
-                        f"检测到本地大量删除（{name} 表 {len(del_remote)} 行）且远端未变，"
-                        "已中止同步防止误传播。如删除确属故意，请点击「重置同步基线」后重新同步")
+                        f"本地 {name} 表比上次同步少了 {len(del_remote)} 行（常见于删库重建/恢复备份），"
+                        "已中止以防连带清空云端。点「重置基线」后重新同步 = 云端数据与当前本地"
+                        "数据合并保留（双方都不丢）；若想用本地完全替换云端，请先清空 WebDAV "
+                        "上的 clara-sync 目录再重置基线")
             # 守卫 c（本地清空式）：将删本地全部行且本地未变 → 竞态残留/远端被清
             if base_exists and base is not None and local_hash == base_hash \
                     and len(local) > DELETE_GUARD_MIN and del_local \
                     and len(del_local) == len(local):
                 raise SyncAbort(
-                    f"远端数据异常（{name} 表将被整体清空且本地未变），已中止同步。"
-                    "如远端确已清空，请点击「重置同步基线」后重新同步")
+                    f"远端 {name} 表已被清空而本地未动过，疑似云端数据异常，已中止同步"
+                    "防止本地被连带清空。如云端确已清空，请点「重置同步基线」后重新同步")
 
             actual, ins, upd = _write_local(db, name, merged,
                                             {r[pk]: r for r in local})

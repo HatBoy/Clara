@@ -283,7 +283,7 @@ def test_guard_b_blocks_mass_delete_propagation():
         db.query(Task).delete()
         db.commit()
         _add_task(db, "新种子")
-        with pytest.raises(se.SyncAbort, match="大量删除"):
+        with pytest.raises(se.SyncAbort, match="少了"):
             se.run_sync(db, dav, CFG)
         # 守卫拦截后：重置基线是用户出路
         se.clear_snapshot()
@@ -303,7 +303,7 @@ def test_guard_c_blocks_total_wipe():
         m = dict(dav.manifest)
         m["tables"] = {**m["tables"], "tasks": {**m["tables"]["tasks"], "sha1": "stale"}}
         dav.manifest = m
-        with pytest.raises(se.SyncAbort, match="整体清空"):
+        with pytest.raises(se.SyncAbort, match="已被清空"):
             se.run_sync(db, dav, CFG)
         # manifest 记录也一并消失（表被手动删）→ 表级守卫路径
         dav.manifest = {"app": "clara-sync", "tables": {}}

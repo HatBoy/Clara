@@ -61,3 +61,14 @@
   border-top: 1px solid var(--grid-line, rgba(127, 127, 127, 0.18));
   min-height: 38px;
 }
+
+/* 底部行内的 hint 覆写：通用 .settings-action-hint 带 max-width:150px（按钮旁
+   行内文案用）——长提示 10 字就折行挤成高楼。此处放开限宽、左对齐自然换行
+   （布局对齐 settings-row-desc 的换行口径，2026-11-15 真机批二） */
+.sync-hint-row .settings-action-hint {
+  max-width: none;
+  flex: 1 1 100%;
+  text-align: left;
+  white-space: normal;
+  line-height: 1.55;
+}
