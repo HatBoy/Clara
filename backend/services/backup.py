@@ -298,8 +298,9 @@ def prune_auto_backups(dest_dir: str | None = None, keep_days: int = 7) -> int:
 
 def apply_pending_restore() -> bool:
     """恢复第二阶段（新进程 lifespan 最前调用，须先于任何数据库连接）：
-    staging 存在 PENDING 标记则原子替换库/快照/Tauri 偏好并清理。返回是否
-    实际应用。此刻旧进程已死、本进程尚未连接数据库，文件无锁可直覆。"""
+    staging 存在 PENDING 标记则原子替换库/配置快照并清理（Tauri 偏好自
+    2026-11-14 真机批起不在恢复范围——设备本地属性）。返回是否实际应用。
+    此刻旧进程已死、本进程尚未连接数据库，文件无锁可直覆。"""
     staging = get_data_dir() / _STAGING_DIR
     pending = staging / _PENDING_FLAG
     if not pending.is_file():

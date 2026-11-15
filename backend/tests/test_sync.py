@@ -2,11 +2,12 @@
 
 覆盖：sync_settings 单行 get_or_create / PATCH 白名单与归一校验（url 前缀、
 目录存在性）/ 改凭证清探测结果 / GET 组装字段；备份导出全链（快照落 zip /
-manifest 纳入 / 路径校验三拒）；恢复两段式（staging + PENDING → apply 原子
-替换 + 清理 / 非法包全拒）；自动备份（文件名格式 / 7 天清理红线不伤
-pre-restore-* / 三槽认领与开关）。
+manifest 纳入 / 路径校验三拒 / 不含 tauri 目录）；恢复两段式（staging +
+PENDING → apply 原子替换 + 清理 / 非法包全拒 / 手压 zip 多一层目录前缀
+兼容）；自动备份（文件名格式 / 7 天清理红线不伤 pre-restore-* / 三槽认领
+与开关）。
 文件系统全隔离（test_about 原 _isolate_fs 模式）：DATABASE_PATH / get_data_dir
-/ Tauri 探测全部 monkeypatch 到 tmp_path。
+全部 monkeypatch 到 tmp_path。
 """
 
 import json
