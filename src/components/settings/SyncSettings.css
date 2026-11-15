@@ -1,19 +1,5 @@
 /* 同步备份页自有样式（2026-11-14）：骨架复用 GeneralSettings.css 的
-   .settings-* 族，这里只放合并导入冲突明细表与确认条等本页专属件。 */
-
-/* 首同步/快照丢失的人工确认条（整行独立浅红底，区别于行内 hint） */
-.sync-confirm-box {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 10px 14px;
-  margin-top: -12px; /* 视觉上贴进上卡（settings-group gap 收拢） */
-  border: 1px solid rgba(240, 90, 80, 0.35);
-  border-radius: 10px;
-  background: rgba(240, 90, 80, 0.08);
-  font-size: 12px;
-}
+   .settings-* 族，这里只放合并导入冲突明细表与操作提示行等本页专属件。 */
 
 /* 合并导入分析卡（review 态第二张卡） */
 .sync-review-card {

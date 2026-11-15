@@ -192,10 +192,6 @@ export type SyncTestResult = { ok: boolean; ms: number; message: string };
 export type SyncRunResult = {
   started: boolean;
   error?: string | null;
-  needs_confirm?: boolean;
-  local_rows?: number | null;
-  remote_rows?: number | null;
-  reason?: string | null; // first_sync | snapshot_missing
 };
 
 export type MergeConflict = {
@@ -234,9 +230,8 @@ export const updateSyncConfig = (patch: SyncConfigPatch) =>
 export const testWebdav = (body: { url?: string; username?: string; password?: string }) =>
   request<SyncTestResult>("POST", "/api/sync/test", body, 30_000);
 
-/** 手动「立即同步」：needs_confirm 时前端确认后带 confirm 重发。 */
-export const runSyncNow = (confirm = false) =>
-  request<SyncRunResult>("POST", "/api/sync/run", { confirm }, 30_000);
+/** 手动「立即同步」：后台执行（冷启动全自动合并，无确认流程）。 */
+export const runSyncNow = () => request<SyncRunResult>("POST", "/api/sync/run", {}, 30_000);
 
 /** 重置同步基线（清本地快照——守卫拦截后/远端换库后的重对齐出口）。 */
 export const resetSyncBase = () => request<{ ok: boolean }>("POST", "/api/sync/reset-base", {});

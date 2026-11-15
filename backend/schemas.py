@@ -1458,23 +1458,12 @@ class SyncTestOut(BaseModel):
     message: str
 
 
-class SyncRunIn(BaseModel):
-    """手动「立即同步」入参：confirm 仅在上一轮返回 needs_confirm（本地与远端
-    均有数据的首同步/快照丢失，不可逆混库操作）后由前端确认携带。"""
-
-    confirm: bool = False
-
-
 class SyncRunOut(BaseModel):
     """手动同步触发结果（后台化：触发即返回，进度看 GET /api/sync 的 syncing 与
-    last_sync_*）。needs_confirm 时 local_rows/remote_rows/reason 必填供前端弹确认。"""
+    last_sync_*）。冷启动全自动合并（2026-11-15 迭代四）——不再有确认流程。"""
 
     started: bool
     error: Optional[str] = None
-    needs_confirm: bool = False
-    local_rows: Optional[int] = None
-    remote_rows: Optional[int] = None
-    reason: Optional[str] = None  # first_sync | snapshot_missing
 
 
 class MergeAnalyzeIn(BaseModel):

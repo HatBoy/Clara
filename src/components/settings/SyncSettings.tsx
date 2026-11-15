@@ -3,12 +3,12 @@
 // SyncSettings.css（.sync-* 族）。自管理面板：mount 拉取 + 动作后局部刷新；
 // refreshKey 由 App 的 SSE sync 事件驱动（同步完成后状态行即时更新）。
 //
-// WebDAV 同步：三路合并引擎在后端 services/sync_engine.py（防抖 3s + 周期 300s
-// 自动跑），本页只做配置与状态回显；「立即同步」遇 needs_confirm（本地与远端
-// 均有数据的首同步/快照丢失——不可逆混库）弹确认后带 confirm 重发。
+// WebDAV 同步：三路合并引擎在后端 services/sync_engine.py（防抖 3s + 30s 远端
+// 轻探测 + 周期 300s 兜底全自动跑），本页只做配置与状态回显；冷启动双端有
+// 数据同样自动 union 合并（2026-11-15 迭代四起无确认流程——免手动，用户拍板）。
 // 导入导出：备份两件套自"关于我们"迁入（覆盖恢复 = 整库替换需重启后端），
-// 合并导入 = 两阶段（分析冲突明细 → 用户选覆盖/跳过 → 原地合并不需重启，
-// 不删除本地行）。
+// 合并导入 = 两阶段（无冲突直通应用；有冲突先看明细再选覆盖/跳过），原地
+// 合并不需重启、不删除本地行。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
@@ -59,8 +59,7 @@ type TestState =
 type RunState =
   | { kind: "idle" }
   | { kind: "polling" } // 已触发，轮询 syncing 至完成
-  | { kind: "done"; text: string; ok: boolean }
-  | { kind: "confirm"; local_rows: number; remote_rows: number; reason: string };
+  | { kind: "done"; text: string; ok: boolean };
 
 type BackupState =
   | { kind: "idle" }
@@ -176,20 +175,11 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
     }
   };
 
-  const doRun = async (confirm = false) => {
+  const doRun = async () => {
     setRun({ kind: "polling" });
     try {
-      const res = await runSyncNow(confirm);
+      const res = await runSyncNow();
       if (!mounted.current) return;
-      if (res.needs_confirm) {
-        setRun({
-          kind: "confirm",
-          local_rows: res.local_rows ?? 0,
-          remote_rows: res.remote_rows ?? 0,
-          reason: res.reason === "snapshot_missing" ? "本地同步快照缺失" : "首次同步",
-        });
-        return;
-      }
       if (!res.started) {
         setRun({ kind: "done", ok: false, text: res.error || "无法启动同步" });
         return;
@@ -277,6 +267,14 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
     try {
       const res = await analyzeMerge(path);
       if (!mounted.current) return;
+      if (res.updated_count === 0) {
+        // 无冲突直通（2026-11-15 迭代四）：没有同键内容分歧就不必停在选择
+        // 界面——直接导入并显示结果；有冲突才进 review 看明细选策略
+        const applied = await applyMerge(path, "skip");
+        if (!mounted.current) return;
+        setMerge({ kind: "done", text: applied.message });
+        return;
+      }
       setMerge({ kind: "review", path, result: res, strategy: "skip" });
     } catch (e) {
       if (mounted.current) setMerge({ kind: "bad", text: extractDetail(e) });
@@ -349,20 +347,6 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
         </span>
       );
     return <span className="settings-action-hint">尚未同步过（开启开关后自动进行首次同步）</span>;
-  };
-
-  const runConfirm = () => {
-    if (run.kind !== "confirm") return null;
-    return (
-      <div className="sync-confirm-box">
-        <span className="settings-action-hint bad">
-          {run.reason}：本地与远端均有数据（本地 {run.local_rows} 行 / 远端 {run.remote_rows} 行），
-          首次合并不可撤销，确认继续？
-        </span>
-        <button type="button" className="about-link" onClick={() => doRun(true)}>确认合并</button>
-        <button type="button" className="about-link" onClick={() => setRun({ kind: "idle" })}>取消</button>
-      </div>
-    );
   };
 
   const backupHint = () => {
@@ -469,7 +453,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                 type="button"
                 className="settings-action-btn"
                 disabled={run.kind === "polling" || cfg.syncing}
-                onClick={() => doRun(false)}
+                onClick={() => doRun()}
               >
                 {run.kind === "polling" || cfg.syncing ? "同步中…" : "立即同步"}
               </button>
@@ -484,7 +468,6 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
           </div>
           <div className="sync-hint-row">{bottomHint()}</div>
         </div>
-        {runConfirm()}
       </div>
 
       {/* —— 组2：导入导出 —— */}

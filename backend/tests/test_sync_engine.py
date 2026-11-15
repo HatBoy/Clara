@@ -177,38 +177,87 @@ def test_cold_pull_local_empty():
         assert _tasks_titles(db) == ["远端任务"]
 
 
-def test_cold_both_sides_needs_confirm():
-    dav = FakeDav(manifest={"app": "clara-sync", "tables": {"tasks": {"rows": 3}}},
+def test_cold_both_sides_auto_union():
+    """迭代四（2026-11-15）：双端有数据不再要求人工确认——直接 union 合并，
+    两侧数据并集落地、快照建立（免手动，用户拍板）。"""
+    dav = FakeDav(manifest={"app": "clara-sync", "tables": {"tasks": {"rows": 1}}},
                   tables={"tasks": {"table": "tasks", "rows": [
-                      {"id": "r1", "title": "远端", "updated_at": TS1}]}})
+                      {"id": "r1", "title": "远端", "updated_at": TS1,
+                       "priority": 2, "sort_order": 0, "created_at": TS1}]}})
     with TestingSessionLocal() as db:
         _add_task(db, "本地")
         out = se.run_sync(db, dav, CFG)
-        assert out["needs_confirm"] is True
-        assert out["reason"] == "first_sync"
-        assert _tasks_titles(db) == ["本地"]  # 零写操作
-        # force_confirm 后走 union
-        out2 = se.run_sync(db, dav, CFG, force_confirm=True)
-        assert "needs_confirm" not in out2
+        assert "needs_confirm" not in out
+        assert _tasks_titles(db) == ["本地", "远端"]  # 并集落地
+        assert se.has_base()  # 快照直接建立
+        # 远端也拿到本地行（推送内容含并集）
+        pushed = [r["title"] for r in dav.tables["tasks"]["rows"]]
+        assert sorted(pushed) == ["本地", "远端"]
+
+
+def test_snapshot_missing_auto_union():
+    """快照丢失（目录在但 Base 无 meta）同样自动 union——不再区分 reason。"""
+    (se.snapshot_dir()).mkdir(parents=True, exist_ok=True)
+    dav = FakeDav(manifest={"app": "clara-sync", "tables": {"tasks": {"rows": 1}}},
+                  tables={"tasks": {"table": "tasks", "rows": [
+                      {"id": "r1", "title": "远端", "updated_at": TS1,
+                       "priority": 2, "sort_order": 0, "created_at": TS1}]}})
+    with TestingSessionLocal() as db:
+        _add_task(db, "本地")
+        out = se.run_sync(db, dav, CFG)
+        assert "needs_confirm" not in out
         assert _tasks_titles(db) == ["本地", "远端"]
 
 
-def test_snapshot_missing_reason_when_dir_exists():
-    (se.snapshot_dir()).mkdir(parents=True, exist_ok=True)  # 目录在但无 meta
-    dav = FakeDav(manifest={"app": "clara-sync", "tables": {}}, tables={})
+def test_force_push_race_412_auto_union():
+    """双端同时首同步：本端首推收 412（对端先写）→ 重拉 manifest 直接 union。"""
+    dav = FakeDav(manifest={"app": "clara-sync", "tables": {"tasks": {"rows": 1}}},
+                  tables={"tasks": {"table": "tasks", "rows": [
+                      {"id": "r1", "title": "远端", "updated_at": TS1,
+                       "priority": 2, "sort_order": 0, "created_at": TS1}]}})
     with TestingSessionLocal() as db:
         _add_task(db, "本地")
         out = se.run_sync(db, dav, CFG)
-        assert out["reason"] == "snapshot_missing"
+        assert "needs_confirm" not in out
+        assert _tasks_titles(db) == ["本地", "远端"]
 
 
-def test_force_push_race_412_turns_confirm():
-    """双端同时首同步：本端首推收 412（对端先写）→ 转 Case C 确认。"""
-    dav = FakeDav(manifest={"app": "clara-sync", "tables": {}}, tables={})
+# —— 30s 远端轻探测（迭代四）———————————————————————————————————————
+
+
+def test_probe_remote_changed():
+    """探测记忆比对：hash 变 → True；同 → False；远端被清且有记忆 → True。
+    探测函数读 sync_settings 判启用——先落一行启用配置（run_sync 直调不判）。"""
+    from models import SyncSettings
+    from services.sync_config import get_sync_config
+
     with TestingSessionLocal() as db:
-        _add_task(db, "本地")
-        out = se.run_sync(db, dav, CFG)
-        assert out["needs_confirm"] is True and out["reason"] == "first_sync"
+        cfg = get_sync_config(db)
+        cfg.webdav_enabled = True
+        cfg.webdav_url = "https://dav.x"
+        db.commit()
+        _add_task(db, "x")
+        dav = FakeDav()
+        se.run_sync(db, dav, CFG)  # 建立探测记忆（_last_seen_hashes）
+        assert se._last_seen_hashes is not None
+
+        # 远端未变（FakeDav manifest 与记忆一致）→ False
+        assert se._probe_remote_changed(dav) is False
+
+        # 对端改了远端（hash 失配）→ True
+        m = dict(dav.manifest)
+        m["tables"] = {**m["tables"], "tasks": {**m["tables"]["tasks"], "sha1": "changed"}}
+        dav.manifest = m
+        assert se._probe_remote_changed(dav) is True
+
+        # 重新同步刷新记忆 → False（直调 run_sync——_sync_once 自建真客户端
+        # 会走网络，测试替身传不进去）
+        se.run_sync(db, dav, CFG)
+        assert se._probe_remote_changed(dav) is False
+
+        # 远端被清（manifest None）且有记忆 → True（触发同步走守卫 a）
+        dav.manifest = None
+        assert se._probe_remote_changed(dav) is True
 
 
 # —— 守卫 —————————————————————————————————————————————————————————
@@ -238,7 +287,7 @@ def test_guard_b_blocks_mass_delete_propagation():
             se.run_sync(db, dav, CFG)
         # 守卫拦截后：重置基线是用户出路
         se.clear_snapshot()
-        out = se.run_sync(db, dav, CFG, force_confirm=True)
+        out = se.run_sync(db, dav, CFG)
         assert "needs_confirm" not in out
 
 

@@ -2,9 +2,9 @@
 手动同步 / 重置基线 / 备份两件套（从 about 迁入，service 层不动）/ 合并导入。
 
 薄壳层——调 service、按约定翻译状态码（ValueError→422）；不含业务逻辑。
-手动同步（POST /run）：先 probe_run 快速预检（needs_confirm 直接返回供前端
-确认），通过后 create_task 后台执行（前端轮询 GET 的 syncing / last_sync_*
-看进度与结果——不做长请求悬挂）。
+手动同步（POST /run）：create_task 后台执行（前端轮询 GET 的 syncing /
+last_sync_* 看进度与结果——不做长请求悬挂）；冷启动全自动合并（2026-11-15
+迭代四起无确认流程）。
 """
 
 import asyncio
@@ -24,7 +24,6 @@ from schemas import (
     RestoreRequest,
     SyncConfigOut,
     SyncConfigUpdate,
-    SyncRunIn,
     SyncRunOut,
     SyncTestIn,
     SyncTestOut,
@@ -82,24 +81,12 @@ def test_connection(body: SyncTestIn, db: Session = Depends(get_db)):
 
 
 @router.post("/run", response_model=SyncRunOut)
-async def run_now(body: SyncRunIn):
-    """手动「立即同步」：预检（needs_confirm 直接返回）→ 后台执行。"""
-    if not body.confirm:
-        probe = await asyncio.to_thread(sync_engine.probe_run)
-        if probe is None:
-            pass  # 无需确认，落后台执行
-        elif "error" in probe:
-            return SyncRunOut(started=False, error=probe["error"])
-        elif probe.get("needs_confirm"):
-            return SyncRunOut(started=False, **{
-                "needs_confirm": True,
-                "local_rows": probe.get("local_rows"),
-                "remote_rows": probe.get("remote_rows"),
-                "reason": probe.get("reason"),
-            })
+async def run_now():
+    """手动「立即同步」：后台执行（未启用/未配置的中文提示由 _sync_once 落
+    last_sync_error，前端底部行显示——按钮不做禁用拦截）。"""
     if sync_engine.is_syncing():
         return SyncRunOut(started=False, error="上一轮同步仍在进行，请稍候")
-    asyncio.create_task(asyncio.to_thread(sync_engine.sync_now, body.confirm))
+    asyncio.create_task(asyncio.to_thread(sync_engine.sync_now))
     return SyncRunOut(started=True)
 
 

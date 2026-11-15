@@ -24,6 +24,7 @@ from services.backup import apply_pending_restore
 from services.config_backup import maybe_restore_and_snapshot
 from services.reminders import reminder_loop
 from services.seed import refill_seed_proposals, seed_if_empty
+from services import sync_engine
 from services.sync_engine import sync_loop
 from services.tasks import purge_expired_soft_deletes
 from services.workflows import agent_loop, note_activity
@@ -93,6 +94,12 @@ async def lifespan(app: FastAPI):
     reminder_task.cancel()
     agent_task.cancel()
     sync_task.cancel()
+    # 退出前最终冲刷（2026-11-15 迭代四）：防抖 3s 窗口内改完就关应用的最后一波
+    # 本地变更推出去（三端一致）；拿不到锁（恰在同步中）或超时/失败不阻塞退出
+    try:
+        await asyncio.wait_for(asyncio.to_thread(sync_engine._sync_once), timeout=20)
+    except Exception as exc:
+        logger.info("退出前同步冲刷未完成（%s）", exc)
 
 
 app = FastAPI(title="Clara Local Engine", lifespan=lifespan)

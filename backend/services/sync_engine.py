@@ -63,13 +63,11 @@ NATURAL_KEYS: dict[str, tuple[str, ...]] = {
     "ingest_sources": ("source_key",),
     "ingestion_items": ("source_key", "fingerprint"),
 }
-# 冷启动「本地空」判定表（业务数据特征；配置表不算——B 机配好模型再配 WebDAV
-# 是正常路径，不应被误判为「本地有数据」而要求 Case C 确认）
-_BUSINESS_TABLES = ("tasks", "projects", "messages", "subtasks", "proposals")
 
 # —— 触发节奏 —————————————————————————————————————————————————————
 DEBOUNCE_S = 3        # 变更防抖
-PERIODIC_S = 300      # 周期兜底
+PROBE_S = 30          # 远端 manifest 轻探测（对端新数据 ~30s 可见，2026-11-15 迭代四）
+PERIODIC_S = 300      # 周期兜底（防脏表漏标）
 START_DELAY_S = 15    # 启动延迟（避开启动期建库/seed/恢复）
 MAX_PERIOD_S = 1800   # 失败退避上限（300→600→1200→1800，成功复位）
 
@@ -132,12 +130,13 @@ _dirty_hooked = False
 
 def _reset_for_tests() -> None:
     """复位模块态（conftest fresh_db 调用）：脏表集合清空、唤醒信号复位、
-    锁确保释放（异常路径残留会锁死后用例）。"""
+    探测记忆清空、锁确保释放（异常路径残留会锁死后用例）。"""
     with _dirty_lock:
         _dirty_tables.clear()
     _wake.clear()
-    global _main_loop
+    global _main_loop, _last_seen_hashes
     _main_loop = None
+    _last_seen_hashes = None
     if _sync_lock.locked():
         _sync_lock.release()
 
@@ -466,13 +465,6 @@ def is_syncing() -> bool:
     return _sync_lock.locked()
 
 
-def _local_business_empty(db: Session) -> bool:
-    tables = {t.name: t for t in Base.metadata.sorted_tables}
-    return all(
-        db.execute(select(tables[n]).limit(1)).first() is None
-        for n in _BUSINESS_TABLES)
-
-
 def _client_from_config(cfg) -> WebDavClient:
     return WebDavClient(cfg.webdav_url, cfg.webdav_username, cfg.webdav_password)
 
@@ -494,10 +486,14 @@ def _broadcast_sync(ok: bool, error: str | None, tables_changed: int) -> None:
         logger.debug("同步事件广播失败（无人订阅是常态）", exc_info=True)
 
 
-def run_sync(db: Session, client: WebDavClient, cfg, *, force_confirm: bool = False) -> dict:
-    """完整同步一轮。返回统计 dict；needs_confirm / 守卫中止以 SyncAbort 或
-    返回值表达（needs_confirm 时零写操作）。异常（WebDavError/SyncAbort/OSError）
-    由调用方统一落 last_sync_error。"""
+def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
+    """完整同步一轮。返回统计 dict；守卫中止以 SyncAbort 抛出。异常
+    （WebDavError/SyncAbort/OSError）由调用方统一落 last_sync_error。
+
+    冷启动（无 Base）**全自动**（2026-11-15 迭代四，用户拍板免手动确认）：
+    远端空 → Force Push；远端非空 → union+同键取新（本地空即纯 Pull——union
+    公式天然覆盖，不做特判）。个人多设备场景 union+LWW 几乎总正确：冷启动无
+    Base 不做删除传播、行不丢；「覆盖式迁移」诉求由覆盖恢复功能承担。"""
     client.ensure_dirs()
     manifest = client.fetch_manifest()
     base_exists = has_base()
@@ -508,23 +504,9 @@ def run_sync(db: Session, client: WebDavClient, cfg, *, force_confirm: bool = Fa
         raise SyncAbort("远端同步数据意外缺失（曾被同步过）。如确认远端已重置，"
                         "请先点击「重置同步基线」再同步")
 
-    # 冷启动细分：真首同步（远端空）/ 快照丢失（远端有、本地 Base 无）
-    if not base_exists and manifest is not None and not force_confirm:
-        if _local_business_empty(db):
-            pass  # Pull（Case B）：本地空，直接拉远端
-        else:
-            local_rows = sum(len(table_rows(db, t)) for t in _BUSINESS_TABLES)
-            remote_rows = sum(
-                (manifest.get("tables") or {}).get(t, {}).get("rows", 0)
-                for t in _BUSINESS_TABLES)
-            reason = "snapshot_missing" if (snapshot_dir().is_dir()) else "first_sync"
-            return {"needs_confirm": True, "reason": reason,
-                    "local_rows": local_rows, "remote_rows": int(remote_rows)}
-
     # 首推竞态守卫：远端空（从未同步）时先以 If-None-Match 探测拿首推权——
-    # 双端同时首同步，后到者收 412 转冷启动确认路径（union 合并）
-    first_push = manifest is None
-    if first_push:
+    # 双端同时首同步，后到者收 412 → 重拉 manifest 直接走 union 合并（自动）
+    if manifest is None:
         probe = {"app": "clara-sync", "format": 1, "device_id": cfg.device_id,
                  "updated_at": datetime.now().isoformat(timespec="seconds"),
                  "tables": {}}
@@ -532,17 +514,9 @@ def run_sync(db: Session, client: WebDavClient, cfg, *, force_confirm: bool = Fa
             client.push_manifest(probe, if_none_match=True)
             client.put_readme(_README)  # 云端自说明（仅首同步一次）
         except WebDavError as e:
-            if "__PRECONDITION_412__" in str(e):
-                # 对端抢先写入：重拉 manifest，按首同步确认语义重新判定
-                # （force_confirm 已含则直接走下方 union 合并）
-                manifest = client.fetch_manifest()
-                if not force_confirm and not _local_business_empty(db):
-                    return {"needs_confirm": True, "reason": "first_sync",
-                            "local_rows": sum(len(table_rows(db, t)) for t in _BUSINESS_TABLES),
-                            "remote_rows": sum((manifest.get("tables") or {}).get(t, {}).get("rows", 0)
-                                               for t in _BUSINESS_TABLES)}
-            else:
+            if "__PRECONDITION_412__" not in str(e):
                 raise
+            manifest = client.fetch_manifest()  # 对端抢先写入：转 union 合并
 
     # —— 逐表：双 hash 比对 → 跳过 / 合并 ——
     remote_tables = (manifest or {}).get("tables") or {}
@@ -637,11 +611,15 @@ def run_sync(db: Session, client: WebDavClient, cfg, *, force_confirm: bool = Fa
     for name, rows in snapshots.items():
         _save_base(name, rows)
     _save_base_meta(cfg.device_id or "")
+    # 远端探测记忆（2026-11-15 迭代四）：30s 轻探测的比对基准——本轮同步后
+    # 远端 manifest 就是这个形态，变了 = 对端有新数据要拉
+    global _last_seen_hashes
+    _last_seen_hashes = {t: v.get("sha1") for t, v in pushed_tables.items()}
     return stats
 
 
-def _sync_once(confirm: bool = False) -> dict:
-    """一轮同步的完整编排（锁/配置/状态回写/广播；循环与手动共用）。
+def _sync_once() -> dict:
+    """一轮同步的完整编排（锁/配置/状态回写/广播；循环、手动与退出冲刷共用）。
     返回 run_sync 的结果或错误态 dict（不抛——调用方零异常处理）。"""
     if not _sync_lock.acquire(blocking=False):
         return {"busy": True}
@@ -652,7 +630,7 @@ def _sync_once(confirm: bool = False) -> dict:
                 return {"error": "同步未启用或未配置 WebDAV 地址"}
             client = _client_from_config(cfg)
             try:
-                result = run_sync(db, client, cfg, force_confirm=confirm)
+                result = run_sync(db, client, cfg)
                 cfg.last_sync_at = datetime.now()
                 cfg.last_sync_ok = True
                 cfg.last_sync_error = None
@@ -672,49 +650,55 @@ def _sync_once(confirm: bool = False) -> dict:
         _sync_lock.release()
 
 
-def sync_now(confirm: bool = False) -> dict:
+def sync_now() -> dict:
     """手动「立即同步」入口（POST /api/sync/run 经 to_thread 调用）。"""
-    return _sync_once(confirm=confirm)
+    return _sync_once()
 
 
-def probe_run() -> dict | None:
-    """手动同步前的快速预检（无锁只读）：判 needs_confirm（本地与远端均有数据
-    的首同步/快照丢失），None = 可直接跑。network 只拉一次 manifest。"""
-    with database.SessionLocal() as db:
-        cfg = get_sync_config(db)
-        if not cfg.webdav_enabled or not cfg.webdav_url:
-            return {"error": "同步未启用或未配置 WebDAV 地址"}
-        if has_base():
-            return None
-        try:
+# 远端探测记忆（run_sync 成功尾部回写；None = 进程启动后未同步过 → 首次探测
+# 恒判「有变化」触发一轮完整同步，无害）
+_last_seen_hashes: dict | None = None
+
+
+def _probe_remote_changed(client: WebDavClient | None = None) -> bool:
+    """30s 远端轻探测（迭代四）：只 GET manifest（几 KB），per-table sha1 与
+    上次同步记忆比对——变了才触发完整同步，把双端在线的收敛延迟从周期 300s
+    压到 ~30s。锁占用/未启用/网络失败一律返 False（静默，30s 后再探，不计
+    失败退避——探测请求极轻，坚果云限频内）。manifest None 且有记忆 = 远端
+    被清 → 返 True 触发同步（守卫 a 会正确拦截并落提示）。client 可注入
+    （测试替身）；缺省自建。"""
+    if _sync_lock.locked() or _last_seen_hashes is None:
+        return False
+    if client is None:
+        with database.SessionLocal() as db:
+            cfg = get_sync_config(db)
+            if not cfg.webdav_enabled or not cfg.webdav_url:
+                return False
             client = _client_from_config(cfg)
-            client.ensure_dirs()
-            manifest = client.fetch_manifest()
-        except WebDavError as e:
-            return {"error": str(e)[:400]}
-        if manifest is None:
-            return None  # 远端空：Force Push 无需确认
-        if _local_business_empty(db):
-            return None  # 本地空：Pull 无需确认
-        reason = "snapshot_missing" if snapshot_dir().is_dir() else "first_sync"
-        return {"needs_confirm": True, "reason": reason,
-                "local_rows": sum(len(table_rows(db, t)) for t in _BUSINESS_TABLES),
-                "remote_rows": sum((manifest.get("tables") or {}).get(t, {}).get("rows", 0)
-                                   for t in _BUSINESS_TABLES)}
+    try:
+        manifest = client.fetch_manifest()
+    except WebDavError:
+        return False
+    if manifest is None:
+        return True  # 远端被清：触发同步走守卫 a 的正确路径
+    hashes = {t: v.get("sha1") for t, v in (manifest.get("tables") or {}).items()}
+    return hashes != _last_seen_hashes
 
 
 async def sync_loop() -> None:
-    """后台同步循环（main.lifespan 挂 create_task）：启动延迟 → 每秒检查
-    （防抖唤醒 / 脏表 / 周期兜底带失败退避）。同步体走 to_thread（事件循环
-    零阻塞，workflows 铁律）。"""
+    """后台同步循环（main.lifespan 挂 create_task）：启动延迟 → 每秒检查三级
+    触发——①防抖（脏表/唤醒 ≥3s）②30s 远端轻探测（manifest hash 变才拉全量）
+    ③周期兜底 300s（防脏表漏标，失败退避至 1800s）。同步体走 to_thread
+    （事件循环零阻塞，workflows 铁律）。"""
     global _main_loop
     _main_loop = asyncio.get_running_loop()
     await asyncio.sleep(START_DELAY_S)
     register_dirty_hook()
-    last_attempt = 0.0  # monotonic
+    last_attempt = 0.0  # monotonic（完整同步）
+    last_probe = 0.0    # monotonic（轻探测）
     fail_streak = 0
-    logger.info("同步循环已启动（防抖 %ds / 周期 %ds / 退避上限 %ds）",
-                DEBOUNCE_S, PERIODIC_S, MAX_PERIOD_S)
+    logger.info("同步循环已启动（防抖 %ds / 探测 %ds / 周期 %ds / 退避上限 %ds）",
+                DEBOUNCE_S, PROBE_S, PERIODIC_S, MAX_PERIOD_S)
     while True:
         try:
             woke = await asyncio.to_thread(_wake.wait, 1.0)
@@ -723,21 +707,18 @@ async def sync_loop() -> None:
             period = min(PERIODIC_S * (2 ** min(fail_streak, 3)), MAX_PERIOD_S)
             dirty = peek_dirty_tables()
             since_last = now - last_attempt
-            due = ((dirty or woke) and since_last >= DEBOUNCE_S) or since_last >= period
-            if not due:
-                continue
+            if not ((dirty or woke) and since_last >= DEBOUNCE_S) and since_last < period:
+                # 未到完整同步条件：30s 轻探测远端（对端新数据 ~30s 可见）
+                if now - last_probe >= PROBE_S:
+                    last_probe = now
+                    changed = await asyncio.to_thread(_probe_remote_changed)
+                    if not changed:
+                        continue
+                else:
+                    continue
             last_attempt = now
             result = await asyncio.to_thread(_sync_once)
-            if "error" in result or "needs_confirm" in result:
-                if "needs_confirm" in result:
-                    # 高危冷启动留给用户手动确认；落状态行提示
-                    with database.SessionLocal() as db:
-                        cfg = get_sync_config(db)
-                        cfg.last_sync_at = datetime.now()
-                        cfg.last_sync_ok = False
-                        cfg.last_sync_error = (
-                            "本地与远端均有数据（首次同步或快照丢失），请在设置中手动点击「立即同步」确认合并")
-                        db.commit()
+            if "error" in result:
                 fail_streak += 1
             else:
                 fail_streak = 0
