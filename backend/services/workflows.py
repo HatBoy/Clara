@@ -366,25 +366,30 @@ def _has_minutes_trace(db: Session, task_id: str) -> bool:
 
 
 def _pick_minutes_candidate(db: Session, now: datetime):
-    """今日已结束 15~120 分钟的重要会议候选（识别口径复用 job_rules，含系列
+    """已结束 15~120 分钟的重要会议候选（识别口径复用 job_rules，含系列
     展开）；多个候选取最近结束的一场（最贴「刚结束」语境）。返回
     (task, ended_at) 或 None。全天日程无结束语义不参与（is_important_meeting
-    覆盖不到 all_day 维度，这里显式排掉）。"""
+    覆盖不到 all_day 维度，这里显式排掉）。
+
+    取数范围 = 今日 ∪ 昨日（2026-11-16 真机批：午夜后前两小时窗口内的会议
+    实例属昨日，只查今日会漏邀——23:50 散会 00:20 开应用收不到邀请；窗口
+    过滤天然收口，昨日实例只有紧邻午夜结束的才命中）。"""
     from services.job_rules import pick_important_meetings
     from services.tasks import _task_dur
 
     best = None
-    for t, occ in pick_important_meetings(db, now.date()):
-        if t.all_day:
-            continue
-        ended = occ + timedelta(minutes=max(_task_dur(t), 60))
-        mins_ago = (now - ended).total_seconds() / 60
-        if not (MINUTES_INVITE_DELAY_MIN <= mins_ago <= MINUTES_INVITE_WINDOW_MIN):
-            continue
-        if _has_minutes_trace(db, t.id):
-            continue
-        if best is None or ended > best[1]:
-            best = (t, ended)
+    for day in (now.date(), now.date() - timedelta(days=1)):
+        for t, occ in pick_important_meetings(db, day):
+            if t.all_day:
+                continue
+            ended = occ + timedelta(minutes=max(_task_dur(t), 60))
+            mins_ago = (now - ended).total_seconds() / 60
+            if not (MINUTES_INVITE_DELAY_MIN <= mins_ago <= MINUTES_INVITE_WINDOW_MIN):
+                continue
+            if _has_minutes_trace(db, t.id):
+                continue
+            if best is None or ended > best[1]:
+                best = (t, ended)
     return best
 
 
