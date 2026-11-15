@@ -63,3 +63,15 @@
   display: flex;
   gap: 8px;
 }
+
+/* 「同步操作」卡底部提示行（2026-11-15 真机批：动作结果/最近同步恒定位在此，
+   按钮行不再被 hint 挤动导致左右移动；占满行宽、高度恒定） */
+.sync-hint-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--grid-line, rgba(127, 127, 127, 0.18));
+  min-height: 38px;
+}

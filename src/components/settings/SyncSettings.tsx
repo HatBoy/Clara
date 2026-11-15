@@ -316,23 +316,39 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
     );
   if (!cfg) return null;
 
-  /** 操作行 hint 区（三按钮共用户一行，结果轮显）：本次测试 > 本次同步 > 上次测试静态回显 */
-  const actionHints = () => {
+  /** 「同步操作」卡底部提示行（占满行宽、位置恒定——按钮行不再被 hint 挤动）：
+   *  动作结果轮显（重置确认 > 本次测试 > 本次同步），无动作时回落持久化的
+   *  最近同步状态。测试结果只在本轮动作后显示，不做历史回显（用户拍板）。 */
+  const bottomHint = () => {
+    if (resetConfirm)
+      return (
+        <>
+          <span className="settings-action-hint bad">
+            将清空本地同步快照，下次同步按首次同步重新对齐，确认？
+          </span>
+          <button type="button" className="about-link" onClick={doResetBase}>确认</button>
+          <button type="button" className="about-link" onClick={() => setResetConfirm(false)}>取消</button>
+        </>
+      );
     if (test.kind === "busy") return <span className="settings-action-hint">测试中…</span>;
     if (test.kind === "done")
       return (
         <span className={`settings-action-hint ${test.ok ? "ok" : "bad"}`}>
-          {test.ok ? `连接成功（${test.ms}ms）` : test.message}
+          {test.ok ? `连接成功（${test.ms}ms），可读写` : test.message}
         </span>
       );
     if (run.kind === "polling") return <span className="settings-action-hint">同步中…</span>;
     if (run.kind === "done")
       return <span className={`settings-action-hint ${run.ok ? "ok" : "bad"}`}>{run.text}</span>;
-    if (cfg.last_test_ok === true)
-      return <span className="settings-action-hint ok">上次测试 {fmtTime(cfg.last_test_at)} · {cfg.last_test_ms}ms</span>;
-    if (cfg.last_test_ok === false)
-      return <span className="settings-action-hint bad">上次测试 {fmtTime(cfg.last_test_at)} 失败</span>;
-    return null;
+    // 持久化兜底：最近一次同步状态（失败带错误摘要）
+    if (cfg.last_sync_at)
+      return (
+        <span className={`settings-action-hint ${cfg.last_sync_ok ? "ok" : "bad"}`}>
+          最近同步 {fmtTime(cfg.last_sync_at)} · {cfg.last_sync_ok ? "成功" : "失败"}
+          {cfg.last_sync_error ? ` · ${cfg.last_sync_error}` : ""}
+        </span>
+      );
+    return <span className="settings-action-hint">尚未同步过（开启开关后自动进行首次同步）</span>;
   };
 
   const runConfirm = () => {
@@ -435,10 +451,8 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
             <div className="settings-row-info">
               <span className="settings-row-name">同步操作</span>
               <span className="settings-row-desc">
-                {cfg.last_sync_at
-                  ? `最近同步 ${fmtTime(cfg.last_sync_at)} · ${cfg.last_sync_ok ? "成功" : "失败"}`
-                  : "尚未同步过（开启开关后自动进行首次同步）"}
-                {cfg.last_sync_error ? ` · ${cfg.last_sync_error}` : ""}
+                测试验证服务可达且账号有写权限；重置基线 = 清空本地同步快照
+                （同步被安全守卫拦下、或远端数据已整体更换时，用它重新对齐）
               </span>
               {saveError && <span className="settings-row-desc sync-error">{saveError}</span>}
             </div>
@@ -459,25 +473,16 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
               >
                 {run.kind === "polling" || cfg.syncing ? "同步中…" : "立即同步"}
               </button>
-              {!resetConfirm ? (
-                <button
-                  type="button"
-                  className="settings-action-btn"
-                  onClick={() => setResetConfirm(true)}
-                  title="清空本地同步快照：同步被安全守卫拦下后、或远端数据已整体更换时的重新对齐出口"
-                >
-                  重置基线
-                </button>
-              ) : (
-                <>
-                  <span className="settings-action-hint bad">确认重置？下次同步将重新对齐</span>
-                  <button type="button" className="about-link" onClick={doResetBase}>确认</button>
-                  <button type="button" className="about-link" onClick={() => setResetConfirm(false)}>取消</button>
-                </>
-              )}
-              {actionHints()}
+              <button
+                type="button"
+                className="settings-action-btn"
+                onClick={() => setResetConfirm(true)}
+              >
+                重置基线
+              </button>
             </div>
           </div>
+          <div className="sync-hint-row">{bottomHint()}</div>
         </div>
         {runConfirm()}
       </div>
@@ -640,14 +645,6 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
               >
                 更改目录
               </button>
-            </div>
-          </div>
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <span className="settings-row-name">恢复自动备份</span>
-              <span className="settings-row-desc">
-                自动备份文件在上面「覆盖恢复」或「合并导入」中选择即可使用
-              </span>
             </div>
           </div>
         </div>
