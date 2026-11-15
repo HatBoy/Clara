@@ -23,7 +23,6 @@ from services.ai_data import seed_memory_rules_if_empty
 from services.backup import apply_pending_restore
 from services.config_backup import maybe_restore_and_snapshot
 from services.reminders import reminder_loop
-from services.seed import refill_seed_proposals, seed_if_empty
 from services import sync_engine
 from services.sync_engine import sync_loop
 from services.tasks import purge_expired_soft_deletes
@@ -64,10 +63,11 @@ async def lifespan(app: FastAPI):
         # 接入等配置——启动时检测库刚重建特征则从 data/config_snapshot.json 恢复，
         # 随后无条件覆盖写新快照（services/config_backup.py 模块头有机制说明）
         maybe_restore_and_snapshot(db)
-        seed_if_empty(db)
-        # dev 专属：测试建议卡是可消耗数据，消耗完（无未决 seed 卡）重启在此
-        # 自动补一批——打包形态函数内 no-op（services/seed.py 有机制说明）
-        refill_seed_proposals(db)
+        # 2026-11-15 用户拍板：任何模式（含 dev）启动一律不灌测试数据——启动时
+        # 重灌对程序测试干扰大；测试数据改由 backend/gen_test_data.py 手动生成。
+        # seed_if_empty 仅供 pytest 的 seeded_db fixture 使用（services/seed.py）。
+        # seed_memory_rules_if_empty 是功能性行为保留（从应用设置推导 3 条记忆
+        # 规则——首次启用 AI 的引导底，非测试数据）
         seed_memory_rules_if_empty(db)
         purge_expired_soft_deletes(db)
     purge_task = asyncio.create_task(_purge_loop())

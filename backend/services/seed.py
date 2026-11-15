@@ -1,8 +1,11 @@
-"""启动 seed：projects 表为空时灌入测试数据（幂等，重启不重复）。
+"""seed 数据灌入（2026-11-15 起 lifespan 不再调用——任何模式启动一律零灌入，
+用户拍板：启动时重灌测试数据对程序测试干扰大；需要测试数据时手动执行
+backend/gen_test_data.py 随机生成。本模块仅供 pytest 的 seeded_db fixture
+与一次性场景使用）。
 
 以运行当天 0 点为基准把 seed_data 的相对偏移（dateOffset / 小时小数）换算为
-绝对 naive 本地时间——保证首次启动当天，日/周/月三视图都有数据可看。
-数据过时想重置：删 backend/data/clara.db* 后重启即按新当天重灌。
+绝对 naive 本地时间——保证灌入当天，日/周/月三视图都有数据可看。
+refill_seed_proposals（dev 再生建议卡）已随 lifespan 调用点一同退役删除。
 """
 
 import logging
@@ -12,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from config import IS_PACKAGED
-from models import Project, Proposal, Task
+from models import Project, Task
 from schemas import PRIORITY_INT  # priority 字符串 → 库内 INT（与写路径 service 共用单一来源）
 from services.ai_data import create_proposal
 from services.seed_data import SEED_PROJECTS, SEED_PROPOSALS, SEED_TASKS
@@ -39,11 +42,11 @@ def _to_rrule(rec: dict | None) -> str | None:
 
 
 def _ingest_seed_proposals(db: Session) -> None:
-    """灌入数据源页测试建议卡（SEED_PROPOSALS）。
+    """灌入数据源页测试建议卡（SEED_PROPOSALS，seed_if_empty 尾部同批调用）。
 
     payload 与真实采集轮同构（from_ingest 标记，前端 isIngestProposal 命中），
-    另加 seed 标记供 refill_seed_proposals 识别"这批是可再生的测试数据"；
-    schedule 条目的相对偏移在此换算绝对 naive ISO。
+    另加 seed 标记标识"这批是可再生的测试数据"；schedule 条目的相对偏移在
+    此换算绝对 naive ISO。
     """
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)  # 当天 0 点（naive 本地）
     for p in SEED_PROPOSALS:
@@ -67,25 +70,6 @@ def _ingest_seed_proposals(db: Session) -> None:
                 "evidence": p["evidence"],
             }
         create_proposal(db, kind=p["kind"], payload=payload)
-
-
-def refill_seed_proposals(db: Session) -> bool:
-    """dev 形态再生数据源页测试建议卡：无未决 seed 卡时重灌一批。
-
-    背景：建议卡是可消耗的测试数据（确认/拒绝即结清），而 seed_if_empty 的
-    幂等闸门是 projects 表空——消耗完后库仍非空，重启永远灌不进新一批，删库
-    重灌又连坐丢任务/项目。故 dev 下走独立闸门"无未决 seed 卡即补"（剩有
-    未消耗条目时不重复灌；部分结算的浅拷贝 payload 保留 seed 键，判定可靠）。
-    打包形态恒 no-op——测试数据不得反复灌给正式用户。返回是否灌了。
-    """
-    if IS_PACKAGED:
-        return False
-    pending = db.scalars(select(Proposal).where(Proposal.outcome.is_(None))).all()
-    if any((p.payload or {}).get("seed") is True for p in pending):
-        return False
-    _ingest_seed_proposals(db)
-    logger.info("重灌数据源页测试建议卡：%d 张", len(SEED_PROPOSALS))
-    return True
 
 
 def seed_if_empty(db: Session) -> bool:

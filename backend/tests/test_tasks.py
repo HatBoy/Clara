@@ -199,14 +199,14 @@ def test_list_order_matches_mock(client: TestClient, seeded_db):
 
 
 def test_lifespan_seeds_on_startup(monkeypatch):
-    # 验证 lifespan 真接线：monkeypatch 掉真实建表与 SessionLocal（指向测试内存库），
-    # 进入 TestClient 上下文触发 lifespan 后应自动灌入 seed
+    # 2026-11-15 语义反转（用户拍板）：任何模式启动一律零灌入——lifespan 真接线
+    # 验证改为断言不灌；测试数据由 backend/gen_test_data.py 手动生成。
     import main
 
     monkeypatch.setattr(main, "init_db", lambda: None)
     monkeypatch.setattr(main, "SessionLocal", TestingSessionLocal)
     with TestClient(main.app) as c:
-        assert len(c.get("/api/tasks").json()) == 117
+        assert len(c.get("/api/tasks").json()) == 0
 
 
 # —— 写路径：PATCH 部分更新 ——
