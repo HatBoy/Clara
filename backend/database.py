@@ -510,10 +510,15 @@ def _ensure_updated_at_triggers(eng) -> None:
 
 
 def init_db() -> None:
-    """按 models 建表（已存在的表不会被改动，新增列由 _migrate_task_columns 补齐，
-    旧 cancelled_dates 数据由墓碑迁移一次性转换）。"""
+    """幂等的数据库结构自检（桌面应用无部署环节——schema 升级收敛在启动时：
+    新库自动建全套表、老库自动补缺列/触发器；结构已最新时全部检查落空，
+    毫秒级）。已存在的表不会被改动，新增列由 _migrate_* 系列补齐。"""
+    import logging
+    from sqlalchemy import inspect
+
     import models  # noqa: F401  # 导入以确保模型类注册到 Base.metadata
 
+    tables_before = len(inspect(engine).get_table_names())
     Base.metadata.create_all(engine)
     _migrate_task_columns(engine)
     _migrate_app_settings_columns(engine)
@@ -532,6 +537,13 @@ def init_db() -> None:
     _migrate_updated_at_columns(engine)
     _ensure_updated_at_triggers(engine)
     _ensure_episodic_fts(engine)
+
+    log = logging.getLogger(__name__)
+    total = len(inspect(engine).get_table_names())
+    if total > tables_before:
+        log.info("首次建库：已建 %d 张表（含列迁移与触发器挂载）", total - tables_before)
+    else:
+        log.info("数据库结构核对完成（%d 张表，幂等无变化）", total)
 
 
 def get_db():

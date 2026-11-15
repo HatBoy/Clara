@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     if apply_pending_restore():
         logger.info("备份恢复已应用（restore_staging → 数据目录替换完成）")
     init_db()
-    logger.info("数据库建表完成（幂等 create_all）")
+    logger.info("数据库初始化完成")  # 详细两态日志（首次建库/核对无变化）由 init_db 内部打
     with SessionLocal() as db:
         # 配置快照自愈（2026-10-22）：删库重灌 seed 不会再连坐清空模型/数据
         # 接入等配置——启动时检测库刚重建特征则从 data/config_snapshot.json 恢复，
