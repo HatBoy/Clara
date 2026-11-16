@@ -124,6 +124,28 @@ def test_postvalidate_drafts_none_windows_unchanged():
     assert len(result["draft_plan"]) == 1
 
 
+def test_postvalidate_drafts_budget_accumulates_within_batch():
+    """同批草案日预算累计（2026-11-17 二轮批 1）：旧版每条对同一基线判定，
+    同批合计可超 work_minutes_per_day——对齐引擎 plan_slots 的同批互斥口径。"""
+    from agents.graph import _postvalidate_drafts
+
+    now = datetime(2026, 11, 16, 12, 0)
+    day = now.replace(hour=0) + timedelta(days=1)
+    result = {
+        "draft_plan": [
+            {"title": "草案一", "start": (day + timedelta(hours=9)).isoformat(), "duration": 270},
+            {"title": "草案二", "start": (day + timedelta(hours=14)).isoformat(), "duration": 270},
+        ],
+        "evidence": [{"idx": 0}, {"idx": 1}],
+        "final_reply": "综述",
+    }
+    _postvalidate_drafts(result, busy=[], day_start_min=480, day_end_min=1320,
+                         lunch=None, now=now, day_load={}, day_budget=480)
+    titles = [d["title"] for d in result["draft_plan"]]
+    assert titles == ["草案一"]  # 单条各自不超，累计 540>480 → 第二条丢弃
+    assert "草案二" in result["final_reply"]
+
+
 def test_adjudicator_adjust_respects_avoid_window(monkeypatch):
     """裁决器微调槽后验补查（批 4 前 ±90min 微调可跳出偏好窗）：
     主荐周五 11:00（窗外），LLM 微调到 12:30（+90 恰在合法域、且落进下午窗

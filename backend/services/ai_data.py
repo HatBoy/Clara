@@ -344,11 +344,14 @@ def upsert_memory_rule(
     evidence: str | None = None,
     source: str = "ai_reflect",
     last_confirmed_at: datetime | None = None,
-) -> MemoryRule:
+) -> MemoryRule | None:
     """习惯学习官的落库入口（手写区调用）：同 category + content 完全一致视为同一
     规则（更新 confidence/evidence/last_confirmed_at，即"印证"），否则新建；新建前
     若已满上限，先淘汰 confidence 最低（并列取 last_confirmed_at 最旧、再取
-    updated_at 最旧）一行——新增一条换一条（PRD §4.3 总量控制）。
+    updated_at 最旧）一行——新增一条换一条（PRD §4.3 总量控制）。淘汰只从 AI
+    产出行挑（二轮批 1）：user_manual/chat 是用户明说/确认的规则（最高裁决权
+    精神，让位闸管写入冲突、管不到总量淘汰），满员且无可淘汰时放弃本条
+    （宁可不学，不挤用户），返回 None。
 
     注意：ai_reflect 来源的规则必须带 evidence（"无出处的画像不落库"），本函数
     不强拦（信任手写区在归纳链内已丢弃无证据候选），落库前由调用方保证。
@@ -370,7 +373,15 @@ def upsert_memory_rule(
 
     count = len(list_memory_rules(db))
     if count >= MEMORY_RULES_MAX:
-        victim = list_memory_rules(db)[-1]  # 注入序末位 = 最低置信且最旧
+        # 淘汰只从 AI 产出行挑（注入序末位起倒找）：user_manual/chat 是用户
+        # 明说/确认的规则，不被 AI 新规则挤掉；无可淘汰则放弃本条（宁可不学）
+        rules = list_memory_rules(db)
+        victim = next((r for r in reversed(rules)
+                       if r.source not in ("user_manual", "chat")), None)
+        if victim is None:
+            logger.warning("记忆规则满 %d 条且全部为用户规则，放弃写入 AI 规则：%s",
+                           MEMORY_RULES_MAX, content[:30])
+            return None
         logger.info("记忆规则满 %d 条，淘汰 [%s] %s", MEMORY_RULES_MAX, victim.category, victim.id)
         db.delete(victim)
     row = MemoryRule(

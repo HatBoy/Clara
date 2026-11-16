@@ -74,6 +74,22 @@ def test_planner_reschedule_uses_known_duration_from_tomorrow():
     assert d["start"] >= "2026-10-22"  # not_before 明日语义
 
 
+def test_planner_reschedule_hint_sets_not_before():
+    # 2026-11-17 二轮批 1：reschedule 从用户原话解析相对时间作引擎起点
+    # （排期链 _hint_to_not_before 单源复用）——「今晚八点」不再被丢弃、
+    # 从明早 0 点全自主挑槽（排期链修过的真机坑在直排路径复存）
+    known = {"t1": {"title": "夜跑", "duration": 60}}
+    hinted, _ = plan_actions(
+        [{"title": "夜跑", "action": "reschedule", "task_id": "t1"}],
+        hint="把夜跑改到今晚八点", **_args(known=known))
+    assert hinted[0]["start"] == "2026-10-21T20:00"  # _NOW 当天 20:00（原话起点）
+
+    plain, _ = plan_actions(
+        [{"title": "夜跑", "action": "reschedule", "task_id": "t1"}],
+        **_args(known=known))
+    assert plain[0]["start"] >= "2026-10-22"  # 无时间表达回落明早语义
+
+
 def test_planner_reschedule_without_snapshot_degrades():
     drafts, inbox = plan_actions([
         {"title": "重排评审", "action": "reschedule"},          # 无 task_id

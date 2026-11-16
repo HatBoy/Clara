@@ -551,6 +551,12 @@ def _postvalidate_drafts(result: dict, *, busy: list[tuple[datetime, datetime]],
                          avoid_windows=avoid_windows):
             dropped.append(d["title"])
             continue
+        # 同批已保留草案回填日负荷（2026-11-17 二轮批 1）：旧版每条都对同一基线
+        # 判定，同批合计可超 work_minutes_per_day——对齐引擎 plan_slots 的同批
+        # 互斥口径（day_load None = 调用方不查预算，保持不动）
+        if day_load is not None:
+            d0 = start.date()
+            day_load[d0] = day_load.get(d0, 0) + d["duration"]
         remap[i] = len(kept)
         kept.append(d)
     if dropped:

@@ -29,12 +29,16 @@ def plan_actions(actions: list[dict], *, now: datetime,
                  lunch: tuple[int, int] | None,
                  day_budget: int | None,
                  known: dict[str, dict],
-                 rules: list[str] | None = None) -> tuple[list[dict], list[dict]]:
+                 rules: list[str] | None = None,
+                 hint: str | None = None) -> tuple[list[dict], list[dict]]:
     """三流向编排 → (draft_plan 条目, inbox_items 条目)。
 
     known：deep_context 已知任务快照 {task_id: {"title", "duration"}}——
     reschedule 的标题与时长唯一可信源（brain 钳制只保 task_id 白名单）。
     rules：memory_rules 列表（偏好避让窗解析源，engine 内部解析）。
+    hint：本轮用户原话（二轮批 1）——reschedule 从中解析「今晚八点/后天」类
+    相对时间作引擎起点（排期链 _hint_to_not_before 同款；解析不出回落明早
+    0 点，此前用户明给时间被丢弃全自主挑槽是排期链修过的坑在直排路径复存）。
     """
     from agents.engine import plan_slots
 
@@ -67,9 +71,13 @@ def plan_actions(actions: list[dict], *, now: datetime,
             if not snap or not snap.get("duration") or not snap.get("title"):
                 inbox.append(_entry(title, None, "未能自动改期（信息不足），请手动调整"))
                 continue
-            # 明日 0 点 = not_before 语义：改期不给"今天更晚"，从明天起找
-            not_before = now.replace(hour=0, minute=0, second=0, microsecond=0) \
-                + timedelta(days=1)
+            # not_before：用户原话里的相对时间优先（二轮批 1，_hint_to_not_before
+            # 单源复用）；解析不出回落明早 0 点（改期不给"今天更晚"，从明天起找）
+            from agents.scheduler.profiler import _hint_to_not_before
+
+            not_before = _hint_to_not_before(hint or "", now) or (
+                now.replace(hour=0, minute=0, second=0, microsecond=0)
+                + timedelta(days=1))
             slot = find_slot(snap["title"], snap["duration"], not_before)
             if slot is not None:
                 drafts.append({"task_id": it["task_id"], "title": snap["title"],

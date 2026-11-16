@@ -196,7 +196,11 @@ def _adjudicate(state, clean, conflict_queue, slots, question,
         return is_valid_slot(
             slot, duration, busy_v, now=now,
             day_start_min=ctx["day_start_min"], day_end_min=ctx["day_end_min"],
-            lunch=ctx["lunch"], morning_only=_entry_morning_only(e),
+            lunch=ctx["lunch"],
+            # _no_budget（坚持安排）豁免 morning 闸与 finder 单源对齐（二轮批 1：
+            # 此前裁决器不复核豁免，两挂就医上午闸 continue 丢记账——同批后续
+            # 条目可与它重叠、日预算失真）
+            morning_only=None if e.get("_no_budget") else _entry_morning_only(e),
             day_load=dict(load_v) if load_v is not None else None,
             day_budget=None if e.get("_no_budget") else ctx["day_budget"],
             avoid_windows=avoid), duration

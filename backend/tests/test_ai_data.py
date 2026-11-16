@@ -96,6 +96,38 @@ def test_upsert_memory_rule_evicts_lowest_confidence_when_full():
         assert any(r.content == "新规则" for r in rules)
 
 
+def test_upsert_memory_rule_never_evicts_user_rules_when_full():
+    # 2026-11-17 二轮批 1：user_manual/chat 是用户明说/确认的规则——满员时
+    # 不被 AI 新规则挤掉；全用户规则则放弃本条（宁可不学，不挤用户）
+    for i in range(ai_data.MEMORY_RULES_MAX):
+        _add_rule(source="user_manual" if i % 2 == 0 else "chat",
+                  content=f"用户规则{i}", confidence=1.0)
+    with TestingSessionLocal() as db:
+        row = ai_data.upsert_memory_rule(db, category="开会习惯", content="AI 新规则",
+                                         confidence=0.8, evidence="证据")
+    assert row is None
+    with TestingSessionLocal() as db:
+        rules = ai_data.list_memory_rules(db)
+        assert len(rules) == ai_data.MEMORY_RULES_MAX  # 用户规则一条不丢
+        assert not any(r.content == "AI 新规则" for r in rules)
+
+
+def test_upsert_memory_rule_mixed_full_evicts_only_ai_row():
+    ai_id = None
+    for i in range(ai_data.MEMORY_RULES_MAX - 1):
+        _add_rule(source="user_manual", content=f"用户规则{i}", confidence=1.0)
+    ai_id = _add_rule(source="ai_reflect", confidence=0.3, content="低置信AI行")
+    with TestingSessionLocal() as db:
+        row = ai_data.upsert_memory_rule(db, category="开会习惯", content="AI 新规则",
+                                         confidence=0.8, evidence="证据")
+    assert row is not None
+    with TestingSessionLocal() as db:
+        rules = ai_data.list_memory_rules(db)
+        assert len(rules) == ai_data.MEMORY_RULES_MAX  # 换一条不涨
+        assert all(r.id != ai_id for r in rules)  # 被淘汰的是 AI 行
+        assert sum(1 for r in rules if r.source == "user_manual") == ai_data.MEMORY_RULES_MAX - 1
+
+
 def test_decay_stale_rules_lowers_old_ai_reflect():
     stale = datetime.now() - timedelta(days=91)
     _add_rule(content="陈年规则", confidence=0.7, last_confirmed_at=stale)

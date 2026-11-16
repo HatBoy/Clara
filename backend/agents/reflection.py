@@ -262,8 +262,10 @@ def _apply_actions(db: Session, actions: list[dict], report: ReflectionReport) -
             continue
         if a["action"] in ("replace", "merge"):
             delete_memory_rule(db, a["rule_id"])
-        upsert_memory_rule(db, category=a["category"], content=a["content"],
-                           confidence=a["confidence"], evidence=a["evidence"])
+        row = upsert_memory_rule(db, category=a["category"], content=a["content"],
+                                 confidence=a["confidence"], evidence=a["evidence"])
+        if row is None:  # 满员且无可淘汰（全用户规则）：本条放弃，不计数
+            continue
         if a["action"] == "new":
             report.created += 1
         elif a["action"] == "replace":

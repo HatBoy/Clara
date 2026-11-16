@@ -64,7 +64,7 @@ def dispatcher_node(state: StrategistState) -> dict:
                 day_start_min=s.calendar_start_min, day_end_min=s.calendar_end_min,
                 lunch=(s.lunch_start_min, s.lunch_end_min) if s.lunch_enabled else None,
                 day_budget=s.work_minutes_per_day, known=_known_from(deep_context),
-                rules=state.get("memory_rules"))
+                rules=state.get("memory_rules"), hint=state.get("user_input"))
             if drafts:
                 out["draft_plan"] = drafts
                 notes.append(f"已出 {len(drafts)} 条时间草案，确认后写入日历")

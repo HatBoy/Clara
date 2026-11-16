@@ -62,11 +62,15 @@ def intake_node(state: SchedulerState) -> dict:
         # 增——排期分支此前丢弃摘要，上午闲聊交代的偏好下午排期接不住）
         chat_summary, recent_msgs = chat_context(db, recent_k=_PLANNER_HISTORY_K,
                                                  exclude=state["user_input"])
+        # 下方两查询一并进会话作用域（二轮批 1）：此前在 with 块外用已关闭的
+        # Session 隐式重连——能跑但违反会话纪律，对测试替身/会话策略零防御
+        candidates = unscheduled[:_PLANNER_MAX_CANDIDATES]
+        est_hints = {t.id: similar_done_durations(db, t.title) for t in candidates}
+        recent_done_rows = recent_done(db)
 
     # 天气注入：城市未配置/网络失败恒 None——排期不依赖天气，提示词层降级
     weather = forecast_for_city(s.weather_city)
 
-    candidates = unscheduled[:_PLANNER_MAX_CANDIDATES]
     # 占用区间（系列按实例展开——补上旧版"系列基准日在窗外挡不住撞期"的盲区）；
     # 相似查重池取未来 7 天窗口内的实例；时长统一 _task_dur（0 视同缺失）。
     # busy_meta 同循环产区间→任务映射（2026-10-22 冲突让位：conflict 问询带
@@ -119,7 +123,7 @@ def intake_node(state: SchedulerState) -> dict:
             "intensity": task_intensity(t.title, t.duration_mins, t.priority),
             # 同类历史耗时（2026-10-26 批 5）：近 90 天相似已完成任务时长均值
             # ——剖析估时的个性化证据（PROFILER §四.5 历史值优先于经验值）
-            "est_hint": similar_done_durations(db, t.title),
+            "est_hint": est_hints.get(t.id),
             "notes": (t.notes or "").strip()[:_PLANNER_NOTES_CHARS],
         } for t in candidates],
         "valid_ids": sorted({t.id for t in candidates}),
@@ -132,7 +136,7 @@ def intake_node(state: SchedulerState) -> dict:
         } for t in scheduled[:_PLANNER_MAX_SCHEDULED]],
         # 完成节奏（2026-10-26 批 4 补键）：近 7 天 done 前 10——真实产能与
         # 节奏的证据（"上周完成了 X Y Z"），剖析估时/精力判断的对照源
-        "recent_done": recent_done(db),
+        "recent_done": recent_done_rows,
         # 执行节奏量化 + 近期拒绝理由（优化批 5）：见 intake 取数注释
         "execution_rhythm": rhythm,
         "recent_rejects": recent_rejects,
