@@ -65,23 +65,38 @@ def test_ics_export_events_rrule_exdate_and_all_day(tmp_path):
         # 墓碑：第二周周会实例被删（EXDATE 应挖空 11-25）
         db.add(Task(title="周会", parent_id=series.id, is_deleted=True,
                     original_time=datetime(2026, 11, 25, 9, 0), sort_order=99))
+        # 活体例外改期跨日（2026-11-17 二轮批 1 口径）：12-02 周二实例挪到 12-04
+        # 周五 11:00——原日挖空 + 新日按系列钟点 09:00 挖空（例外的开始钟点不算），
+        # 例外行自身作为独立 VEVENT 出现在新时刻
+        db.add(Task(title="周会", parent_id=series.id,
+                    original_time=datetime(2026, 12, 2, 9, 0),
+                    start_time=datetime(2026, 12, 4, 11, 0),
+                    end_time=datetime(2026, 12, 4, 12, 0), sort_order=99))
         db.commit()
         out = tmp_path / "tasks.ics"
         res = export_tasks_ics(db, str(out))
-    assert res["count"] == 2  # 未排期待办不进日历
+    assert res["count"] == 3  # 未排期待办不进日历；例外行独立成事件
     cal = Calendar.from_ical(out.read_bytes())
     events = cal.walk("VEVENT")
-    assert len(events) == 2
+    assert len(events) == 3
     by_summary = {str(e.get("summary")): e for e in events}
+    meetings = [e for e in events if str(e.get("summary")) == "周会"]
+    assert len(meetings) == 2  # 主系列（带 RRULE）+ 跨日例外（独立单次事件）
+    meeting = next(e for e in meetings if e.get("rrule") is not None)
+    exception = next(e for e in meetings if e.get("rrule") is None)
 
-    meeting = by_summary["周会"]
     assert str(meeting.get("uid")) == f"{series.id}@clara.local"
     assert meeting.get("dtstart").dt == datetime(2026, 11, 18, 9, 0)  # 浮动本地时间
     assert meeting.get("rrule")["FREQ"] == ["WEEKLY"]
     exdates = meeting.get("exdate")
     assert exdates is not None
-    assert [d.dt for d in exdates.dts] == [datetime(2026, 11, 25, 9, 0)]
+    assert [d.dt for d in exdates.dts] == [
+        datetime(2026, 11, 25, 9, 0),
+        datetime(2026, 12, 2, 9, 0),
+        datetime(2026, 12, 4, 9, 0),  # 新日按系列钟点对齐实例时刻
+    ]
     assert int(meeting.get("priority")) == 1
+    assert exception.get("dtstart").dt == datetime(2026, 12, 4, 11, 0)
 
     allday = by_summary["出差"]
     assert allday.get("dtstart").dt == date(2026, 11, 20)

@@ -692,6 +692,27 @@ def test_patch_this_same_day_reuses_exception_row(client: TestClient, seeded_db)
     b = client.patch(f"/api/tasks/{series_id}", params={"mode": "this", "date": date},
                      json={"notes": "二改"}).json()
     assert b["id"] == a["id"] and b["notes"] == "二改"
+
+
+def test_patch_this_moved_day_cancels_new_day(client: TestClient, seeded_db):
+    # 2026-11-17 二轮批 1：例外改期到系列的另一实例日（周一 → 周五）——新日虚拟
+    # 实例同样挖空（挖空集并入例外当前开始日），防「例外行 + 虚拟实例」双卡；
+    # 例外再经普通编辑挪回原日后集合自动收敛为仅原实例日（无墓碑残留）。
+    series_id = _tid_by_title(client, "英语课")
+    monday = _next_weekday(datetime.now(), 1)
+    friday = monday + timedelta(days=4)  # 同周周五（MO/WE/FR 均实例日）
+    moved = client.patch(
+        f"/api/tasks/{series_id}",
+        params={"mode": "this", "date": monday.date().isoformat()},
+        json={"start_time": f"{friday.date().isoformat()}T15:00:00",
+              "end_time": f"{friday.date().isoformat()}T16:00:00"},
+    )
+    assert moved.status_code == 200, moved.text
+    mon, fri = monday.date().isoformat(), friday.date().isoformat()
+    assert client.get(f"/api/tasks/{series_id}").json()["cancelled_dates"] == [mon, fri]
+    client.patch(f"/api/tasks/{moved.json()['id']}",
+                 json={"start_time": f"{mon}T15:00:00", "end_time": f"{mon}T16:00:00"})
+    assert client.get(f"/api/tasks/{series_id}").json()["cancelled_dates"] == [mon]
     with TestingSessionLocal() as db:
         rows = db.scalars(select(Task).where(
             Task.parent_id == series_id, Task.is_deleted.is_(False))).all()

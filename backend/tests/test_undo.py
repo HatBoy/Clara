@@ -87,6 +87,37 @@ def test_undo_series_this_removes_materialized_exception(client: TestClient, see
     assert date not in (got["cancelled_dates"] or [])
 
 
+def test_undo_series_delete_this_removes_tombstone(client: TestClient, seeded_db):
+    # 2026-11-17 二轮批 1：仅删本次建墓碑 → 撤销须连墓碑一并反删（此前 _find_exception
+    # 带 is_deleted=False 谓词查不到墓碑，note_created_task 是死代码——撤销报成功
+    # 但实例仍缺）。挖空集回空 = 实例复活。
+    tasks = client.get("/api/tasks").json()
+    series = next(t for t in tasks if t["recurrence_rule"])
+    date = "2026-12-07"  # 周一：seed 英语课实例日
+    assert client.delete(f"/api/tasks/{series['id']}",
+                         params={"mode": "this", "date": date}).status_code == 204
+    got = client.get(f"/api/tasks/{series['id']}").json()
+    assert date in (got["cancelled_dates"] or [])
+    _undo(client)
+    got = client.get(f"/api/tasks/{series['id']}").json()
+    assert date not in (got["cancelled_dates"] or [])  # 墓碑已随撤销反删
+    with TestingSessionLocal() as db:
+        assert db.scalars(select(Task.id).where(Task.parent_id == series["id"])).all() == []
+
+
+def test_undo_series_delete_this_repeat_keeps_tombstone(client: TestClient, seeded_db):
+    # 同日幂等重删不新建墓碑（_create_tombstone 返回 None）——撤销第二次不误删
+    # 第一次的墓碑行。
+    tasks = client.get("/api/tasks").json()
+    series = next(t for t in tasks if t["recurrence_rule"])
+    date = "2026-12-07"
+    client.delete(f"/api/tasks/{series['id']}", params={"mode": "this", "date": date})
+    client.delete(f"/api/tasks/{series['id']}", params={"mode": "this", "date": date})
+    _undo(client)  # 撤销第二次删除（无新建行）
+    got = client.get(f"/api/tasks/{series['id']}").json()
+    assert date in (got["cancelled_dates"] or [])
+
+
 def test_undo_project_rename_restores_name(client: TestClient):
     proj = client.post("/api/projects", json={"name": "旧项目", "color": "red"}).json()
     client.patch(f"/api/projects/{proj['id']}", json={"name": "新项目"})

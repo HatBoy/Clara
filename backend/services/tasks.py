@@ -232,18 +232,24 @@ def _attach_cancelled_dates(db: Session, tasks: list[Task]) -> None:
     构造时自然带出，API 契约与前端零改动。例外行两类一并聚合（Clone & Override
     统一建模）：墓碑（is_deleted=True，实例被删除）与活体例外（is_deleted=False，
     实例已实体化为独立单次任务）——两类日期都挖空该日的虚拟实例（活体例外自身
-    按普通任务行渲染）。set 去重：同日先删后编辑会并存墓碑与活体两行。"""
+    按普通任务行渲染；例外改期跨日后其当前开始日同样挖空，防双卡）。set 去重：
+    同日先删后编辑会并存墓碑与活体两行。"""
     series_ids = [t.id for t in tasks if t.recurrence_rule is not None]
     if not series_ids:
         return
     by_parent: dict[str, set[str]] = {}
-    for parent_id, original in db.execute(
-        select(Task.parent_id, Task.original_time).where(
+    # 活体例外改期跨日（2026-11-17 二轮批 1）：挖空集合并入例外行的当前开始日——
+    # 例外挪到系列的另一实例日时该日虚拟实例仍照常展开会双卡；并入开始日后例外
+    # 挪走该日实例自然复活，无需墓碑生命周期，撤销恢复经重聚合自动对齐。
+    for parent_id, original, start, deleted in db.execute(
+        select(Task.parent_id, Task.original_time, Task.start_time, Task.is_deleted).where(
             Task.parent_id.in_(series_ids)
         )
     ).all():
         if original is not None:
             by_parent.setdefault(parent_id, set()).add(original.date().isoformat())
+        if not deleted and start is not None:
+            by_parent.setdefault(parent_id, set()).add(start.date().isoformat())
     for t in tasks:
         if t.id in by_parent:
             # 直接赋值会弄脏 ORM 对象（cancelled_dates 是已废弃的映射列，
@@ -822,11 +828,13 @@ def _split_series(db: Session, task: Task, date: str, data: dict) -> Task:
     return new
 
 
-def _create_tombstone(db: Session, task: Task, date: str) -> bool:
+def _create_tombstone(db: Session, task: Task, date: str) -> Task | None:
     """为重复系列建墓碑行（场景 4"仅删除本次"）：parent_id 指向主任务、
     original_time = 实例日 + 主任务开始钟点（无排期基准则当日 0 点）、title 复制、
     is_deleted=True——主任务规则不动，读路径聚合日期挖空该次实例。同日已有墓碑
-    则跳过（API 重复调用幂等不叠加）。返回是否新建。"""
+    则跳过（API 重复调用幂等不叠加）。返回新建的墓碑行（已存在返回 None）——
+    调用方以此登记撤销反删（回查型查询带 is_deleted=False 谓词永远查不到墓碑，
+    2026-11-17 二轮批 1 修正）。"""
     original = _instance_time(task, date)  # 实例日 + 主任务钟点（与例外实体化同锚点）
     existed = db.scalar(
         select(func.count()).select_from(Task).where(
@@ -836,9 +844,11 @@ def _create_tombstone(db: Session, task: Task, date: str) -> bool:
         )
     )
     if existed:
-        return False
-    db.add(Task(title=task.title, parent_id=task.id, original_time=original, is_deleted=True))
-    return True
+        return None
+    tomb = Task(title=task.title, parent_id=task.id, original_time=original, is_deleted=True)
+    db.add(tomb)
+    db.flush()  # 生成 id 供调用方登记撤销（uuid default 在 flush 落值）
+    return tomb
 
 
 def _with_until(rule: str, until_day: datetime) -> str:
@@ -904,16 +914,14 @@ def delete_task(db: Session, task_id: str, *, mode: str = "auto", date: str | No
             )
             undo.finish(del_entry)
             return True
-        created = _create_tombstone(db, task, date)
+        tomb = _create_tombstone(db, task, date)
         logger.info(
             "删除单次实例：任务 id=%s「%s」%s（%s）",
-            task_id, task.title, date, "建墓碑" if created else "已有墓碑，跳过",
+            task_id, task.title, date, "建墓碑" if tomb else "已有墓碑，跳过",
         )
         db.commit()
-        if created:
-            tomb = _find_exception(db, task.id, _instance_time(task, date))
-            if tomb is not None and tomb.id not in _del_snapshot_ids:
-                undo.note_created_task(tomb.id)
+        if tomb is not None and tomb.id not in _del_snapshot_ids:
+            undo.note_created_task(tomb.id)
         undo.finish(del_entry)
         return True
     if mode == "following":  # 场景 5：UNTIL 截断，被点日之前的实例保留

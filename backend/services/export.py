@@ -142,8 +142,10 @@ def export_tasks_ics(db: Session, path: str) -> dict:
 
 
 def _cancelled_instances(db: Session, task) -> list:
-    """系列被挖空的实例时刻（墓碑 + 活体例外两类，口径同 tasks._attach_cancelled_dates）。
-    全天系列给 date（VALUE=DATE 的 EXDATE），定时系列给 datetime（含时区为浮动本地）。"""
+    """系列被挖空的实例时刻（墓碑 + 活体例外两类，口径同 tasks._attach_cancelled_dates
+    ——活体例外改期跨日后其当前开始日同样挖空）。全天系列给 date（VALUE=DATE 的
+    EXDATE），定时系列给 datetime（含时区为浮动本地；例外的开始时刻只在跨日时
+    并入，同日改钟点不产生噪声 EXDATE）。"""
     from models import Task
 
     originals = [
@@ -151,6 +153,20 @@ def _cancelled_instances(db: Session, task) -> list:
             select(Task.original_time).where(Task.parent_id == task.id))
         if dt is not None
     ]
+    moved_days = {  # 活体例外改期跨日：新日开始日的实例由例外行自身代表，主规则挖空
+        start.date() for start, original, deleted in db.execute(
+            select(Task.start_time, Task.original_time, Task.is_deleted).where(
+                Task.parent_id == task.id))
+        if not deleted and start is not None
+        and (original is None or start.date() != original.date())
+    }
     if task.all_day:
-        return sorted({dt.date() for dt in originals})
-    return sorted(set(originals))
+        return sorted({dt.date() for dt in originals} | moved_days)
+    # 定时系列的实例时刻 = 日 + 主任务开始钟点（口径同 tasks._instance_time）——
+    # EXDATE 必须对准实例自身时刻才生效（例外的开始钟点可能已改）。
+    clock = task.start_time.time() if task.start_time is not None else None
+    out = set(originals)
+    if clock is not None:
+        out |= {datetime(d.year, d.month, d.day, clock.hour, clock.minute)
+                for d in moved_days}
+    return sorted(out)

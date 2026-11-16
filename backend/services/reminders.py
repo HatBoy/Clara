@@ -83,10 +83,20 @@ def _parse_rule(rule: str) -> tuple[str, set[int], date | None]:
 
 
 def _cancelled_dates(db: Session, task_id: str) -> set[date]:
-    """系列的例外日期集合（墓碑 + 活体例外一并，聚合挖空同口径）——这些日的
+    """系列的例外日期集合（墓碑 + 活体例外一并，聚合挖空同口径——例外改期跨日
+    后其当前开始日同样挖空，见 tasks._attach_cancelled_dates）——这些日的
     虚拟实例不提醒。"""
-    rows = db.scalars(select(Task.original_time).where(Task.parent_id == task_id))
-    return {r.date() for r in rows if r is not None}
+    rows = db.execute(
+        select(Task.original_time, Task.start_time, Task.is_deleted).where(
+            Task.parent_id == task_id)
+    ).all()
+    out: set[date] = set()
+    for original, start, deleted in rows:
+        if original is not None:
+            out.add(original.date())
+        if not deleted and start is not None:
+            out.add(start.date())
+    return out
 
 
 def _series_fire_times(
