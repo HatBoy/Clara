@@ -50,9 +50,6 @@ MANUAL_GRACE_SECONDS = 1800
 # 更大时尊重用户（更保守的偏好不降级）
 LEAD_IMPORTANT_MEETING = 60
 LEAD_TRAVEL = 40
-# 出行预留上限抬升（2026-11-17 批 2）：travel_mins + 10 分钟准备，封顶 190——
-# scan_due 的扫描上界必须按此扩窗，否则大提前量任务会在 fire_at 过后才被扫到
-LEAD_TRAVEL_MAX = 190
 _TRAVEL_RE = re.compile(r"高铁|机场|航班|出差|跨城|火车|机票")
 
 
@@ -63,11 +60,7 @@ def _effective_lead_min(task, base_lead: int | None) -> int | None:
     if base_lead is None:
         return None
     eff = base_lead
-    travel = getattr(task, "travel_mins", None)
-    if isinstance(travel, int) and travel > 0:
-        # 结构化出行预留优先（含 10 分钟准备），封顶 190
-        eff = max(eff, min(travel + 10, LEAD_TRAVEL_MAX))
-    elif _TRAVEL_RE.search(task.title or ""):
+    if _TRAVEL_RE.search(task.title or ""):
         eff = max(eff, LEAD_TRAVEL)
     if is_important_meeting(task):
         eff = max(eff, LEAD_IMPORTANT_MEETING)
@@ -147,7 +140,7 @@ def scan_due(db: Session, now: datetime, lookahead: float = REMINDER_LOOKAHEAD_S
         lead = 0
     scan_lo = now + timedelta(minutes=lead)  # 并集下界：最小有效档 = 全局档
     scan_hi = now + timedelta(
-        minutes=max(lead, LEAD_IMPORTANT_MEETING, LEAD_TRAVEL_MAX), seconds=lookahead)
+        minutes=max(lead, LEAD_IMPORTANT_MEETING), seconds=lookahead)
     rows: list[tuple[str, datetime]] = []
     # 单次任务（含活体例外行——自带 start_time 被当普通已排期行；软删/未排期/已完成排除）
     for task in db.scalars(
@@ -244,12 +237,6 @@ def claim_due(db: Session, now: datetime, grace: float = REMINDER_GRACE_SECONDS)
             "project_name": project_name,
             "manual": is_manual,
         }
-        if task.location:
-            event["location"] = task.location
-        travel = getattr(task, "travel_mins", None)
-        if isinstance(travel, int) and travel > 0:
-            event["travel_mins"] = travel
-            event["depart_at"] = (task.start_time - timedelta(minutes=travel)).isoformat()
         if is_manual and r.ref_start is not None:
             event["ref_start"] = r.ref_start.isoformat()
         pid = prep_map.get(task.id)

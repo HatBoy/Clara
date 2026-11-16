@@ -47,8 +47,8 @@ def create_template(db: Session, body: TemplateIn) -> ScheduleTemplate:
     row = ScheduleTemplate(
         name=body.name, title=body.title, duration_mins=body.duration_mins,
         start_min=body.start_min, priority=body.priority, notes=body.notes,
-        recurrence_rule=body.recurrence_rule, location=body.location,
-        travel_mins=body.travel_mins, subtasks=body.subtasks, sort_order=sort_order,
+        recurrence_rule=body.recurrence_rule, subtasks=body.subtasks,
+        sort_order=sort_order,
     )
     db.add(row)
     db.commit()
@@ -108,8 +108,6 @@ def apply_template(db: Session, template_id: str,
         priority=tpl.priority,
         notes=tpl.notes,
         recurrence_rule=tpl.recurrence_rule,
-        location=tpl.location,
-        travel_mins=tpl.travel_mins,
     ))
     for idx, title in enumerate(tpl.subtasks or []):
         if isinstance(title, str) and title.strip():

@@ -167,8 +167,6 @@ function InboxPanel({
   // 编辑区单开（同时只展开一张卡）；noteDraft 为展开卡的备注草稿（onBlur 提交，展开时装载）
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
-  // 地点草稿（2026-11-17 批 2）：展开时装载，失焦提交
-  const [locationDraft, setLocationDraft] = useState("");
   // 重复规则面板展开态（换目标/收起/删除即收起）
   const [recurrenceOpen, setRecurrenceOpen] = useState(false);
   // 「安排时间」手选草稿（datetime-local 格式串 "YYYY-MM-DDTHH:mm"；换目标/收起即
@@ -359,7 +357,6 @@ function InboxPanel({
       flushDraft(prev);
     }
     setNoteDraft(todo.note ?? "");
-    setLocationDraft(todo.location ?? "");
     setDraft({
       minutes: todo.minutes,
       duration: todo.duration,
@@ -574,7 +571,11 @@ function InboxPanel({
                   ? "随手记一条待办，或从接入的数据源里看看有什么要处理的"
                   : "把想法加成这个项目的待办，或在日历里为它安排时间"
               }
-              action={onQuickAdd ? { label: "快速添加", onClick: onQuickAdd } : undefined}
+              action={
+                mode === "inbox" && onQuickAdd
+                  ? { label: "快速添加", onClick: onQuickAdd }
+                  : undefined
+              }
               secondaryAction={
                 mode === "inbox" && onOpenData
                   ? { label: "去数据源看看", onClick: onOpenData }
@@ -856,36 +857,6 @@ function InboxPanel({
                           <span className="inbox-todo-note-count">
                             {noteDraft.length}/{NOTE_MAX_LEN}
                           </span>
-                        </div>
-                        {/* 地点与出行预留（2026-11-17 批 2）：地点失焦提交；
-                            出行预留即时提交（改变提醒提前量） */}
-                        <div className="inbox-todo-travel">
-                          <input
-                            className="inbox-todo-location"
-                            value={locationDraft}
-                            maxLength={100}
-                            placeholder="地点（可选）"
-                            onChange={(e) => setLocationDraft(e.target.value)}
-                            onBlur={() => {
-                              const loc = locationDraft.trim() || undefined;
-                              if (loc !== todo.location) onUpdateTask(todo.id, { location: loc });
-                            }}
-                          />
-                          <select
-                            className="inbox-todo-travel-select"
-                            value={todo.travelMins ?? 0}
-                            onChange={(e) => {
-                              const v = Number(e.target.value);
-                              onUpdateTask(todo.id, { travelMins: v > 0 ? v : undefined });
-                            }}
-                          >
-                            <option value={0}>无出行预留</option>
-                            <option value={30}>出行 30 分钟</option>
-                            <option value={45}>出行 45 分钟</option>
-                            <option value={60}>出行 1 小时</option>
-                            <option value={90}>出行 1.5 小时</option>
-                            <option value={120}>出行 2 小时</option>
-                          </select>
                         </div>
                         {/* 子任务清单（批 C）：勾选/删行/添加即时提交——全量替换语义，
                             收件箱编辑区无三问缓冲直发 */}

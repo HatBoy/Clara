@@ -125,6 +125,15 @@ export function SaveTemplateModal({
   const [name, setName] = useState(task.title.slice(0, 30));
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // Esc 取消（弹窗是 fixed 遮罩层，键盘理应能退出）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [busy, onClose]);
   const startMin = task.start !== undefined ? Math.round(task.start * 60) % 1440 : null;
   const priority = task.priority === "high" ? 1 : task.priority === "low" ? 3 : 2;
 
@@ -143,8 +152,6 @@ export function SaveTemplateModal({
       priority,
       notes: task.note ?? null,
       recurrence_rule: task.recurrence ? toRrule(task.recurrence) : null,
-      location: task.location ?? null,
-      travel_mins: task.travelMins ?? null,
       subtasks: (task.checklist ?? []).map((c) => c.title),
     })
       .then(() => onClose())
@@ -165,7 +172,7 @@ export function SaveTemplateModal({
                  onChange={(e) => setName(e.target.value)} />
         </label>
         <p className="template-modal-note">
-          将保存标题、时长、重复规则、备注、地点与清单；时刻存为相对时间（
+          将保存标题、时长、重复规则、备注与清单；时刻存为相对时间（
           {startMin !== null
             ? `${String(Math.floor(startMin / 60)).padStart(2, "0")}:${String(startMin % 60).padStart(2, "0")}`
             : "未排期"}）。

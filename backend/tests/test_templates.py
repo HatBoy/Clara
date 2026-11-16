@@ -29,7 +29,6 @@ def test_apply_template_with_time_creates_scheduled_task(client: TestClient):
     tpl = _create(client, name="周会", title="周会", duration_mins=90,
                   start_min=570, priority=1, notes="同步进展",
                   recurrence_rule="FREQ=WEEKLY;BYDAY=MO",
-                  location="会议室 A", travel_mins=30,
                   subtasks=["准备材料", "确认参会人"])
     res = client.post(f"/api/templates/{tpl['id']}/apply",
                       json={"date": "2026-12-07"})
@@ -40,8 +39,6 @@ def test_apply_template_with_time_creates_scheduled_task(client: TestClient):
     assert task["duration_mins"] == 90
     assert task["priority"] == "high"
     assert task["recurrence_rule"] == "FREQ=WEEKLY;BYDAY=MO"
-    assert task["location"] == "会议室 A"
-    assert task["travel_mins"] == 30
     assert [s["title"] for s in task["subtasks"]] == ["准备材料", "确认参会人"]
 
 

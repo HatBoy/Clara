@@ -1247,30 +1247,3 @@ html[data-theme="dark"] .inbox-todo-when-input::-webkit-calendar-picker-indicato
   background: var(--accent-softer);
 }
 
-/* 地点与出行预留（2026-11-17 批 2）：展开编辑区一行两个紧凑控件 */
-.inbox-todo-travel {
-  display: flex;
-  gap: 8px;
-  margin-top: 6px;
-}
-
-.inbox-todo-location {
-  flex: 1;
-  min-width: 0;
-  padding: 4px 8px;
-  font-size: 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border-1, rgba(0, 0, 0, 0.12));
-  background: var(--surface-2, transparent);
-  color: var(--text-1, inherit);
-}
-
-.inbox-todo-travel-select {
-  flex: 0 0 auto;
-  padding: 4px 6px;
-  font-size: 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border-1, rgba(0, 0, 0, 0.12));
-  background: var(--surface-2, transparent);
-  color: var(--text-1, inherit);
-}

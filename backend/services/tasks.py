@@ -360,9 +360,6 @@ def create_task(db: Session, body: TaskCreate) -> Task:
         source_key=body.source_key,
         source_fingerprint=body.source_fingerprint,
         source_evidence=body.source_evidence,
-        # 地点与出行预留（2026-11-17 批 2）
-        location=body.location,
-        travel_mins=body.travel_mins,
         sort_order=sort_order,
         ever_scheduled=body.start_time is not None,
         priority=body.priority if body.priority is not None else 2,
@@ -625,11 +622,6 @@ def update_task(
         task.duration_mins = round((task.end_time - task.start_time).total_seconds() / 60)
     if subtask_items is not None:  # 全量替换清单（随主行事务一起提交）
         _replace_subtasks(db, task, subtask_items)
-    if "travel_mins" in data or "location" in data:
-        # 出行预留变化 → 清待发自动提醒，下一轮扫描按新提前量重算（manual 保留）
-        db.execute(sa_delete(Reminder).where(
-            Reminder.task_id == task.id,
-            or_(Reminder.kind.is_(None), Reminder.kind == "auto")))
     db.commit()
     db.refresh(task)  # updated_at 已是 Python 侧 onupdate（本地 naive），refresh 仅防御性同步
     if subtask_items is not None:

@@ -65,8 +65,6 @@ class ScheduleTemplate(Base):
     priority: Mapped[int] = mapped_column(Integer, default=2, server_default="2", comment="优先级 1/2/3")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True, comment="备注")
     recurrence_rule: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="重复规则")
-    location: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="地点")
-    travel_mins: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="出行预留")
     subtasks: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, comment="清单标题数组")
     sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0", comment="排序序号")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now(), comment="创建时间")
@@ -122,10 +120,6 @@ class Task(Base):
     priority: Mapped[int] = mapped_column(Integer, default=2, server_default="2", comment="优先级：1 高 / 2 中 / 3 低")
     # 人类手写的精简备注（上限 500 由契约层管）
     notes: Mapped[str | None] = mapped_column(Text, nullable=True, comment="备注")
-    # 地点与出行预留（2026-11-17 批 2）：location 仅展示；travel_mins 非空时
-    # 提醒提前量抬升为 travel_mins+10（封顶 190 分钟），前端渲染"出发"虚拟块
-    location: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="地点（仅展示）")
-    travel_mins: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="出行预留分钟数")
     # —— 采集溯源三列（2026-10-23 增，静态溯源地基）：采集提炼的建议被采纳落库时
     # 从条目 source_ref 透传——幕僚长教练咨询该任务时按此回放素材摘录（零成本），
     # source_key 亦是受控单跳探测（回源搜更多）的路由键。手建/快录任务恒 None。

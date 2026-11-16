@@ -2060,7 +2060,7 @@
   pointer-events: none;
 }
 
-/* 虚拟块（2026-11-17 批 2）：会议缓冲与出行前置——不落库、不可拖拽、不参与冲突 */
+/* 虚拟块（2026-11-17 批 2）：会议前后缓冲——不落库、不可拖拽、不参与冲突 */
 .timeline-event.virtual-block {
   position: absolute;
   z-index: 1;
@@ -2077,19 +2077,6 @@
   overflow: hidden;
 }
 
-.timeline-event.virtual-block.travel {
-  background: rgba(108, 99, 255, 0.1);
-  border-color: rgba(108, 99, 255, 0.4);
-  color: var(--accent, #6c63ff);
-  pointer-events: auto;
-}
-
-.timeline-event.virtual-block.travel.overlap {
-  border-color: rgba(214, 140, 40, 0.75);
-  background: rgba(214, 140, 40, 0.14);
-  color: #b26b1f;
-}
-
 .timeline-event.virtual-block.week {
   padding: 1px 4px;
   font-size: 10px;
@@ -2100,13 +2087,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.virtual-block-sub {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  opacity: 0.9;
 }
 
 .virtual-block-close {

@@ -191,8 +191,7 @@ export function renderHourMarks(hours: number[], startHour: number) {
 }
 
 // 星期与 ISO 周工具（查看日期是组件 state，文本在组件内派生）
-// —— 虚拟块判定（2026-11-17 批 2）：会议缓冲与出行前置共用口径 ——
-const TRAVEL_TITLE_RE = /高铁|机场|航班|出差|跨城|火车|机票/;
+// —— 虚拟块判定（2026-11-17 批 2）：会议缓冲 ——
 const MEETING_TITLE_RE = /会议|评审|汇报|路演|面试|答辩|复盘|review|1:1/i;
 const BUFFER_PRE_MIN = 10;
 const BUFFER_POST_MIN = 15;
@@ -455,8 +454,8 @@ function ScheduleCanvas({
     setBufferHiddenTick((t) => t + 1);
   };
   type VirtualBlock = {
-    key: string; kind: "pre" | "post" | "travel";
-    start: number; end: number; title: string; sub?: string; overlap?: boolean;
+    key: string; kind: "pre" | "post";
+    start: number; end: number; title: string;
   };
   const computeVirtualBlocks = (offset: number): VirtualBlock[] => {
     const blocks: VirtualBlock[] = [];
@@ -485,19 +484,6 @@ function ScheduleCanvas({
           }
         }
       }
-    }
-    for (const t of evs) {
-      const tm = t.travelMins ?? (TRAVEL_TITLE_RE.test(t.title) ? 40 : 0);
-      if (!tm) continue;
-      const startH = t.start - tm / 60;
-      const overlap = evs.some((o) => o.id !== t.id
-        && startH < (o.end ?? o.start + 1) && o.start < t.start);
-      blocks.push({
-        key: `travel-${t.id}-${offset}`, kind: "travel", start: startH, end: t.start,
-        title: `去「${t.title}」路上`,
-        sub: `${fmtTime(startH)} 出发 · 预留 ${tm} 分钟`,
-        overlap,
-      });
     }
     return blocks;
   };
@@ -707,10 +693,15 @@ function ScheduleCanvas({
   const [detail, setDetail] = useState<{ id: string; offset: number; left: number; top: number } | null>(null);
   // 备注草稿（打开时装载，失焦/关闭时提交）
   const [noteDraft, setNoteDraft] = useState("");
-  // 地点草稿（2026-11-17 批 2）：浮层打开装载，失焦提交
-  const [locationDraft, setLocationDraft] = useState("");
-  // 「存为模板」弹窗（2026-11-17 批 2）
+  // 「存为模板」弹窗（2026-11-17 批 2）：任务快照独立于 detail 浮层——弹窗期间
+  // 点浮层外会关浮层，若模态依赖 detailTask 会被连带卸载（保存/取消点击即消失的
+  // 根因）；关闭弹窗时一并清快照，防残留态让后续任一日程又弹出模板框
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [saveTemplateTask, setSaveTemplateTask] = useState<Task | null>(null);
+  const closeSaveTemplate = () => {
+    setSaveTemplateOpen(false);
+    setSaveTemplateTask(null);
+  };
   // 标题内联编辑（双击进入）；titleDraft 为草稿
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -1014,7 +1005,6 @@ function ScheduleCanvas({
     left = Math.min(Math.max(left, 12), Math.max(window.innerWidth - DETAIL_W - 12, 12)); // 视口 clamp 兜底
     const top = Math.min(Math.max(rect.top, 12), Math.max(window.innerHeight - 12 - 360, 12));
     setNoteDraft(task.note ?? "");
-    setLocationDraft(task.location ?? "");
     setEditingTitle(false);
     setRecurrenceOpen(false);
     setWhenOpen(false);
@@ -1521,14 +1511,14 @@ function ScheduleCanvas({
               {computeVirtualBlocks(offset).map((b) => (
                 <div
                   key={b.key}
-                  className={`timeline-event virtual-block week ${b.kind}${b.overlap ? " overlap" : ""}`}
+                  className={`timeline-event virtual-block week ${b.kind}`}
                   style={{
                     top: y(b.start),
                     height: Math.max(8, y(b.end) - y(b.start)),
                     left: 2,
                     right: 2,
                   }}
-                  title={b.sub ?? b.title}
+                  title={b.title}
                 >
                   <span className="virtual-block-title">{b.title}</span>
                 </div>
@@ -1783,9 +1773,11 @@ function ScheduleCanvas({
   useEffect(() => {
     if (!detail) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeDetail(true);
+      if (e.key === "Escape" && !saveTemplateOpen) closeDetail(true);
     };
     const onPointerDown = (e: PointerEvent) => {
+      // 存模板弹窗置顶期间浮层保持打开（弹窗点外由遮罩自关，详情不该连带消失）
+      if (saveTemplateOpen) return;
       if (detailRef.current && !detailRef.current.contains(e.target as Node)) {
         closeDetail(true);
       }
@@ -1800,7 +1792,7 @@ function ScheduleCanvas({
       scrollRef.current?.removeEventListener("scroll", onScroll);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail, noteDraft, titleDraft, editingTitle, pendingEdit]);
+  }, [detail, noteDraft, titleDraft, editingTitle, pendingEdit, saveTemplateOpen]);
 
   // 切视图/翻页即关浮层（视图语境已变，浮层失去视觉锚点）——force 强制关，未决编辑一并
   // 丢弃（浮层无法在已变的语境里保持打开）；挂载首跑 detail 为 null，closeDetail 内部 no-op
@@ -2120,11 +2112,11 @@ function ScheduleCanvas({
             );
           })}
 
-          {/* 虚拟块（2026-11-17 批 2）：会议缓冲 + 出行前置；位于真实卡下层 */}
+          {/* 虚拟块（2026-11-17 批 2）：会议前后缓冲；位于真实卡下层 */}
           {computeVirtualBlocks(viewedOffset).map((b) => (
             <div
               key={b.key}
-              className={`timeline-event virtual-block ${b.kind}${b.overlap ? " overlap" : ""}`}
+              className={`timeline-event virtual-block ${b.kind}`}
               style={{
                 top: y(b.start),
                 height: Math.max(10, y(b.end) - y(b.start)),
@@ -2133,17 +2125,14 @@ function ScheduleCanvas({
               }}
             >
               <span className="virtual-block-title">{b.title}</span>
-              {b.sub && <span className="virtual-block-sub">{b.sub}</span>}
-              {b.kind !== "travel" && (
-                <button
-                  type="button"
-                  className="virtual-block-close"
-                  onClick={() => hideBuffer(b.key)}
-                  aria-label="隐藏缓冲块"
-                >
-                  <X size={10} strokeWidth={2} />
-                </button>
-              )}
+              <button
+                type="button"
+                className="virtual-block-close"
+                onClick={() => hideBuffer(b.key)}
+                aria-label="隐藏缓冲块"
+              >
+                <X size={10} strokeWidth={2} />
+              </button>
             </div>
           ))}
 
@@ -2171,8 +2160,8 @@ function ScheduleCanvas({
           动态增高（纪要录入/面板展开）后 100vh-24 的静态上限兜不住「top+高度
           超视口底」（晚上低位卡片必现，底边按钮无法操作）——inline 上限改为
           视口底 - top - 12，内容超高时自身内滚 */}
-      {saveTemplateOpen && detailTask && (
-        <SaveTemplateModal task={detailTask} onClose={() => setSaveTemplateOpen(false)} />
+      {saveTemplateOpen && saveTemplateTask && (
+        <SaveTemplateModal task={saveTemplateTask} onClose={closeSaveTemplate} />
       )}
       {detail && detailTask && (
         <div
@@ -2303,35 +2292,6 @@ function ScheduleCanvas({
             <span className="schedule-detail-note-count">
               {noteDraft.length}/{NOTE_MAX_LEN}
             </span>
-          </div>
-          {/* 地点与出行预留（2026-11-17 批 2）：地点失焦提交，出行预留即时提交 */}
-          <div className="inbox-todo-travel">
-            <input
-              className="inbox-todo-location"
-              value={locationDraft}
-              maxLength={100}
-              placeholder="地点（可选）"
-              onChange={(e) => setLocationDraft(e.target.value)}
-              onBlur={() => {
-                const loc = locationDraft.trim() || undefined;
-                if (loc !== detailTask.location) onUpdateTask(detailTask.id, { location: loc });
-              }}
-            />
-            <select
-              className="inbox-todo-travel-select"
-              value={detailTask.travelMins ?? 0}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                onUpdateTask(detailTask.id, { travelMins: v > 0 ? v : undefined });
-              }}
-            >
-              <option value={0}>无出行预留</option>
-              <option value={30}>出行 30 分钟</option>
-              <option value={45}>出行 45 分钟</option>
-              <option value={60}>出行 1 小时</option>
-              <option value={90}>出行 1.5 小时</option>
-              <option value={120}>出行 2 小时</option>
-            </select>
           </div>
           {/* 子任务清单（批 C；真机批改直发）：清单是任务级属性（无单次实例语义），
               重复系列也 all 直发——与重复规则编辑同款先例；此前走 queueEdit 三问
@@ -2630,7 +2590,10 @@ function ScheduleCanvas({
               className="inbox-todo-icon"
               aria-label="存为模板"
               title="存为模板"
-              onClick={() => setSaveTemplateOpen(true)}
+              onClick={() => {
+                setSaveTemplateTask(detailTask);
+                setSaveTemplateOpen(true);
+              }}
             >
               <LayoutTemplate size={14} strokeWidth={2} />
             </button>
@@ -2731,7 +2694,6 @@ function ScheduleCanvas({
                   onClick={() => {
                     setPendingEdit(null);
                     setNoteDraft(detailTask.note ?? "");
-                    setLocationDraft(detailTask.location ?? "");
                   }}
                 >
                   取消修改

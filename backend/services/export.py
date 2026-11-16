@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 CSV_HEADER = [
     "id", "标题", "项目", "优先级", "开始时间", "结束时间", "预计时长(分)", "全天",
-    "重复规则", "地点", "出行预留(分)", "完成时间", "备注", "子任务", "创建时间",
+    "重复规则", "完成时间", "备注", "子任务", "创建时间",
 ]
 _PRIORITY_LABEL = {1: "高", 2: "中", 3: "低"}
 _ICS_PRIORITY = {1: 1, 2: 5, 3: 9}
@@ -71,8 +71,6 @@ def export_tasks_csv(db: Session, path: str) -> dict:
             t.duration_mins or "",
             "是" if t.all_day else "否",
             t.recurrence_rule or "",
-            t.location or "",
-            t.travel_mins or "",
             _fmt_dt(t.done_at),
             t.notes or "",
             subtasks,
@@ -111,8 +109,6 @@ def export_tasks_ics(db: Session, path: str) -> dict:
         ev.add("dtstamp", now)
         if t.notes:
             ev.add("description", t.notes)
-        if t.location:
-            ev.add("location", t.location)
         ev.add("priority", _ICS_PRIORITY.get(t.priority, 5))
         if t.all_day:
             d0 = t.start_time.date()

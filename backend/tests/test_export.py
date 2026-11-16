@@ -20,7 +20,7 @@ def _seed_mixed(db) -> None:
     task = create_task(db, TaskCreate(
         title="周会", start_time=datetime(2026, 11, 18, 9, 0),
         end_time=datetime(2026, 11, 18, 10, 0), project_id=proj.id,
-        priority=1, notes="同步进度", location="会议室 A", travel_mins=30,
+        priority=1, notes="同步进度",
         recurrence_rule="FREQ=WEEKLY;BYDAY=TU",
     ))
     db.add(Subtask(task_id=task.id, title="准备材料", done_at=datetime.now(), sort_order=0))
@@ -41,9 +41,9 @@ def test_csv_export_writes_bom_and_rows(tmp_path):
     text = raw.decode("utf-8-sig")
     lines = text.strip().splitlines()
     assert len(lines) == 4  # 表头 + 3 行
-    assert "标题" in lines[0] and "出行预留(分)" in lines[0]
+    assert "标题" in lines[0] and "子任务" in lines[0]
     meeting = next(l for l in lines if "周会" in l)
-    assert "工作" in meeting and "高" in meeting and "会议室 A" in meeting
+    assert "工作" in meeting and "高" in meeting and "同步进度" in meeting
     assert "准备材料(已完成)" in meeting and "FREQ=WEEKLY" in meeting
     assert "出差" in text and "买牛奶" in text
 
@@ -81,7 +81,6 @@ def test_ics_export_events_rrule_exdate_and_all_day(tmp_path):
     exdates = meeting.get("exdate")
     assert exdates is not None
     assert [d.dt for d in exdates.dts] == [datetime(2026, 11, 25, 9, 0)]
-    assert str(meeting.get("location")) == "会议室 A"
     assert int(meeting.get("priority")) == 1
 
     allday = by_summary["出差"]
