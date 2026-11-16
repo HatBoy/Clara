@@ -6,6 +6,10 @@
 """
 
 import logging
+from datetime import datetime, timedelta
+
+from sqlalchemy import delete as sa_delete
+from sqlalchemy.orm import Session
 
 from models import AiUsageEvent
 
@@ -133,3 +137,14 @@ def usage_summary(db, *, days: int = 30) -> dict:
             "cost_known": r.cost_known,
         } for r in rows[:10]],
     }
+
+
+def prune_usage_events(db: Session, *, days: int = 90) -> int:
+    """留存清理（夜间维护挂接，2026-11-17 二轮批 1）：面板最大窗口即 90 天，
+    更早行物理删除——高频对话用户年数万行，usage_summary 全量拉行聚合会随之
+    变慢。返回删除数。"""
+    cutoff = datetime.now() - timedelta(days=days)
+    n = db.execute(sa_delete(AiUsageEvent).where(
+        AiUsageEvent.created_at < cutoff)).rowcount
+    db.commit()
+    return n or 0

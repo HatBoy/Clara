@@ -1073,8 +1073,9 @@ def _collect_priority_plan(db: Session, now: datetime) -> dict | None:
 
 
 def _run_maintenance(db: Session, now: datetime) -> int:
-    """夜间维护（纯规则层零 LLM）：过期建议清理 + 采集台账清理 + 信任降频。
-    返回过期建议条数。夜间整理与维护兜底（_run_nightly_maintenance）共用。"""
+    """夜间维护（纯规则层零 LLM）：过期建议清理 + 采集台账清理 + 信任降频 +
+    遥测/事实/纠偏账/用量四清。返回过期建议条数。夜间整理与维护兜底
+    （_run_nightly_maintenance）共用。"""
     # 数据源页审阅队列（from_ingest 采集卡）留 7 天慢慢整理，其余维持隔夜
     # 过期；采纳率统计双侧剔除 expired，分母口径不受影响
     expired = expire_stale_proposals(db, before=now - timedelta(days=1), ingest=False)
@@ -1086,6 +1087,18 @@ def _run_maintenance(db: Session, now: datetime) -> int:
     trust = apply_trust_policy(db)
     if trust["paused"]:
         logger.info("信任降频：%s 采纳率过低，暂停采集至明日 09:00", "、".join(trust["paused"]))
+    # 遥测/事实/纠偏账/用量四清（2026-11-17 二轮批 1 自反思链 ⓪.5 搬入）：
+    # 反思只在夜间空闲 + ai_enabled 时跑——AI 关闭用户 behavior_events 照写
+    # 却永不清理（无界增长）；此处与维护兜底双入口覆盖（反思链保留调用，
+    # 幂等清理双入口无害）
+    from services.ai_data import prune_behavior_events, prune_stale_dismissals
+    from services.episodic import expire_episodic_facts
+    from services.llm_usage import prune_usage_events
+
+    prune_behavior_events(db)
+    expire_episodic_facts(db)
+    prune_stale_dismissals(db)
+    prune_usage_events(db)
     return expired
 
 

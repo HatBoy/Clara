@@ -73,17 +73,23 @@ def apply_preference(db: Session, *, raw: str, category: str, content: str) -> d
     2026-11-03 记忆重构批 2：改走公共仲裁者（agents.arbiter，signal="user" 可
     与既有规则 merge/replace 消歧，杜绝「下午不排会」与「周三下午开放讨论」矛盾
     共存）；仲裁失败或无动作 → 降级为原直写（用户意图必须落，老行为兜底）。
-    keep 动作 = 既有行被用户亲口印证 → 升 source=chat / 1.0（最强印证）。"""
-    actions = None
-    try:  # 延迟 import 防 services→agents 环（chat_config 模块头红线）
-        from agents.arbiter import arbitrate_rules
+    keep 动作 = 既有行被用户亲口印证 → 升 source=chat / 1.0（最强印证）。
+    2026-11-17 二轮批 1：规则库为空时直写省一次串行仲裁 LLM（无任何规则即无
+    冲突对象，仲裁恒 new 纯开销）——只要存在规则就必须走仲裁：语义矛盾
+    （「下午不排会」vs「周三下午开放讨论」）文本相似度低，difflib 预检拦不住。"""
+    from services.ai_data import list_memory_rules
 
-        actions = arbitrate_rules(db, candidates=[{
-            "category": category, "content": content,
-            "evidence": f"对话明示：{raw}", "confidence": 1.0, "signal": "user"}])
-    except Exception as exc:  # 仲裁链任何故障（LLM 不可用/解析失败）不挡用户意图
-        logger.warning("[settings] 偏好仲裁失败，降级直写：%s", exc)
-        actions = None
+    actions = None
+    if list_memory_rules(db):
+        try:  # 延迟 import 防 services→agents 环（chat_config 模块头红线）
+            from agents.arbiter import arbitrate_rules
+
+            actions = arbitrate_rules(db, candidates=[{
+                "category": category, "content": content,
+                "evidence": f"对话明示：{raw}", "confidence": 1.0, "signal": "user"}])
+        except Exception as exc:  # 仲裁链任何故障（LLM 不可用/解析失败）不挡用户意图
+            logger.warning("[settings] 偏好仲裁失败，降级直写：%s", exc)
+            actions = None
     if actions:
         return _apply_user_actions(db, actions, raw=raw, category=category,
                                    content=content)

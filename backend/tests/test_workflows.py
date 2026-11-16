@@ -1277,3 +1277,21 @@ def test_run_nightly_continues_after_preplan_failure(monkeypatch):
     monkeypatch.setattr(workflows, "broadcast", lambda payload: None)
     asyncio.run(workflows._run_nightly())
     assert calls == [1]
+
+
+def test_maintenance_prunes_telemetry_and_usage_without_reflection():
+    """四清入维护步（2026-11-17 二轮批 1）：反思只挂夜间空闲 + ai_enabled——
+    AI 关闭用户的遥测/用量此前无界增长；维护步兜底清 90 天前各行。"""
+    from models import AiUsageEvent, BehaviorEvent
+
+    old = datetime.now() - timedelta(days=100)
+    with TestingSessionLocal() as db:
+        db.add(BehaviorEvent(task_id="t", kind="done", prev_start=old,
+                             created_at=old))
+        db.add(AiUsageEvent(model_name="m", feature="qa", total_tokens=10,
+                            usage_source="provider", created_at=old))
+        db.commit()
+        expired = workflows._run_maintenance(db, datetime.now())
+        assert expired == 0  # 无过期建议，纯清理路径
+        assert db.scalar(select(BehaviorEvent.id)) is None
+        assert db.scalar(select(AiUsageEvent.id)) is None

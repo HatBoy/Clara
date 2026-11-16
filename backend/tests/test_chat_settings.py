@@ -62,6 +62,37 @@ def test_prefer_idempotent_same_content(monkeypatch):
     assert len(_rules()) == 1  # 同 category+content 走印证更新不堆行
 
 
+def test_prefer_no_conflict_skips_arbitration(monkeypatch):
+    # 2026-11-17 二轮批 1：无相近规则时纯规则预检直写——省一次串行仲裁 LLM
+    #（高频用户路径最坏 +120s；规则库空时仲裁是纯开销）
+    def boom(*_a, **_k):
+        raise AssertionError("预检零命中不应进仲裁")
+
+    monkeypatch.setattr("agents.arbiter.arbitrate_rules", boom)
+    reply = _run_handler(
+        monkeypatch, "以后周五下午都别排事",
+        json.dumps({"action": "prefer", "category": "排期偏好",
+                    "content": "周五下午不安排任务"}, ensure_ascii=False))
+    assert "记住了" in reply
+    assert len(_rules()) == 1
+
+
+def test_prefer_conflict_goes_through_arbitration(monkeypatch):
+    # 预检命中相近规则（difflib≥0.6）→ 走仲裁消歧（merge/replace 语义保持）
+    seed = json.dumps({"action": "prefer", "category": "排期偏好",
+                       "content": "周五下午不安排任务"}, ensure_ascii=False)
+    _run_handler(monkeypatch, "以后周五下午都别排事", seed)
+    monkeypatch.setattr(
+        "agents.arbiter.arbitrate_rules",
+        lambda db, candidates: [{"candidate_idx": 0, "action": "keep",
+                                 "rule_id": _rules()[0].id}])
+    _run_handler(
+        monkeypatch, "周五下午尽量别排事",
+        json.dumps({"action": "prefer", "category": "排期偏好",
+                    "content": "周五下午尽量不安排任务"}, ensure_ascii=False))
+    assert len(_rules()) == 1  # keep 印证既有行，不堆新行
+
+
 def test_unprefer_single_hit_deletes(monkeypatch):
     _run_handler(
         monkeypatch, "以后周五下午都别排事",
