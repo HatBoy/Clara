@@ -21,10 +21,13 @@ engine = create_engine(
 
 @event.listens_for(engine, "connect")
 def _set_sqlite_pragma(dbapi_connection, connection_record):
-    """每个新连接上开启 WAL 与外键约束（SQLite 的 PRAGMA 是连接级的）。"""
+    """每个新连接上开启 WAL、外键约束与写锁等待（SQLite 的 PRAGMA 是连接级的）。
+    busy_timeout：后台工作流/同步与请求线程并发写时最多等 10s 而非立即 500
+    （2026-11-16 优化批 1——pysqlite 默认 5s，长事务下偏短）。"""
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA busy_timeout=10000")
     cursor.close()
 
 
@@ -108,6 +111,24 @@ def _migrate_app_settings_columns(eng) -> None:
     with eng.begin() as conn:
         for name in missing:
             conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {name} {required[name]}"))
+
+
+def _clamp_clock_minutes(eng) -> None:
+    """报点分钟字段旧值收敛到 0–1439（2026-11-16 优化批 1）：1440 会让
+    `time(24, 0)` 抛 ValueError，`agent_loop` 捕获后整 tick 后续 claim 全跳过
+    （晨间/夜间/采集全停）。收敛到 1410（23:30）——报点字段恒 30 分钟粒度，
+    1440 是非法值；只在老库残留越界值时执行一次 UPDATE，幂等。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(eng)
+    names = set(inspector.get_table_names())
+    with eng.begin() as conn:
+        if "app_settings" in names:
+            for col in ("morning_brief_min", "ingest_brief_min", "nightly_start_min"):
+                conn.execute(text(
+                    f"UPDATE app_settings SET {col} = 1410 WHERE {col} >= 1440"))
+        if "custom_briefs" in names:
+            conn.execute(text("UPDATE custom_briefs SET brief_min = 1410 WHERE brief_min >= 1440"))
 
 
 def _migrate_integration_settings_columns(eng) -> None:
@@ -522,6 +543,7 @@ def init_db() -> None:
     Base.metadata.create_all(engine)
     _migrate_task_columns(engine)
     _migrate_app_settings_columns(engine)
+    _clamp_clock_minutes(engine)
     _migrate_integration_settings_columns(engine)
     _migrate_mcp_server_columns(engine)
     _migrate_cli_tool_columns(engine)

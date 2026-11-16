@@ -34,8 +34,9 @@ from datetime import date, datetime, timedelta
 
 from sqlalchemy import Select, and_, delete as sa_delete, func, or_, select, update as sa_update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
-from models import Project, Subtask, Task
+from models import Project, Reminder, Subtask, Task
 from schemas import PRIORITY_INT, SubtaskOut, TaskCreate, TaskUpdate
 from services.preference_slots import hits_window  # 避让窗判定单源（优化批 6）
 
@@ -245,7 +246,12 @@ def _attach_cancelled_dates(db: Session, tasks: list[Task]) -> None:
             by_parent.setdefault(parent_id, set()).add(original.date().isoformat())
     for t in tasks:
         if t.id in by_parent:
-            t.cancelled_dates = sorted(by_parent[t.id])
+            # 直接赋值会弄脏 ORM 对象（cancelled_dates 是已废弃的映射列，
+            # models.py:83），autoflush=False 只是延迟——随后任何 commit 都会
+            # 把它写回库、刷新 updated_at，进而污染同步脏表并让旧库迁移重复
+            # 生成墓碑（2026-11-16 优化批 1）。set_committed_value 只改内存
+            # 已提交值，API 序列化照常读到，且不置脏。
+            set_committed_value(t, "cancelled_dates", sorted(by_parent[t.id]))
 
 
 def _attach_subtasks(db: Session, tasks: list[Task]) -> None:
@@ -824,6 +830,30 @@ def _with_until(rule: str, until_day: datetime) -> str:
     return base + ";UNTIL=" + until_day.strftime("%Y%m%d") + "T235959"
 
 
+def _reminder_day_start(date_str: str) -> datetime:
+    y, m, d = (int(x) for x in date_str.split("-"))
+    return datetime(y, m, d)
+
+
+def _drop_series_reminders_on(db: Session, task_id: str, date_str: str) -> None:
+    """删除系列某日实例的待发提醒（仅删本次）。提醒 fire_at = 实例开始 − 提前量，
+    提前量最大 60 分钟，向前留 2 小时窗覆盖跨零点的极早实例。"""
+    day = _reminder_day_start(date_str)
+    db.execute(sa_delete(Reminder).where(
+        Reminder.task_id == task_id,
+        Reminder.fire_at >= day - timedelta(hours=2),
+        Reminder.fire_at < day + timedelta(days=1),
+    ))
+
+
+def _drop_series_reminders_from(db: Session, task_id: str, date_str: str) -> None:
+    """删除系列 date 当日及之后的待发提醒（删及后续/删除所有）。"""
+    db.execute(sa_delete(Reminder).where(
+        Reminder.task_id == task_id,
+        Reminder.fire_at >= _reminder_day_start(date_str) - timedelta(hours=2),
+    ))
+
+
 def delete_task(db: Session, task_id: str, *, mode: str = "auto", date: str | None = None) -> bool:
     """删除任务，按模块头的 6 场景判定矩阵执行（生命周期由 ever_scheduled 与
     created_at 判定）。返回 False = 不存在（router 404）；参数不合法抛 ValueError
@@ -837,6 +867,7 @@ def delete_task(db: Session, task_id: str, *, mode: str = "auto", date: str | No
     if mode == "this":  # 场景 4：挖空单次实例，主任务与规则不动。
         # 该日已实体化为活体例外（Clone & Override 场景 A 产物）→ 软删该实体行
         # （is_deleted=True 后即墓碑形态，聚合挖空与 purge 保护口径自洽）；无则建墓碑
+        _drop_series_reminders_on(db, task.id, date)
         exception = _find_exception(db, task.id, _instance_time(task, date))
         if exception is not None:
             exception.is_deleted = True
@@ -858,6 +889,19 @@ def delete_task(db: Session, task_id: str, *, mode: str = "auto", date: str | No
         y, m, d = (int(x) for x in date.split("-"))
         until_day = datetime(y, m, d) - timedelta(days=1)  # 前一晚（该日实例保留）
         task.recurrence_rule = _with_until(task.recurrence_rule, until_day)
+        # 被点日（含）之后已实体化的活体例外/墓碑必须一并软删：它们 recurrence
+        # 为空、不受 UNTIL 约束，漏处理会在"删及后续"后继续留在日历（2026-11-16
+        # 优化批 1；先例见 _split_series 的子行改挂）。original_time 为空的子行
+        # 天然不命中 date() 比较，不会被误删。
+        db.execute(
+            sa_update(Task).where(
+                Task.parent_id == task.id,
+                Task.is_deleted.is_(False),
+                func.date(Task.original_time) >= date,
+            ),
+            {"is_deleted": True, "deleted_at": datetime.now()},
+        )
+        _drop_series_reminders_from(db, task.id, date)
         logger.info("删除此日程及后续：任务 id=%s「%s」UNTIL=%s", task_id, task.title, until_day.date())
         db.commit()
         return True
@@ -875,8 +919,14 @@ def delete_task(db: Session, task_id: str, *, mode: str = "auto", date: str | No
         _record_event(db, task, "abandon", prev_start=task.start_time,
                       planned_min=task.duration_mins)
     if flash:
+        # 引用行必须先清：生产库 PRAGMA foreign_keys=ON，reminders.task_id /
+        # subtasks.task_id 均指向 tasks.id，漏删会让物理删除整批回滚并 500
+        # （2026-11-16 优化批 1；测试库已同步开外键以覆盖此类缺陷）。
+        child_ids = list(db.scalars(select(Task.id).where(Task.parent_id == task.id)))
+        ids = [task.id, *child_ids]
+        db.execute(sa_delete(Reminder).where(Reminder.task_id.in_(ids)))
+        db.execute(sa_delete(Subtask).where(Subtask.task_id.in_(ids)))  # 清单随行清（批 C）
         db.execute(sa_delete(Task).where(Task.parent_id == task.id))  # 墓碑随主行清
-        db.execute(sa_delete(Subtask).where(Subtask.task_id == task.id))  # 清单随主行清（批 C）
         db.delete(task)
         db.commit()
         logger.info("物理删除任务（闪建闪删）：id=%s「%s」", task_id, task.title)
@@ -945,8 +995,13 @@ def expand_occurrences(task, lo: datetime, hi: datetime) -> list[datetime]:
     occs: list[datetime] = []
     day = lo.replace(hour=0, minute=0, second=0, microsecond=0)
     while day < hi:
-        if day.date().isoformat() not in cancelled and _rule_occurs(task.recurrence_rule, base, day):
-            occs.append(day.replace(hour=base.hour, minute=base.minute))
+        occ = day.replace(hour=base.hour, minute=base.minute)
+        # 实例时刻也要过窗（2026-11-16 优化批 1）：只按"天"裁剪会把当天尚未
+        # 发生的实例算进 [lo, hi)，last_similar_occurrence(hi=now) 因此把今天
+        # 稍后才开始的同类任务当作"最近一次已执行"，频率防呆误报。
+        if lo <= occ < hi and day.date().isoformat() not in cancelled \
+                and _rule_occurs(task.recurrence_rule, base, day):
+            occs.append(occ)
         day += timedelta(days=1)
     return occs
 

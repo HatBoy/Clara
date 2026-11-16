@@ -6,6 +6,7 @@ conftest 走 create_all 建新表、不经过 init_db，迁移分支（给旧 sc
 """
 
 import json
+from datetime import datetime
 
 from sqlalchemy import create_engine, inspect, text
 
@@ -223,3 +224,53 @@ def test_migrate_chat_channel_push_columns_adds_and_idempotent():
     with engine.connect() as conn:
         assert conn.execute(text(
             "SELECT push_enabled FROM chat_channels WHERE id = 'c1'")).scalar_one() == 0
+
+
+def test_testing_engine_matches_production_pragmas():
+    """测试库与生产同口径（2026-11-16 优化批 1）：外键约束必须开启，否则
+    FK 类缺陷（如闪删漏删 Reminder）在测试中天然不可见。"""
+    from conftest import TestingSessionLocal
+
+    with TestingSessionLocal() as db:
+        assert db.execute(text("PRAGMA foreign_keys")).scalar() == 1
+        assert db.execute(text("PRAGMA busy_timeout")).scalar() == 5000
+
+
+def test_testing_engine_rejects_orphan_child_row():
+    """孤儿提醒行（task_id 不存在）必须被外键拦下——生产 PRAGMA 的真实行为。"""
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    from conftest import TestingSessionLocal
+    from models import Reminder
+
+    with TestingSessionLocal() as db:
+        db.add(Reminder(task_id="no-such-task", fire_at=datetime.now()))
+        with pytest.raises(IntegrityError):
+            db.commit()
+
+
+def test_clamp_clock_minutes_repairs_legacy_1440():
+    """老库残留 1440（24:00）启动时收敛到 1410，否则 agent_loop 每 tick 抛错。"""
+    from database import _clamp_clock_minutes
+
+    engine = create_engine("sqlite://")
+    with engine.connect() as conn:
+        conn.execute(text(
+            "CREATE TABLE app_settings (id VARCHAR(10) PRIMARY KEY, "
+            "morning_brief_min INTEGER, ingest_brief_min INTEGER, nightly_start_min INTEGER)"
+        ))
+        conn.execute(text(
+            "CREATE TABLE custom_briefs (id VARCHAR(36) PRIMARY KEY, brief_min INTEGER)"))
+        conn.execute(text(
+            "INSERT INTO app_settings VALUES ('default', 1440, 1440, 1200)"))
+        conn.execute(text("INSERT INTO custom_briefs VALUES ('b1', 1440)"))
+        conn.commit()
+    _clamp_clock_minutes(engine)
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT morning_brief_min, ingest_brief_min, nightly_start_min FROM app_settings"
+        )).one()
+        assert tuple(row) == (1410, 1410, 1200)
+        assert conn.execute(text("SELECT brief_min FROM custom_briefs")).scalar_one() == 1410
+    _clamp_clock_minutes(engine)  # 幂等

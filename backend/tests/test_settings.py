@@ -148,6 +148,15 @@ def test_patch_minute_granularity_422(client: TestClient):
     assert resp.status_code == 422
 
 
+def test_patch_clock_minute_1440_rejected(client: TestClient):
+    """报点字段 1440（24:00）会让 time(24, 0) 抛错并拖垮 agent_loop 整 tick
+    （2026-11-16 优化批 1）——合同层直接拒绝。"""
+    client.get("/api/settings")
+    for key in ("morning_brief_min", "ingest_brief_min", "nightly_start_min"):
+        resp = client.patch("/api/settings", json={key: 1440})
+        assert resp.status_code == 422, key
+
+
 def test_patch_cross_field_merged_state_422(client: TestClient):
     # 只改一头、另一头取库内现值参与判定：终点 600 与库内起点 480 跨度不足
     client.get("/api/settings")

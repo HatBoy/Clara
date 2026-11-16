@@ -6,7 +6,7 @@ app 是单例、dependency_overrides 是全局的——多个测试文件必须�
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -26,6 +26,16 @@ engine = create_engine(
     poolclass=StaticPool,
 )
 TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+@event.listens_for(engine, "connect")
+def _set_testing_pragma(dbapi_connection, connection_record):
+    """与生产 database.py 同口径（2026-11-16 优化批 1）：外键约束与写锁等待。
+    不开 journal_mode=WAL——内存库返回 memory，断言 WAL 会误导。"""
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.execute("PRAGMA busy_timeout=5000")
+    cursor.close()
 
 
 def override_get_db():

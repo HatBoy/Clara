@@ -366,10 +366,10 @@ class SettingsUpdate(BaseModel):
     # AI 功能主开关（2026-09-20 增，阶段二）
     ai_enabled: bool | None = None
     # 晨间对齐时刻（分钟口径；30 分钟粒度校验随 _MINUTE_FIELDS）
-    morning_brief_min: int | None = Field(default=None, ge=0, le=1440)
+    morning_brief_min: int | None = Field(default=None, ge=0, le=1439)
     # 每日数据采集开关与时刻（分钟口径，粒度校验随 _MINUTE_FIELDS）
     ingest_enabled: bool | None = None
-    ingest_brief_min: int | None = Field(default=None, ge=0, le=1440)
+    ingest_brief_min: int | None = Field(default=None, ge=0, le=1439)
     # 每日采集轮数（1-4 档；首轮在 ingest_brief_min，后续槽当天顺延）
     ingest_runs_per_day: int | None = Field(default=None, ge=1, le=4)
     # 单日采集 LLM 调用上限（0 = 不限；上限 300 防误填天文数字）
@@ -383,7 +383,7 @@ class SettingsUpdate(BaseModel):
     # 自定义哲学文本（空白串在 service 归一为 None）
     ai_philosophy_custom: Optional[str] = Field(default=None, max_length=1000)
     # 夜间工作流报点时刻（分钟口径；30 分钟粒度校验随 _MINUTE_FIELDS）
-    nightly_start_min: int | None = Field(default=None, ge=0, le=1440)
+    nightly_start_min: int | None = Field(default=None, ge=0, le=1439)
     # 四流独立开关（2026-10-21 复查批 D1）：关 = 永不认领不落 workflow_runs 行
     morning_enabled: bool | None = None
     nightly_enabled: bool | None = None
@@ -1322,7 +1322,7 @@ class CustomBriefOut(BaseModel):
 class CustomBriefCreate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    brief_min: int = Field(ge=0, le=1440)
+    brief_min: int = Field(ge=0, le=1439)
     instruction: str = Field(min_length=1, max_length=200)
 
 
@@ -1331,7 +1331,7 @@ class CustomBriefUpdate(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    brief_min: int | None = Field(default=None, ge=0, le=1440)
+    brief_min: int | None = Field(default=None, ge=0, le=1439)
     instruction: str | None = Field(default=None, min_length=1, max_length=200)
     enabled: bool | None = None
 

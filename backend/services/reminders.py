@@ -124,7 +124,13 @@ def scan_due(db: Session, now: datetime, lookahead: float = REMINDER_LOOKAHEAD_S
     返回入列尝试数。"""
     settings = get_settings(db)
     lead = settings.reminder_lead_min
-    if lead is None:
+    # 「不提醒」档（仅提示音）：提前量恒 0——任务级抬升（重要会议 60 / 差旅 40）
+    # 是"给用户留准备时间"的重提醒语义，声音档只是轻提示，不得抬升。此前此处
+    # 把 lead 归一为 0 后仍走 _effective_lead_min(task, 0) 抬升，而 claim_due 按
+    # lead=None 得 eff=None→0，单次任务因 fire_at != start 被丢弃（完全不响）、
+    # 系列因跳过改期校验在提前 60 分钟只响声音（2026-11-16 优化批 1）。
+    sound_only = lead is None
+    if sound_only:
         if settings.sound == "off":
             return 0
         lead = 0
@@ -142,7 +148,7 @@ def scan_due(db: Session, now: datetime, lookahead: float = REMINDER_LOOKAHEAD_S
             Task.start_time <= scan_hi,
         )
     ):
-        eff = _effective_lead_min(task, lead)
+        eff = 0 if sound_only else _effective_lead_min(task, lead)
         assert eff is not None  # lead 已归一非 None，纯类型收窄
         lo = now + timedelta(minutes=eff)
         if lo < task.start_time <= lo + timedelta(seconds=lookahead):
@@ -158,7 +164,7 @@ def scan_due(db: Session, now: datetime, lookahead: float = REMINDER_LOOKAHEAD_S
             Task.start_time.is_not(None),
         )
     ):
-        eff = _effective_lead_min(task, lead)
+        eff = 0 if sound_only else _effective_lead_min(task, lead)
         assert eff is not None
         cancelled = _cancelled_dates(db, task.id)
         rows.extend((task.id, f) for f in _series_fire_times(task, eff, now, lookahead, cancelled))

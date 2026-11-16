@@ -51,6 +51,7 @@ from schemas import (
     RuleConflictCheckIn,
     RuleConflictCheckOut,
     SessionCompactOut,
+    _to_naive_local,
 )
 from services import ai_data, data_ingest, episodic, workflows
 from services import chat_turn
@@ -318,7 +319,11 @@ def get_messages(limit: int = 200, after: datetime | None = None,
     """面板启动加载会话历史（时间正序）。after：未读位点恢复（2026-11-04 通知
     分轨——前端 localStorage 存「上次面板可见时刻」，启动时取此后到达的消息计
     未读徽标初始值，重启不丢感知）。"""
-    return ai_data.list_messages(db, limit=limit, after=after)
+    # 位点统一归一为本地 naive（2026-11-16 优化批 1）：旧前端存的是 UTC 带 Z
+    # 的 ISO 串，与 Message.created_at（本地 naive）直接比较会偏一个时区。
+    return ai_data.list_messages(
+        db, limit=limit, after=_to_naive_local(after) if after is not None else None
+    )
 
 
 @router.post("/session/clear", status_code=204)

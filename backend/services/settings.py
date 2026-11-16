@@ -82,6 +82,10 @@ _MINUTE_FIELDS = (
     "nightly_start_min",
 )
 
+# 用于构造 datetime.time(...) 的报点字段：1440（24:00）会让 time(24, 0) 抛错，
+# 进而让 agent_loop 整 tick 后续 claim 全跳过（2026-11-16 优化批 1）。
+_CLOCK_FIELDS = ("morning_brief_min", "ingest_brief_min", "nightly_start_min")
+
 
 def get_settings(db: Session) -> AppSettings:
     """读取设置行；无则按 DEFAULTS 落行（GET 即 get_or_create，二次幂等）。"""
@@ -102,6 +106,8 @@ def _validate_and_repair(merged: dict) -> None:
     """
     # 30 分钟粒度（前端下拉天然 30 分钟档，直接 API 调用在这里拦）
     for key in _MINUTE_FIELDS:
+        if key in _CLOCK_FIELDS and merged[key] >= 1440:
+            raise ValueError(f"{key} 必须在 0–1410 之间，收到 {merged[key]}")
         if merged[key] % 30 != 0:
             raise ValueError(f"{key} 需要 30 分钟粒度，收到 {merged[key]}")
 

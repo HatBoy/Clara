@@ -191,6 +191,12 @@ def _claim_run(db: Session, name: str, day: date) -> bool:
     return result.rowcount == 1
 
 
+def _clock_min(value: int) -> int:
+    """报点分钟防御收敛（2026-11-16 优化批 1）：1440 会让 time(24, 0) 抛错并
+    拖垮整个 tick 的后续 claim；上限取 30 分钟粒度的最后一档 1410（23:30）。"""
+    return min(max(int(value), 0), 1410)
+
+
 def _claim_morning(db: Session, now: datetime) -> bool:
     """晨间对齐：now ≥ morning_brief_min（设置化，默认 08:30）且当日未认领。
     morning_enabled 关 = 永不认领（2026-10-21 复查批 D1，同 ingest_enabled 语义：
@@ -201,9 +207,8 @@ def _claim_morning(db: Session, now: datetime) -> bool:
     settings = get_settings(db)
     if not settings.morning_enabled:
         return False
-    brief_at = datetime.combine(
-        now.date(), time(settings.morning_brief_min // 60, settings.morning_brief_min % 60)
-    )
+    minute = _clock_min(settings.morning_brief_min)
+    brief_at = datetime.combine(now.date(), time(minute // 60, minute % 60))
     if now < brief_at or now >= brief_at + timedelta(minutes=MORNING_CATCHUP_WINDOW_MIN):
         return False
     return _claim_run(db, "morning", now.date())
@@ -221,9 +226,10 @@ def _claim_ingest(db: Session, now: datetime) -> bool:
     if not settings.ingest_enabled:
         return False
     offsets = _INGEST_SLOT_OFFSETS.get(settings.ingest_runs_per_day, ())
+    minute = _clock_min(settings.ingest_brief_min)
     for slot, offset in enumerate((0, *offsets)):
         at = datetime.combine(
-            now.date(), time(settings.ingest_brief_min // 60, settings.ingest_brief_min % 60)
+            now.date(), time(minute // 60, minute % 60)
         ) + timedelta(minutes=offset)
         if now < at:
             continue

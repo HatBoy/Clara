@@ -421,6 +421,41 @@ def test_scan_important_meeting_60min_window():
     assert rows[0].fire_at == now + timedelta(seconds=20)
 
 
+def test_scan_sound_only_does_not_raise_important_meeting():
+    """「不提醒」+ 提示音开：重要会议不得被抬升到 60 分钟（2026-11-16 优化批 1）。
+    修复前入列 fire_at=start-60，claim 按 lead=None 判改期而丢弃 → 完全不响。"""
+    _set_lead(None)
+    _set_sound("chime")
+    now = datetime.now()
+    start = now + timedelta(seconds=20)  # 准时档：fire_at = start
+    tid = _add_task(title="评审会", start_time=start)
+    with TestingSessionLocal() as db:
+        assert scan_due(db, now) == 1
+    rows = _queue_rows()
+    assert len(rows) == 1
+    assert rows[0].task_id == tid
+    assert rows[0].fire_at == start  # 未被抬升
+    with TestingSessionLocal() as db:
+        events = claim_due(db, now + timedelta(seconds=21))
+    assert len(events) == 1
+    assert events[0]["lead_min"] is None  # 仅声音档载荷语义不变
+
+
+def test_scan_sound_only_series_fires_at_instance_start():
+    """系列同理：声音档按实例开始时刻提醒，不得提前 60 分钟。"""
+    _set_lead(None)
+    _set_sound("chime")
+    now = datetime.now()
+    start = now + timedelta(seconds=20)
+    code = next(c for c, i in _BYDAY_TO_ISO.items() if i == start.isoweekday())
+    tid = _add_task(title="评审会", start_time=start, recurrence_rule=f"FREQ=WEEKLY;BYDAY={code}")
+    with TestingSessionLocal() as db:
+        assert scan_due(db, now) == 1
+    rows = [r for r in _queue_rows() if r.task_id == tid]
+    assert len(rows) == 1
+    assert rows[0].fire_at == start
+
+
 def test_claim_payload_reports_effective_lead_and_end():
     # 载荷 lead_min 报任务级有效提前量（非全局档）；end_at / recurrence 供前端按钮
     _set_lead(15)

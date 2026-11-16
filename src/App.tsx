@@ -42,6 +42,7 @@ import {
   fetchTasks,
   scheduleToISO,
   toFrontendProject,
+  toNaiveLocalISO,
   toFrontendSettings,
   toFrontendTask,
   toSettingsPatch,
@@ -377,7 +378,9 @@ function App() {
     if (copilotVisible) {
       setAiUnread(0);
       try {
-        window.localStorage.setItem(LAST_SEEN_KEY, new Date().toISOString());
+        // 后端 Message.created_at 是本地 naive 时间；toISOString() 是 UTC 串，
+        // 直接比较会偏一个时区（重启后未读计数虚高，2026-11-16 优化批 1）。
+        window.localStorage.setItem(LAST_SEEN_KEY, toNaiveLocalISO(new Date()));
       } catch {
         /* 隐私模式等 localStorage 不可用：仅本轮会话内未读，可接受降级 */
       }
@@ -547,12 +550,26 @@ function App() {
     fetchProjects()
       .then((apiProjects) => {
         const nameById = new Map(apiProjects.map((p) => [p.id, p.name]));
+        // 项目列表同批回填：重命名/删除/星标失败也靠这里纠偏（2026-11-16 优化批 1）
+        setProjects(apiProjects.map(toFrontendProject));
         return Promise.all([
           fetchTasks({ unscheduled: true }),
           fetchTasks({ start: dayStartOf(loadedFromDay) }),
         ]).then((batches) => batches.flat().map((t) => toFrontendTask(t, nameById)));
       })
-      .then(upsertTasks)
+      .then((fresh) => {
+        // 剪枝式重拉（2026-11-16 优化批 1）：后端已不存在的行必须从本地移除——
+        // 旧实现只 upsert 不删，完成/硬删/改归属后侧栏徽标与幽灵行长期滞留。
+        // 只对"本次请求覆盖范围"剪枝：更早的历史窗口（翻页扩展加载）保留。
+        const freshIds = new Set(fresh.map((t) => t.id));
+        setTasks((prev) => {
+          const kept = prev.filter((t) => {
+            if (freshIds.has(t.id)) return false; // 由 fresh 版本替换
+            return isScheduled(t) && t.dateOffset < loadedFromDay;
+          });
+          return [...kept, ...fresh];
+        });
+      })
       .catch(() => {});
   };
 
@@ -594,7 +611,9 @@ function App() {
 
   // 派生：已排期任务 → 中栏日历；徽标口径 = 未排期且未归属项目的任务数（默认收件箱列表长度）
   const scheduledEvents = tasks.filter(isScheduled);
-  const inboxCount = tasks.filter((t) => !isScheduled(t) && !t.project).length;
+  // 已完成待办不再计入（2026-11-16 优化批 1）：勾选完成后后端 unscheduled 不再
+  // 返回该行，但本地乐观值仍在——不排除 done 会让徽标永久多算。
+  const inboxCount = tasks.filter((t) => !isScheduled(t) && !t.project && !t.done).length;
   // 项目页"已排期"开关受控值（2026-11-10 项目筛选联动）：开 = 中栏日历过滤为当前
   // 项目；中栏日历筛选态（null = 全量）——chip ✕ 直接清，effect 依赖不含 filter，
   // ✕ 后不重设（本次停留不再自动），开关/项目/页面任一变化才重新同步
@@ -671,7 +690,7 @@ function App() {
     // 排期变化同步给桌面小部件（乐观前端形状整任务，widget 按 id upsert）
     const src = tasks.find((t) => t.id === taskId);
     if (src) notifyPeer("main", { kind: "upsert", tasks: [apply(src)] });
-    updateTask(taskId, body).catch((e) => console.error("排期写回后端失败", e));
+    updateTask(taskId, body).catch((e) => recoverFromWriteError("排期写回后端失败", e));
   };
 
   // 待办拖入侧栏项目：写入/转移项目归属（排期字段不动）。前端以 name 引用项目，
@@ -686,7 +705,7 @@ function App() {
     const project = projects.find((p) => p.name === projectName);
     if (project?.id) {
       updateTask(taskId, { project_id: project.id }).catch((e) =>
-        console.error("任务归属项目写回后端失败", e),
+        recoverFromWriteError("任务归属项目写回后端失败", e),
       );
     } else {
       console.warn("项目无后端 id，跳过归属持久化", projectName);
@@ -1364,7 +1383,7 @@ function App() {
     const project = projects.find((p) => p.name === oldName);
     if (project?.id) {
       updateProject(project.id, { name: newName }).catch((e) =>
-        console.error("项目重命名写回后端失败", e),
+        recoverFromWriteError("项目重命名写回后端失败", e),
       );
     }
     setProjects((prev) =>
@@ -1383,7 +1402,7 @@ function App() {
   const handleDeleteProject = (name: string) => {
     const project = projects.find((p) => p.name === name);
     if (project?.id) {
-      deleteProject(project.id).catch((e) => console.error("项目删除写回后端失败", e));
+      deleteProject(project.id).catch((e) => recoverFromWriteError("项目删除写回后端失败", e));
     }
     setProjects((prev) => prev.filter((p) => p.name !== name));
     setTasks((prev) =>
@@ -1402,7 +1421,7 @@ function App() {
     const project = projects.find((p) => p.name === name);
     if (project?.id) {
       updateProject(project.id, { starred: !project.starred }).catch((e) =>
-        console.error("项目星标写回后端失败", e),
+        recoverFromWriteError("项目星标写回后端失败", e),
       );
     }
     setProjects((prev) =>

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from conftest import TestingSessionLocal
-from models import Task
+from models import Reminder, Task
 from schemas import TaskCreate
 from services import llm
 from services.seed import seed_if_empty
@@ -741,6 +741,131 @@ def test_delete_this_soft_deletes_materialized_exception(client: TestClient, see
         "end": (monday + timedelta(days=1)).date().isoformat() + "T00:00:00",
     }).json()
     assert created["id"] not in [t["id"] for t in window]
+
+
+def test_integrity_error_maps_to_409(client: TestClient, monkeypatch):
+    """DB 约束冲突统一 409 中文文案，不回显 SQL（2026-11-16 优化批 1）。"""
+    from sqlalchemy.exc import IntegrityError
+
+    from services import tasks as svc
+
+    def boom(*a, **kw):
+        raise IntegrityError("INSERT INTO tasks", {}, Exception("UNIQUE failed"))
+
+    monkeypatch.setattr(svc, "list_tasks", boom)
+    res = client.get("/api/tasks")
+    assert res.status_code == 409
+    assert res.json()["detail"] == "数据冲突或引用约束不满足"
+    assert "INSERT" not in res.text
+
+
+def test_operational_error_maps_to_503(client: TestClient, monkeypatch):
+    """数据库锁等待超时统一 503（2026-11-16 优化批 1）。"""
+    from sqlalchemy.exc import OperationalError
+
+    from services import tasks as svc
+
+    def boom(*a, **kw):
+        raise OperationalError("SELECT 1", {}, Exception("database is locked"))
+
+    monkeypatch.setattr(svc, "list_tasks", boom)
+    res = client.get("/api/tasks")
+    assert res.status_code == 503
+    assert res.json()["detail"] == "数据库暂时繁忙，请稍后重试"
+
+
+def test_expand_occurrences_excludes_future_same_day_instance():
+    """窗口按实例"时刻"裁剪，不只按天（2026-11-16 优化批 1）——否则
+    last_similar_occurrence(hi=now) 会把今天稍后才开始的任务算作已执行。"""
+    from types import SimpleNamespace
+
+    base = datetime(2026, 11, 10, 15, 0)
+    task = SimpleNamespace(start_time=base, recurrence_rule="FREQ=DAILY", cancelled_dates=None)
+    now = datetime(2026, 11, 16, 10, 0)
+    out = expand_occurrences(task, datetime(2026, 11, 15, 0, 0), now)
+    assert datetime(2026, 11, 15, 15, 0) in out
+    assert datetime(2026, 11, 16, 15, 0) not in out  # 今日尚未发生
+
+
+def test_read_paths_do_not_dirty_cancelled_dates(client: TestClient, seeded_db):
+    """读路径的 cancelled_dates 聚合只能是内存态（2026-11-16 优化批 1）。
+
+    cancelled_dates 是已废弃但仍在 ORM 映射中的列；直接赋值会把对象置脏，
+    随后的 commit 会写回库并刷新 updated_at（同步脏表污染源）。
+    """
+    from services import tasks as tasks_svc
+    from services import sync_engine
+
+    series_id = _tid_by_title(client, "英语课")
+    date = _next_weekday(datetime.now(), 1).date().isoformat()
+    client.delete(f"/api/tasks/{series_id}", params={"mode": "this", "date": date})
+
+    with TestingSessionLocal() as db:
+        before = db.get(Task, series_id).updated_at
+        rows = tasks_svc.list_tasks(db)
+        tasks_svc.get_task(db, series_id)
+        tasks_svc.busy_intervals(db)
+        assert any(t.cancelled_dates == [date] for t in rows if t.id == series_id)
+        assert not db.dirty
+        db.commit()
+    sync_engine.take_dirty_tables()  # 清掉前面删除动作留下的脏标记
+
+    with TestingSessionLocal() as db:
+        row = db.get(Task, series_id)
+        assert row.updated_at == before
+        assert row.cancelled_dates is None
+
+
+def test_delete_following_soft_deletes_future_exception_rows(client: TestClient, seeded_db):
+    """删及后续必须收拾已实体化的未来例外行（2026-11-16 优化批 1）。
+
+    例外行 recurrence 为空、不受 UNTIL 约束，此前会作为独立任务继续留在日历。
+    """
+    series_id = _tid_by_title(client, "英语课")
+    d2 = _next_weekday(datetime.now(), 1)
+    d = _next_weekday(d2 + timedelta(days=1), 1)  # 再下一个周一
+    date = d.date().isoformat()
+    created = client.patch(f"/api/tasks/{series_id}",
+                           params={"mode": "this", "date": date}, json={"notes": "临时"}).json()
+    assert client.delete(f"/api/tasks/{series_id}",
+                         params={"mode": "following", "date": date}).status_code == 204
+    with TestingSessionLocal() as db:
+        row = db.get(Task, created["id"])
+        assert row.is_deleted is True and row.deleted_at is not None
+    window = client.get("/api/tasks", params={
+        "start": f"{date}T00:00:00",
+        "end": (d + timedelta(days=1)).date().isoformat() + "T00:00:00",
+    }).json()
+    assert created["id"] not in [t["id"] for t in window]
+
+
+def test_delete_this_and_following_drop_pending_reminders(client: TestClient, seeded_db):
+    """截断/挖空实例时同步清掉待发提醒，避免幽灵提醒（2026-11-16 优化批 1）。"""
+    series_id = _tid_by_title(client, "英语课")
+    d2 = _next_weekday(datetime.now(), 1)
+    d = _next_weekday(d2 + timedelta(days=1), 1)
+    with TestingSessionLocal() as db:
+        db.add(Reminder(task_id=series_id, fire_at=d.replace(hour=8, minute=0)))
+        db.add(Reminder(task_id=series_id, fire_at=d2.replace(hour=8, minute=0)))
+        db.commit()
+    client.delete(f"/api/tasks/{series_id}",
+                  params={"mode": "following", "date": d.date().isoformat()})
+    with TestingSessionLocal() as db:
+        left = db.scalars(select(Reminder).where(Reminder.task_id == series_id)).all()
+    # 被点日及其后的提醒删除；更早实例（d2）保留
+    assert [r.fire_at for r in left] == [d2.replace(hour=8, minute=0)]
+
+
+def test_flash_delete_removes_reminders_with_fk_on(client: TestClient, seeded_db):
+    """闪建闪删物理删除前必须清 reminders（生产库外键开启，否则 500）。"""
+    created = client.post("/api/tasks", json={"title": "临时会议"}).json()
+    tid = created["id"]
+    with TestingSessionLocal() as db:
+        db.add(Reminder(task_id=tid, fire_at=datetime.now() + timedelta(minutes=5)))
+        db.commit()
+    assert client.delete(f"/api/tasks/{tid}").status_code == 204
+    with TestingSessionLocal() as db:
+        assert db.scalars(select(Reminder).where(Reminder.task_id == tid)).all() == []
 
 
 def test_patch_mode_validation_422(client: TestClient, seeded_db):

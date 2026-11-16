@@ -157,6 +157,17 @@ def test_claim_morning_claims_once(monkeypatch):
         assert workflows._claim_morning(db, now) is False  # 当日认领幂等
 
 
+def test_claim_morning_legacy_1440_does_not_raise(monkeypatch):
+    """老库残留 1440 时 time(24, 0) 会抛错并拖垮整 tick（2026-11-16 优化批 1）；
+    读取侧防御收敛到 1410，认领谓语不抛。"""
+    _use_test_db(monkeypatch)
+    with TestingSessionLocal() as db:
+        get_settings(db).morning_brief_min = 1440
+        db.commit()
+        # 23:59 已过 23:30（收敛后的报点），认领可正常判定
+        assert workflows._claim_morning(db, datetime.now().replace(hour=23, minute=59)) is True
+
+
 def test_claim_morning_catchup_window_expires(monkeypatch):
     # 补账截止窗（2026-10-25 启动收敛）：默认报点 08:30，窗外（≥11:30）当日整跳
     # ——不认领也不落 workflow_runs 行（下午开机的「晨间」简报只剩打扰），次日正常

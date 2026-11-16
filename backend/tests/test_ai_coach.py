@@ -938,3 +938,26 @@ def test_messages_after_filter(client):
     assert resp.status_code == 200
     rows = resp.json()
     assert [r["content"] for r in rows] == ["新消息"]
+
+
+def test_messages_after_accepts_utc_z_watermark(client):
+    """旧前端存的是 UTC 带 Z 的位点（2026-11-16 优化批 1）：后端须归一为本地
+    naive 再比较，否则偏差一个时区导致未读计数虚高。"""
+    from datetime import timedelta, timezone
+
+    from services.ai_data import append_message
+
+    with TestingSessionLocal() as db:
+        old = append_message(db, role="assistant", content="旧的回答")
+        cutoff = old.created_at
+        append_message(db, role="assistant", content="新消息")
+    # 本地 naive → 同一时刻的 UTC 串（naive.astimezone 按系统本地时区解释）
+    utc_cutoff = cutoff.astimezone(timezone.utc)
+    resp = client.get("/api/ai/messages",
+                      params={"after": utc_cutoff.isoformat().replace("+00:00", "Z")})
+    assert resp.status_code == 200
+    assert [r["content"] for r in resp.json()] == ["新消息"]
+    # 位点向未来偏移一小时，不应把旧消息算进来（验证不是恒返回全部）
+    resp2 = client.get("/api/ai/messages",
+                       params={"after": (utc_cutoff + timedelta(hours=1)).isoformat().replace("+00:00", "Z")})
+    assert resp2.json() == []

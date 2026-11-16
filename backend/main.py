@@ -11,8 +11,10 @@ import logging
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from config import HOST, PORT
 from database import SessionLocal, init_db
@@ -112,6 +114,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# —— 全局异常收口（2026-11-16 优化批 1）：DB 层的约束/锁冲突不再裸奔成 500 ——
+# 分层不破：routers 仍只翻译业务 ValueError→422，这两类是横切的基础设施故障。
+
+
+@app.exception_handler(IntegrityError)
+async def _on_integrity_error(request: Request, exc: IntegrityError):
+    """唯一约束/FK 冲突：多为并发竞态或调用方数据非法，409 比 500 语义准确，
+    且不回显 SQL（防泄露表结构）。"""
+    logger.error("数据完整性冲突：%s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(status_code=409, content={"detail": "数据冲突或引用约束不满足"})
+
+
+@app.exception_handler(OperationalError)
+async def _on_operational_error(request: Request, exc: OperationalError):
+    """数据库繁忙/锁超时（WAL 单写者 + 后台工作流并发）：503 提示稍后重试。"""
+    logger.error("数据库暂时不可用：%s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse(status_code=503, content={"detail": "数据库暂时繁忙，请稍后重试"})
 
 
 @app.middleware("http")

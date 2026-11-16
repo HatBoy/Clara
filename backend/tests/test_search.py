@@ -198,3 +198,27 @@ def test_search_weekday_word(client):
     assert word == "上周三"
     assert lo == monday - timedelta(weeks=1) + timedelta(days=2)
     assert (hi - lo) == timedelta(days=1)
+
+
+def test_search_ben_zhou_san_strips_prefix(client):
+    """「本周三/这周三」整词剥离，不残留「本/这」进关键词（2026-11-16 优化批 1）。"""
+    from services.search import _parse_time_range
+
+    day0 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    monday = day0 - timedelta(days=day0.weekday())
+    for word_text in ("本周三 开会", "这周三 开会"):
+        lo, hi, word = _parse_time_range(word_text)
+        assert word in ("本周三", "这周三")
+        assert lo == monday + timedelta(days=2)
+        assert (hi - lo) == timedelta(days=1)
+
+
+def test_search_ben_zhou_san_endpoint_hits(client):
+    """端点级：只输入「本周三」+ 关键词时不得因前缀残留返回空。"""
+    day0 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    monday = day0 - timedelta(days=day0.weekday())
+    w3 = monday + timedelta(days=2, hours=10)
+    with TestingSessionLocal() as db:
+        _add(db, title="周会", start_time=w3, end_time=w3 + timedelta(hours=1))
+    res = client.get("/api/search", params={"q": "本周三 周会"})
+    assert [t["title"] for t in res.json()["tasks"]] == ["周会"]
