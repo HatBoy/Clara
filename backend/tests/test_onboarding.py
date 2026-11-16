@@ -52,3 +52,20 @@ def test_complete_validates_settings(client: TestClient):
         "skipped": False,
     })
     assert res.status_code == 422
+
+
+def test_complete_keeps_user_edited_seed_rule(client: TestClient):
+    # 2026-11-17 二轮批 1：种子被用户在记忆画像改写内容后 evidence 重写
+    # （"用户在记忆画像手动修改"）——访谈完成的种子清理按前缀匹配不再误删
+    _seed_rules()
+    rules = client.get("/api/ai/memory-rules").json()
+    seed = next(r for r in rules if (r.get("evidence") or "").startswith("从应用设置的"))
+    assert client.patch(f"/api/ai/memory-rules/{seed['id']}",
+                        json={"content": "我改写过的作息规则"}).status_code == 200
+    res = client.post("/api/onboarding/complete", json={"skipped": False})
+    assert res.status_code == 200
+    contents = _rule_contents(client)
+    assert "我改写过的作息规则" in contents  # 改写后的种子保留
+    edited = next(r for r in client.get("/api/ai/memory-rules").json()
+                  if r["content"] == "我改写过的作息规则")
+    assert edited["evidence"] == "用户在记忆画像手动修改"

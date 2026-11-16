@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 # 记忆规则总量硬上限（PRD §4.3：满预算时新增一条须淘汰一条低置信旧规则）
 MEMORY_RULES_MAX = 120
+# 种子规则（seed_memory_rules_if_empty 从应用设置推导）的 evidence 前缀——
+# 首启访谈完成时按此前缀清理未改动的种子（onboarding 导入单源）
+_SEED_EVIDENCE_PREFIX = "从应用设置的"
 
 # —— 对话滚动上下文参数（2026-10-20 增；三层 = 近期原文 + 滚动摘要 + 长期画像）———
 # 近期原文条数：注入节点的"活记忆"窗口（超出部分由滚动摘要覆盖）
@@ -289,7 +292,9 @@ def update_memory_rule(db: Session, rule_id: str, patch: MemoryRuleUpdate) -> Me
     2026-11-03 记忆重构升级语义：用户手动编辑 AI 推导行（source != user_manual）
     时自动升 source=user_manual / confidence=1.0 / last_confirmed_at=now——亲笔
     改动即最高裁决（用户需求：AI 无权再覆盖，衰减亦豁免）；category/content
-    变化时 slot 重算。"""
+    变化时 slot 重算。content 被改写的种子行（evidence 以 _SEED_EVIDENCE_PREFIX
+    开头）同步重写 evidence——首启访谈的种子清理按前缀匹配，改写后的种子
+    不再被误删（2026-11-17 二轮批 1）。"""
     row = get_memory_rule(db, rule_id)
     if row is None:
         return None
@@ -303,6 +308,8 @@ def update_memory_rule(db: Session, rule_id: str, patch: MemoryRuleUpdate) -> Me
         row.source = "user_manual"
         row.confidence = 1.0
         row.last_confirmed_at = datetime.now()
+    if "content" in data and (row.evidence or "").startswith(_SEED_EVIDENCE_PREFIX):
+        row.evidence = "用户在记忆画像手动修改"  # 溯源失效：不再是自动推导原文
     row.slot = slot_of(row.category, row.content)
     db.commit()
     db.refresh(row)

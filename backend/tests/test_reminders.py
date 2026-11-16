@@ -546,15 +546,19 @@ def test_manual_claim_ignores_reschedule_validation():
 
 
 def test_manual_claim_long_grace():
-    """manual 宽限 30 分钟：睡眠 20 分钟后仍补响（auto 会在 120s 丢弃）。"""
+    """manual 宽限 2 小时（二轮批 1 从 30 分钟放宽）：睡眠/锁屏 90 分钟后唤醒
+    仍补响（auto 会在 120s 丢弃）；超 2 小时不再补响（幽灵提醒防线）。"""
     _set_lead(15)
     now = datetime.now()
     with TestingSessionLocal() as db:
-        t = Task(title="补响", start_time=now + timedelta(hours=2))
-        db.add(t)
+        t = Task(title="补响", start_time=now + timedelta(hours=4))
+        late = Task(title="迟太久", start_time=now + timedelta(hours=4))
+        db.add_all([t, late])
         db.flush()
-        db.add(Reminder(task_id=t.id, fire_at=now - timedelta(minutes=20),
+        db.add(Reminder(task_id=t.id, fire_at=now - timedelta(minutes=90),
                         kind="manual", ref_start=t.start_time))
+        db.add(Reminder(task_id=late.id, fire_at=now - timedelta(hours=3),
+                        kind="manual", ref_start=late.start_time))
         db.commit()
     with TestingSessionLocal() as db:
         events = claim_due(db, now)

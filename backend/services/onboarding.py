@@ -14,12 +14,10 @@ from sqlalchemy.orm import Session
 
 from models import MemoryRule
 from schemas import MemoryRuleCreate, SettingsUpdate
-from services.ai_data import create_memory_rule
+from services.ai_data import _SEED_EVIDENCE_PREFIX, create_memory_rule
 from services.settings import get_settings, update_settings
 
 logger = logging.getLogger(__name__)
-
-_SEED_EVIDENCE_PREFIX = "从应用设置的"
 
 
 def complete_onboarding(db: Session, *, settings: SettingsUpdate | None,

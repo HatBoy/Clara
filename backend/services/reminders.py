@@ -36,10 +36,11 @@ logger = logging.getLogger(__name__)
 REMINDER_TICK_SECONDS = 20
 REMINDER_LOOKAHEAD_SECONDS = 40
 REMINDER_GRACE_SECONDS = 120
-# 稍后提醒（2026-11-17 批 1）：合法档位；manual 行宽限放宽到 30 分钟以免
-# 电脑睡眠后 10 分钟 snooze 被当过期丢弃
+# 稍后提醒（2026-11-17 批 1）：合法档位；manual 行宽限 2 小时（二轮批 1 从
+# 30 分钟放宽）——用户显式请求过的提醒，睡眠/锁屏唤醒后迟响好过无声蒸发；
+# 不取更长（早上的会深夜弹是幽灵提醒，auto 档 120s 要防的正是这个）
 SNOOZE_MINUTES_CHOICES = (10, 60)
-MANUAL_GRACE_SECONDS = 1800
+MANUAL_GRACE_SECONDS = 7200
 
 # 任务级提前量覆盖档（2026-10-22 批 2 情境感知）：重要会议 60 / 差旅出行 40 /
 # 其余走用户全局偏好档（REMINDER_LEAD_CHOICES 0/5/10/15/30 不动——那是用户
@@ -216,7 +217,12 @@ def claim_due(db: Session, now: datetime, grace: float = REMINDER_GRACE_SECONDS)
         db.execute(sa_delete(Reminder).where(Reminder.id == r.id))
         is_manual = (r.kind or "auto") == "manual"
         if now - r.fire_at > timedelta(seconds=MANUAL_GRACE_SECONDS if is_manual else grace):
-            continue  # 过期放弃（manual 宽限 30 分钟：睡眠/锁屏后仍应补响）
+            # 过期放弃。manual 是用户显式请求的动作，静默蒸发语义最差——
+            # 超窗丢弃时留 warning 便于排查（迟到太久不再补响，见常量注释）
+            if is_manual:
+                logger.warning("稍后提醒过期丢弃：task=%s 原定 %s（现 %s）",
+                               r.task_id, r.fire_at, now)
+            continue
         task = db.get(Task, r.task_id)
         if task is None or task.is_deleted or task.done_at is not None or task.start_time is None:
             continue  # 幽灵提醒（任务已删/已完成/取消排期）
