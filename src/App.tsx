@@ -1651,11 +1651,6 @@ function App() {
         onMouseDown={(e) => startResize(e, "left")}
       />
       <ScheduleCanvas
-        // 模板应用生成的任务（2026-11-17 批 2）：直接 upsert 进本地态
-        onTemplateApplied={(api) => {
-          upsertTasks([toFrontendTask(api, projectNameById)]);
-          notifyPeer("main", { kind: "reload" });
-        }}
         // 统计页隐藏画布（2026-11 全宽改造）：display:none 常驻保视图态与跳转
         // 订阅（照 CopilotPanel 先例；undefined 时走 CSS 原样式）
         style={{ display: activeView === "reports" ? "none" : undefined }}

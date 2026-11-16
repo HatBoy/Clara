@@ -231,60 +231,6 @@ class TaskCreate(BaseModel):
         return _to_naive_local(v) if v is not None else v
 
 
-class TemplateIn(BaseModel):
-    """日程模板新建（2026-11-17 批 2）：相对时刻 start_min（0-1439，空=未排期）。"""
-
-    model_config = ConfigDict(str_strip_whitespace=True)
-
-    name: str = Field(min_length=1, max_length=30)
-    title: str = Field(min_length=1, max_length=30)
-    duration_mins: int | None = Field(default=None, ge=1, le=1440)
-    start_min: int | None = Field(default=None, ge=0, le=1439)
-    priority: int = Field(default=2, ge=1, le=3)
-    notes: str | None = Field(default=None, max_length=500)
-    recurrence_rule: str | None = Field(default=None, max_length=100, pattern=_RRULE_PATTERN)
-    subtasks: list[str] | None = None
-
-
-class TemplateUpdate(BaseModel):
-    """模板部分更新：键不出现 = 不动，显式 null = 清空（name/title 不允许置空由 service 拦）。"""
-
-    model_config = ConfigDict(str_strip_whitespace=True)
-
-    name: str | None = Field(default=None, min_length=1, max_length=30)
-    title: str | None = Field(default=None, min_length=1, max_length=30)
-    duration_mins: int | None = Field(default=None, ge=1, le=1440)
-    start_min: int | None = Field(default=None, ge=0, le=1439)
-    priority: int | None = Field(default=None, ge=1, le=3)
-    notes: str | None = Field(default=None, max_length=500)
-    recurrence_rule: str | None = Field(default=None, max_length=100, pattern=_RRULE_PATTERN)
-    subtasks: list[str] | None = None
-
-
-class TemplateOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: str
-    name: str
-    title: str
-    duration_mins: int | None = None
-    start_min: int | None = None
-    priority: int = 2
-    notes: str | None = None
-    recurrence_rule: str | None = None
-    subtasks: list[str] | None = None
-    sort_order: int = 0
-    created_at: datetime
-    updated_at: datetime
-
-
-class TemplateApplyIn(BaseModel):
-    """应用模板：date 缺省今天；start_time 显式覆盖模板时刻。"""
-
-    date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
-    start_time: datetime | None = None
-
-
 class TaskUpdate(BaseModel):
     """任务部分更新入参：键不出现 = 不动，显式 null = 清空（notes/duration_mins/
     end_time/recurrence_rule/project_id；start_time 置 null = 取消排期，schema 开放、

@@ -15,7 +15,6 @@ import {
   Timer,
   Trash2,
   X,
-  LayoutTemplate,
 } from "lucide-react";
 import { HolidayUtil, Solar } from "lunar-typescript";
 import {
@@ -48,8 +47,6 @@ import type { ParsedInput } from "../lib/syntax";
 import ConfirmPopover from "./ConfirmPopover";
 import { DURATION_PRESETS } from "./InboxPanel";
 import QuickAdd from "./QuickAdd";
-import { SaveTemplateModal, TemplateMenu } from "./TemplateMenu";
-import type { ApiTask } from "../lib/api";
 import SeriesScopeAsk from "./SeriesScopeAsk";
 import SubtaskList from "./SubtaskList";
 import WhenPicker from "./WhenPicker";
@@ -290,7 +287,6 @@ function ScheduleCanvas({
   // 假空档。头部 chip 由本组件渲染，✕ 走 onClearProjectFilter
   projectFilter,
   onClearProjectFilter,
-  onTemplateApplied,
 }: {
   style?: CSSProperties;
   onExpandCopilot?: () => void;
@@ -316,8 +312,6 @@ function ScheduleCanvas({
   ) => Promise<void>;
   // 快捷录入框建任务（App 负责持久化与未知项目顺手创建；失败 reject 由输入框保留文本）
   onCreateTask: (draft: ParsedInput) => Promise<unknown>;
-  // 模板应用生成的任务（2026-11-17 批 2）：App upsert 进本地态
-  onTemplateApplied?: (task: ApiTask) => void;
   // 项目筛选（null = 全量）：App 态，触发 = 项目页"已排期"开关打开（受控开关
   // 同步 effect 见 App）；解除 = 关开关 / 离开项目页 / chip ✕
   projectFilter?: string | null;
@@ -693,15 +687,6 @@ function ScheduleCanvas({
   const [detail, setDetail] = useState<{ id: string; offset: number; left: number; top: number } | null>(null);
   // 备注草稿（打开时装载，失焦/关闭时提交）
   const [noteDraft, setNoteDraft] = useState("");
-  // 「存为模板」弹窗（2026-11-17 批 2）：任务快照独立于 detail 浮层——弹窗期间
-  // 点浮层外会关浮层，若模态依赖 detailTask 会被连带卸载（保存/取消点击即消失的
-  // 根因）；关闭弹窗时一并清快照，防残留态让后续任一日程又弹出模板框
-  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
-  const [saveTemplateTask, setSaveTemplateTask] = useState<Task | null>(null);
-  const closeSaveTemplate = () => {
-    setSaveTemplateOpen(false);
-    setSaveTemplateTask(null);
-  };
   // 标题内联编辑（双击进入）；titleDraft 为草稿
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -1773,11 +1758,9 @@ function ScheduleCanvas({
   useEffect(() => {
     if (!detail) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !saveTemplateOpen) closeDetail(true);
+      if (e.key === "Escape") closeDetail(true);
     };
     const onPointerDown = (e: PointerEvent) => {
-      // 存模板弹窗置顶期间浮层保持打开（弹窗点外由遮罩自关，详情不该连带消失）
-      if (saveTemplateOpen) return;
       if (detailRef.current && !detailRef.current.contains(e.target as Node)) {
         closeDetail(true);
       }
@@ -1792,7 +1775,7 @@ function ScheduleCanvas({
       scrollRef.current?.removeEventListener("scroll", onScroll);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detail, noteDraft, titleDraft, editingTitle, pendingEdit, saveTemplateOpen]);
+  }, [detail, noteDraft, titleDraft, editingTitle, pendingEdit]);
 
   // 切视图/翻页即关浮层（视图语境已变，浮层失去视觉锚点）——force 强制关，未决编辑一并
   // 丢弃（浮层无法在已变的语境里保持打开）；挂载首跑 detail 为 null，closeDetail 内部 no-op
@@ -1986,10 +1969,6 @@ function ScheduleCanvas({
           onJumpDate={jumpToDate}
           hours={{ start: START, end: END }}
         />
-        <TemplateMenu
-          date={`${viewedDate.getFullYear()}-${String(viewedDate.getMonth() + 1).padStart(2, "0")}-${String(viewedDate.getDate()).padStart(2, "0")}`}
-          onApplied={(t) => onTemplateApplied?.(t)}
-        />
       </header>
 
       <div
@@ -2160,9 +2139,6 @@ function ScheduleCanvas({
           动态增高（纪要录入/面板展开）后 100vh-24 的静态上限兜不住「top+高度
           超视口底」（晚上低位卡片必现，底边按钮无法操作）——inline 上限改为
           视口底 - top - 12，内容超高时自身内滚 */}
-      {saveTemplateOpen && saveTemplateTask && (
-        <SaveTemplateModal task={saveTemplateTask} onClose={closeSaveTemplate} />
-      )}
       {detail && detailTask && (
         <div
           className="schedule-detail"
@@ -2584,19 +2560,6 @@ function ScheduleCanvas({
                 <CalendarSync size={14} strokeWidth={2} />
               </button>
             )}
-            {/* 存为模板（2026-11-17 批 2）：把当前任务字段保存成可复用模板 */}
-            <button
-              type="button"
-              className="inbox-todo-icon"
-              aria-label="存为模板"
-              title="存为模板"
-              onClick={() => {
-                setSaveTemplateTask(detailTask);
-                setSaveTemplateOpen(true);
-              }}
-            >
-              <LayoutTemplate size={14} strokeWidth={2} />
-            </button>
             {/* 删除日程：二次确认气泡（任务已删草稿无意义，确认后不走 closeDetail 提交路径）；
                 重复系列纵向三选——仅删本次 = 后端墓碑挖空该日实例（系列行保留）、删及后续 =
                 UNTIL 截断到被删日前一天、删除所有 = 整任务删（后端按生命周期判定物理删/软删）；

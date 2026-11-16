@@ -506,7 +506,6 @@ _NEEDS_UPDATED_AT = [
     "stats_reports", "subtasks", "reminders", "proposals", "messages",
     "memory_dismissals", "episodic_facts", "behavior_events",
     "workflow_runs", "ingestion_items", "stats_messages",
-    "schedule_templates",  # 2026-11-17 批 2：模板参与同步（行级 LWW）
 ]
 _BACKFILL_TS = {"memory_dismissals": "dismissed_at", "ingestion_items": "last_seen_at"}
 

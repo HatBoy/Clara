@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from config import HOST, PORT
 from database import SessionLocal, init_db
-from routers import about, ai_coach, chat_channels, cli_tools, export, ingest, integrations, jobs, mcp_servers, model_providers, onboarding, projects, reminders, search, settings, stats, sync, tasks, templates, undo
+from routers import about, ai_coach, chat_channels, cli_tools, export, ingest, integrations, jobs, mcp_servers, model_providers, onboarding, projects, reminders, search, settings, stats, sync, tasks, undo
 from services import chat_channels as chat_channel_workers
 from services import local_folder
 from services.ai_data import seed_memory_rules_if_empty
@@ -174,7 +174,6 @@ app.include_router(stats.router)
 app.include_router(sync.router)
 app.include_router(undo.router)
 app.include_router(onboarding.router)
-app.include_router(templates.router)
 app.include_router(export.router)
 
 

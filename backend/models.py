@@ -48,34 +48,6 @@ class Project(Base):
         return f"<Project id={self.id} {self.name!r}>"
 
 
-class ScheduleTemplate(Base):
-    """日程模板（2026-11-17 批 2）：周例会等固定安排的复用母版。
-
-    模板存相对时刻（start_min 自 0 点分钟数），应用时按选定日期换算绝对时间；
-    落成普通 Task 后走既有提醒/冲突/统计链路。name 唯一（跨设备自然键 LWW）。
-    """
-
-    __tablename__ = "schedule_templates"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
-    name: Mapped[str] = mapped_column(String(30), unique=True, nullable=False, comment="模板名（唯一）")
-    title: Mapped[str] = mapped_column(String(30), nullable=False, comment="生成任务的标题")
-    duration_mins: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="时长（分钟；空=60）")
-    start_min: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="相对时刻（0-1439；空=未排期）")
-    priority: Mapped[int] = mapped_column(Integer, default=2, server_default="2", comment="优先级 1/2/3")
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True, comment="备注")
-    recurrence_rule: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="重复规则")
-    subtasks: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, comment="清单标题数组")
-    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default="0", comment="排序序号")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now(), comment="创建时间")
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间"
-    )
-
-    def __repr__(self) -> str:
-        return f"<ScheduleTemplate id={self.id} {self.name!r}>"
-
-
 class Task(Base):
     """任务表：统一任务数据源——未排期待办与已排期日程同一实体。
 

@@ -1488,39 +1488,3 @@ export const completeOnboarding = (body: {
     "/api/onboarding/complete",
     body,
   );
-
-
-// —— 日程模板（2026-11-17 批 2）——
-export type ApiTemplate = {
-  id: string;
-  name: string;
-  title: string;
-  duration_mins: number | null;
-  start_min: number | null;
-  priority: number;
-  notes: string | null;
-  recurrence_rule: string | null;
-  subtasks: string[] | null;
-  sort_order: number;
-  created_at: string;
-  updated_at: string;
-};
-
-export const fetchTemplates = () => getJson<ApiTemplate[]>("/api/templates");
-
-export const createTemplate = (body: {
-  name: string;
-  title: string;
-  duration_mins?: number | null;
-  start_min?: number | null;
-  priority?: number;
-  notes?: string | null;
-  recurrence_rule?: string | null;
-  subtasks?: string[] | null;
-}) => request<ApiTemplate>("POST", "/api/templates", body);
-
-export const deleteTemplate = (id: string) =>
-  request<void>("DELETE", `/api/templates/${id}`);
-
-export const applyTemplate = (id: string, body: { date?: string; start_time?: string }) =>
-  request<ApiTask>("POST", `/api/templates/${id}/apply`, body);
