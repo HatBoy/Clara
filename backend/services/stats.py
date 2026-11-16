@@ -1508,7 +1508,12 @@ def energy_profile(db: Session, *, days: int = 30) -> dict:
         select(BehaviorEvent).where(BehaviorEvent.created_at >= since)))
     buckets: dict[tuple[int, int], dict] = {}
     for e in evs:
-        anchor = e.prev_start or e.created_at
+        if e.kind == "done":
+            anchor = e.prev_start or e.created_at  # 完成时刻（未排期勾选无 prev）
+        else:
+            # defer 桶以原计划时段为准：abandon（删待办）无 prev_start 时不落桶
+            # ——删除操作时刻与"该时段爱拖延"无关（二轮批 1 口径修正）
+            anchor = e.prev_start
         if anchor is None:
             continue
         hour = anchor.hour
@@ -1542,8 +1547,10 @@ def energy_profile(db: Session, *, days: int = 30) -> dict:
     ]
     peak = low = None
     if total >= ENERGY_TOTAL_MIN and hour_scores:
+        # 同分 tie-break 都取样本多者（证据更强；二轮批 1：低谷旧版取样本最少
+        # 的时段——把证据最弱的时刻报给用户）
         peak = max(hour_scores, key=lambda x: (x[1], x[2]))
-        low = min(hour_scores, key=lambda x: (x[1], x[2]))
+        low = min(hour_scores, key=lambda x: (x[1], -x[2]))
 
     from models import MemoryRule
 

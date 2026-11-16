@@ -109,6 +109,8 @@ def export_tasks_ics(db: Session, path: str) -> dict:
         ev.add("dtstamp", now)
         if t.notes:
             ev.add("description", t.notes)
+        if t.done_at is not None:
+            ev.add("status", "COMPLETED")  # 外部日历降噪：已完成历史日程可按状态过滤
         ev.add("priority", _ICS_PRIORITY.get(t.priority, 5))
         if t.all_day:
             d0 = t.start_time.date()

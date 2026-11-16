@@ -98,6 +98,20 @@ def test_ics_export_events_rrule_exdate_and_all_day(tmp_path):
     assert int(meeting.get("priority")) == 1
     assert exception.get("dtstart").dt == datetime(2026, 12, 4, 11, 0)
 
+    # 已完成任务带 STATUS:COMPLETED（二轮批 1：外部日历可按状态过滤历史噪音）
+    done = create_task(db=TestingSessionLocal(), body=TaskCreate(
+        title="已完成会", start_time=datetime(2026, 11, 19, 9, 0),
+        end_time=datetime(2026, 11, 19, 10, 0)))
+    with TestingSessionLocal() as db2:
+        row = db2.get(Task, done.id)
+        row.done_at = datetime(2026, 11, 19, 12, 0)
+        db2.commit()
+        out2 = tmp_path / "done.ics"
+        export_tasks_ics(db2, str(out2))
+    cal2 = Calendar.from_ical(out2.read_bytes())
+    evs = {str(e.get("summary")): e for e in cal2.walk("VEVENT")}
+    assert str(evs["已完成会"].get("status")).upper() == "COMPLETED"
+
     allday = by_summary["出差"]
     assert allday.get("dtstart").dt == date(2026, 11, 20)
     assert allday.get("dtend").dt == date(2026, 11, 21)  # 半开区间：次日 0 点

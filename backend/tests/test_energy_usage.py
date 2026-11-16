@@ -62,6 +62,30 @@ def test_energy_profile_peak_low_and_rhythm_rules():
     assert any("上午效率最高" in r["content"] for r in out["profile"]["rules"])
 
 
+def test_energy_low_tiebreak_takes_better_sampled_hour():
+    # 2026-11-17 二轮批 1：低谷同分 tie-break 取样本多者——旧版取样本最少，
+    # 把证据最弱的时刻报给用户；abandon 无 prev_start 不落桶（删除操作时刻
+    # 与"该时段爱拖延"无关）
+    base = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    with TestingSessionLocal() as db:
+        tid = _make_task(db)
+        for i in range(6):
+            _event(db, tid, "reschedule", (base - timedelta(days=i)).replace(hour=14))
+        for i in range(3):
+            _event(db, tid, "reschedule", (base - timedelta(days=i)).replace(hour=16))
+        for i in range(5):
+            _event(db, tid, "done", (base - timedelta(days=i)).replace(hour=9))
+        # abandon 无 prev_start（删除待办）：不落桶（旧版以 created_at 即当下
+        # 时刻落桶，混入拖延口径）
+        db.add(BehaviorEvent(task_id=tid, kind="abandon", prev_start=None,
+                             created_at=base.replace(hour=10)))
+        db.commit()
+        out = energy_profile(db, days=30)
+    assert out["status"] == "ok"
+    assert out["low"]["hour"] == 14  # 14 与 16 同为 0 分，14 样本 6 > 16 样本 3
+    assert all(s["hour"] != 10 for s in out["slots"])
+
+
 def test_energy_endpoint_validates_days(client: TestClient):
     assert client.get("/api/stats/energy-profile", params={"days": 7}).status_code == 200
     assert client.get("/api/stats/energy-profile", params={"days": 15}).status_code == 422
@@ -99,6 +123,20 @@ def test_call_llm_records_unknown_usage(monkeypatch):
     assert row is not None
     assert row.total_tokens is None and row.usage_source == "unknown"
     assert row.cost_known is False
+
+
+def test_usage_zero_tokens_still_provider_sourced():
+    # 2026-11-17 二轮批 1：0 是合法 token 值——旧版 or 链把 prompt_tokens=0
+    # 当缺失回落另一键得 None，usage_source 误标 unknown
+    from services.llm_usage import record_usage
+
+    record_usage(model_name="m", feature="qa",
+                 usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    with TestingSessionLocal() as db:
+        row = db.query(AiUsageEvent).first()
+    assert row is not None
+    assert row.total_tokens == 0 and row.usage_source == "provider"
+    assert row.prompt_tokens == 0 and row.completion_tokens == 0
 
 
 def test_usage_summary_aggregates(client: TestClient):

@@ -39,9 +39,19 @@ def record_usage(*, model_name: str, role: str = "main", feature: str | None = N
     try:
         from database import SessionLocal  # 调用时解析：测试替换 database.SessionLocal 即生效
         usage = usage or {}
-        prompt = _to_int(usage.get("prompt_tokens") or usage.get("input_tokens"))
-        completion = _to_int(usage.get("completion_tokens") or usage.get("output_tokens"))
-        total = _to_int(usage.get("total_tokens"))
+
+        def _first(*keys: str):
+            # 逐键显式判 None（二轮批 1）：or 链会把合法的 0 值 token 当缺失，
+            # 回落到另一键得 None、usage_source 误标 unknown
+            for k in keys:
+                v = usage.get(k)
+                if v is not None:
+                    return v
+            return None
+
+        prompt = _to_int(_first("prompt_tokens", "input_tokens"))
+        completion = _to_int(_first("completion_tokens", "output_tokens"))
+        total = _to_int(_first("total_tokens"))
         if total is None and (prompt is not None or completion is not None):
             total = (prompt or 0) + (completion or 0)
         known = total is not None
