@@ -38,6 +38,7 @@ import {
   epochDayOf,
   fetchProjects,
   fetchSettings,
+  fetchSyncConfig,
   fetchTasks,
   scheduleToISO,
   toFrontendProject,
@@ -182,6 +183,9 @@ function App() {
   // AI 面板刷新信号：工作流事件流收 morning/ingest/nightly 即递增——
   // 建议卡与消息是后端真值，SSE 载荷不携带全量，递增 key 让 CopilotPanel 重拉
   const [aiRefreshKey, setAiRefreshKey] = useState(0);
+  // 启动首拉提示（2026-11-16 真机批）：新装机配好 WebDAV 后本地空、后台正在
+  // 同步——期间主界面显示「正在从云端同步数据」条，SSE sync 完成事件清除
+  const [syncBootHint, setSyncBootHint] = useState(false);
   // sync-now 快捷键触发计数：DataSourcePanel 经 props 消费（条件挂载面板收
   // 一次性 CustomEvent 有订阅竞态，2026-11-05 真机回归的修复——见该面板注释）
   const [syncNowTick, setSyncNowTick] = useState(0);
@@ -227,16 +231,17 @@ function App() {
 
   // 启动四请求并行：项目 + 未排期待办（全量）+ 已排期任务（历史窗口起点今天-30，未来侧
   // 开放）+ 应用设置。StrictMode 双执行：GET 无副作用幂等，cancelled 标记丢弃首轮迟到结果，
-  // 二轮覆盖即终态；失败保持空列表/默认设置（本地回环毫秒级，不加 loading UI）
+  // 二轮覆盖即终态；失败保持空列表/默认设置（底座 withStartupRetry 已等待后端就绪）
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [apiProjects, apiUnscheduled, apiWindow, apiSettings] = await Promise.all([
+        const [apiProjects, apiUnscheduled, apiWindow, apiSettings, apiSync] = await Promise.all([
           fetchProjects(),
           fetchTasks({ unscheduled: true }),
           fetchTasks({ start: dayStartOf(epochDayOf(new Date()) - INITIAL_LOOKBACK_DAYS) }),
           fetchSettings(),
+          fetchSyncConfig().catch(() => null), // 同步状态独立失败不拖垮启动
         ]);
         if (cancelled) return;
         setProjects(apiProjects.map(toFrontendProject));
@@ -248,7 +253,12 @@ function App() {
         void syncAutostart(frontendSettings.autoStart);
         // 先拿 projects 建 name 映射再转 tasks（映射依赖）；两批任务合并 upsert
         const nameById = new Map(apiProjects.map((p) => [p.id, p.name]));
-        upsertTasks([...apiUnscheduled, ...apiWindow].map((t) => toFrontendTask(t, nameById)));
+        const merged = [...apiUnscheduled, ...apiWindow];
+        upsertTasks(merged.map((t) => toFrontendTask(t, nameById)));
+        // 新装机首拉场景：本地空 + 后台正在同步 → 显示「正在从云端同步数据」
+        // 提示条（2026-11-16 真机批：此前空白近一分钟无任何反馈）；SSE sync
+        // 事件（同步完成）到达时清除，数据经 reloadTasks 自然到达
+        if (apiSync?.syncing && merged.length === 0) setSyncBootHint(true);
       } catch (e) {
         console.error("从后端加载数据失败", e);
       }
@@ -335,6 +345,7 @@ function App() {
       if (ev.type === "sync") {
         reloadTasks();
         setAiRefreshKey((k) => k + 1);
+        setSyncBootHint(false);
         return;
       }
       if (ev.type !== "morning" && ev.type !== "ingest" && ev.type !== "nightly" && ev.type !== "overload" &&
@@ -1462,6 +1473,10 @@ function App() {
 
   return (
     <div className="app">
+      {/* 首拉反馈：新装机后台同步中（数据到达经 SSE reloadTasks 自然接管） */}
+      {syncBootHint && (
+        <div className="sync-boot-hint">正在从云端同步数据，稍候…</div>
+      )}
       <Sidebar
         style={{ width: leftWidth, flexShrink: 0 }}
         activeId={activeView}

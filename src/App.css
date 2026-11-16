@@ -1,4 +1,23 @@
 /* 应用外壳：三栏布局（左栏/右栏宽度可拖拽，默认 200/540，中栏 flex 自适应） */
+/* 首拉提示条（2026-11-16 真机批）：新装机后台同步中——顶部居中细条，
+   数据到达后由 SSE sync 事件移除，不侵入任何布局 */
+.sync-boot-hint {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2600;
+  padding: 6px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: var(--glass-card, rgba(40, 40, 46, 0.92));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: var(--text-dim, #9a9a9a);
+  font-size: 12px;
+  pointer-events: none;
+}
+
 .app {
   position: relative;
   display: flex;

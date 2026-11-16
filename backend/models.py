@@ -967,3 +967,26 @@ class SyncSettings(Base):
 
     def __repr__(self) -> str:
         return f"<SyncSettings id={self.id} webdav={self.webdav_enabled}>"
+
+
+class StatsMessage(Base):
+    """统计问答会话消息表（2026-11-16 真机批七）：StatsChatPanel 的对话持久
+    化——此前纯前端 useState（切页即清、无跨设备同步）。结构与 messages 表
+    同构但独立成表（与日程助手上下文完全隔离，docs/reports.md 口径不变）；
+    /clear 物理删全表 → 经 WebDAV 同步删除传播多端清空（同 messages /clear
+    语义）。UUID 主键 + 无自然键，自动进 SYNC_TABLES 同步范围零额外配置。
+    """
+
+    __tablename__ = "stats_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    # user / assistant
+    role: Mapped[str] = mapped_column(String(10), nullable=False, comment="角色：user / assistant")
+    content: Mapped[str] = mapped_column(Text, nullable=False, comment="消息正文")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="创建时刻")
+    # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据；触发器单点盖章
+    #（同 StatsReport.updated_at 注）
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
+
+    def __repr__(self) -> str:
+        return f"<StatsMessage id={self.id} {self.role}>"

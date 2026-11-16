@@ -27,7 +27,13 @@ MAX_TABLE_BYTES = 200 * 1024 * 1024
 
 
 class WebDavError(RuntimeError):
-    """WebDAV 操作失败（中文 message 直显前端 hint，对齐 update_check 风格）。"""
+    """WebDAV 操作失败（中文 message 直显前端 hint，对齐 update_check 风格）。
+    status 携带 HTTP 状态码（网络层异常为 None）——调用方据此识别 429/503
+    限频做长退避（坚果云限频窗口是分钟级，短重试只会反复撞窗）。"""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _local_name(tag: str) -> str:
@@ -114,8 +120,8 @@ class WebDavClient:
             if resp.status_code in (200, 201, 405):
                 continue
             if resp.status_code == 401:
-                raise WebDavError("WebDAV 认证失败：用户名或密码错误")
-            raise WebDavError(f"创建同步目录失败（{path}，HTTP {resp.status_code}）")
+                raise WebDavError("WebDAV 认证失败：用户名或密码错误", status=401)
+            raise WebDavError(f"创建同步目录失败（{path}，HTTP {resp.status_code}）", status=resp.status_code)
 
     def fetch_manifest(self) -> dict | None:
         """拉取 manifest；404（从未同步过）→ None；解析失败抛 WebDavError
@@ -124,9 +130,9 @@ class WebDavClient:
         if resp.status_code == 404:
             return None
         if resp.status_code == 401:
-            raise WebDavError("WebDAV 认证失败：用户名或密码错误")
+            raise WebDavError("WebDAV 认证失败：用户名或密码错误", status=401)
         if resp.status_code >= 400:
-            raise WebDavError(f"拉取 manifest 失败（HTTP {resp.status_code}）")
+            raise WebDavError(f"拉取 manifest 失败（HTTP {resp.status_code}）", status=resp.status_code)
         import json
 
         try:
@@ -148,12 +154,13 @@ class WebDavClient:
         if resp.status_code == 404:
             return None
         if resp.status_code == 401:
-            raise WebDavError("WebDAV 认证失败：用户名或密码错误")
+            raise WebDavError("WebDAV 认证失败：用户名或密码错误", status=401)
         if resp.status_code >= 400:
-            raise WebDavError(f"拉取表文件失败（{name}，HTTP {resp.status_code}）")
+            raise WebDavError(f"拉取表文件失败（{name}，HTTP {resp.status_code}）", status=resp.status_code)
         if len(resp.content) > MAX_TABLE_BYTES:
             raise WebDavError(
-                f"远端表文件超限（{name}，{len(resp.content) // 1048576}MB > 200MB）")
+                f"远端表文件超限（{name}，{len(resp.content) // 1048576}MB > 200MB）",
+                status=resp.status_code)
         try:
             data = json.loads(resp.content)
         except ValueError as e:
@@ -171,7 +178,7 @@ class WebDavClient:
                              headers={"Content-Type": "application/json"},
                              content=content, timeout=self._file_timeout)
         if resp.status_code >= 400:
-            raise WebDavError(f"推送表文件失败（{name}，HTTP {resp.status_code}）")
+            raise WebDavError(f"推送表文件失败（{name}，HTTP {resp.status_code}）", status=resp.status_code)
 
     def put_readme(self, content: str) -> None:
         """推送「使用说明.txt」到同步根（2026-11-14 真机批：用户打开 WebDAV
@@ -199,7 +206,7 @@ class WebDavClient:
         if resp.status_code == 412:
             raise WebDavError("__PRECONDITION_412__")  # 内部信号：调用方捕获转 Case C
         if resp.status_code >= 400:
-            raise WebDavError(f"推送 manifest 失败（HTTP {resp.status_code}）")
+            raise WebDavError(f"推送 manifest 失败（HTTP {resp.status_code}）", status=resp.status_code)
 
 
 def parse_propfind_hrefs(xml_bytes: bytes) -> list[str]:

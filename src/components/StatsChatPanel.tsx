@@ -1,8 +1,10 @@
 // 统计数据对话面板（右栏）：走 POST /api/stats/ask 独立轻通道（stats_summary
 // + 复盘上下文注入 system，不进 ChatTurn、不走意图路由——与日程助手上下文
 // 完全隔离）。days 由页面传入跟随 7/30/90 范围；组件常驻渲染（App 层
-// display:none 切换），折叠不丢对话；切换页面清空历史（临时性问答，不做
-// 持久化）。复盘模式（mode=review）：AI 引导「最满意 → 最大卡点 → 下期改进」
+// display:none 切换），折叠不丢对话。历史持久化于 stats_messages 表
+// （2026-11-16 真机批七：此前纯内存态切页即清；现挂载拉取、每轮落库、
+// /clear 物理删——随 WebDAV 同步多端一致，对端 /clear 经删除传播生效）。
+// 复盘模式（mode=review）：AI 引导「最满意 → 最大卡点 → 下期改进」
 // 逐项反思，总结轮的沉淀候选经 facts 帧到达，确认条一键落 Tier 2 记忆。
 // UI 与日程助手（CopilotPanel）同规格统一：面板底/header/feed/气泡/一体胶囊
 // 输入/发送钮/打字机光标均对齐；斜杠命令 /clear /stop /compact（联想弹层）。
@@ -11,7 +13,10 @@ import { ArrowUp, MessageCircle, NotebookPen, PanelRightClose } from "lucide-rea
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  appendStatsMessage,
   askStats,
+  clearStatsMessages,
+  fetchStatsMessages,
   saveStatsFact,
   type StatsAskTurn,
   type StatsFactCandidate,
@@ -29,11 +34,11 @@ const WELCOME =
 const WELCOME_REVIEW =
   "进入复盘引导——我会围绕「本期最满意的一件事 → 最大卡点 → 下期想改进什么」逐项和你聊聊（每轮一问，会用数据呼应你的回答），结束后可把反思结论沉淀为长期记忆。";
 
-/** 斜杠命令（与日程助手同款交互形态；本面板无持久上下文，/compact 诚实提示） */
+/** 斜杠命令（与日程助手同款交互形态；历史仅携带尾部 6 条入上下文，/compact 诚实提示） */
 const COMMANDS: { name: string; desc: string }[] = [
-  { name: "/clear", desc: "清空当前对话" },
+  { name: "/clear", desc: "清空当前对话（多端同步）" },
   { name: "/stop", desc: "停止生成" },
-  { name: "/compact", desc: "压缩上下文（统计问答不保留历史，无需压缩）" },
+  { name: "/compact", desc: "压缩上下文（统计问答仅携带最近几条，无需压缩）" },
 ];
 
 export default function StatsChatPanel({
@@ -59,6 +64,22 @@ export default function StatsChatPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // 挂载拉取持久化历史（2026-11-16 真机批七：此前纯内存态切页即清、无跨设备
+  // 同步；现落 stats_messages 表随 WebDAV 同步——对端 /clear 经删除传播多端清空）。
+  // 空表/失败回落欢迎语；失败静默（下次挂载再试）
+  useEffect(() => {
+    let cancelled = false;
+    fetchStatsMessages()
+      .then((rows) => {
+        if (cancelled || rows.length === 0) return;
+        setMessages(rows.map((r) => ({ role: r.role, content: r.content })));
+      })
+      .catch(() => {/* 后端未就绪由底座重试兜底；其他失败静默 */});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // 自动滚动到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -79,6 +100,8 @@ export default function StatsChatPanel({
       setReviewMode(false);
       setPendingFacts(null);
       setMessages([{ role: "assistant", content: WELCOME }]);
+      // 持久化清空（物理删 → 同步删除传播多端清空）；失败本地仍清（下次再试删）
+      clearStatsMessages().catch(() => {/* 底座重试兜底 */});
     } else if (name === "/stop") {
       abortRef.current?.abort(); // 流中止后部分回答保留
     } else if (name === "/compact") {
@@ -119,6 +142,14 @@ export default function StatsChatPanel({
         }
       }, controller.signal, mode);
       if (!acc) updateLast("未收到有效回复，请稍后重试。");
+      // 持久化本轮一问一答（成功收尾才落库——中止/失败的半截回答不记）；
+      // 顺序落 user→assistant 保持 created 升序稳定
+      if (acc) {
+        try {
+          await appendStatsMessage("user", question);
+          await appendStatsMessage("assistant", acc);
+        } catch {/* 持久化失败不拦对话（下次同步前本机可见） */}
+      }
     } catch (e) {
       // /stop 中止（AbortError）：保留已生成的部分回答，静默收尾
       if (!(e instanceof DOMException && e.name === "AbortError")) {

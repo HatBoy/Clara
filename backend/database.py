@@ -452,7 +452,7 @@ def _drop_task_dependencies(eng) -> None:
 _NEEDS_UPDATED_AT = [
     "stats_reports", "subtasks", "reminders", "proposals", "messages",
     "memory_dismissals", "episodic_facts", "behavior_events",
-    "workflow_runs", "ingestion_items",
+    "workflow_runs", "ingestion_items", "stats_messages",
 ]
 _BACKFILL_TS = {"memory_dismissals": "dismissed_at", "ingestion_items": "last_seen_at"}
 

@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from database import get_db
-from schemas import StatsReportOut
+from schemas import StatsMessageIn, StatsMessageOut, StatsReportOut
 from services import stats as stats_service
 from services.llm import NoActiveModelError, call_llm_stream
 from services.model_providers import get_active_model
@@ -242,3 +242,39 @@ async def ask_stats(body: StatsAskIn, db: Session = Depends(get_db)):
         yield _event_bytes({"type": "done"})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# —— 统计问答会话持久化（2026-11-16 真机批七）：StatsChatPanel 此前纯前端
+#    内存态（切页即清、无跨设备同步）。三端点：历史全量 / 追加一条 / 清空。
+#    /clear 物理删全表 → 经 WebDAV 同步删除传播多端清空（同 messages 口径）。
+
+
+@router.get("/messages", response_model=list[StatsMessageOut])
+def list_stats_messages(db: Session = Depends(get_db)):
+    """历史全量（created 升序）；空表 = 无历史（前端回落欢迎语）。"""
+    from sqlalchemy import select
+
+    from models import StatsMessage
+    return db.scalars(select(StatsMessage).order_by(StatsMessage.created_at)).all()
+
+
+@router.post("/messages", response_model=StatsMessageOut, status_code=201)
+def append_stats_message(body: StatsMessageIn, db: Session = Depends(get_db)):
+    """追加一条（前端每轮发送/接收后各记一条；欢迎语不落库）。"""
+    from models import StatsMessage
+
+    row = StatsMessage(role=body.role, content=body.content)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/messages", status_code=204)
+def clear_stats_messages(db: Session = Depends(get_db)):
+    """/clear：物理删全表（删除传播多端清空）。"""
+    from sqlalchemy import delete
+
+    from models import StatsMessage
+    db.execute(delete(StatsMessage))
+    db.commit()

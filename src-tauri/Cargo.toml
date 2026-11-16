@@ -34,6 +34,7 @@ tauri-plugin-window-state = "2"
 tauri-plugin-global-shortcut = "~2.3"
 # 主窗口几何防抖落盘的延时（tauri 本就是传递依赖，feature 合并零体积代价）
 tokio = { version = "1", features = ["time"] }
+tauri-plugin-single-instance = "~2.3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Dwm"] }

@@ -20,6 +20,24 @@ export async function initApiBase(): Promise<void> {
   if (port !== null) API_BASE = `http://127.0.0.1:${port}`;
 }
 
+// —— 启动期网络重试（2026-11-16 真机批）——————————————————————————————
+// 打包版 PyInstaller 边车需数秒就绪，期间所有 fetch 连接拒绝（fetch 网络层抛
+// TypeError）——此前各设置面板一次失败即渲染「加载失败」错误终态、App 启动
+// 四请求静默留空。底座统一自动等待后端：仅网络层失败重试（间隔 1.2s 上限 60s
+// 覆盖最慢打包启动）；HTTP 4xx/5xx 业务错误与 AbortError 不重试（真实故障
+// 立刻上抛）。本地回环无真网络故障，重试无害。
+async function withStartupRetry<T>(fn: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (!(e instanceof TypeError) || Date.now() > deadline) throw e;
+      await new Promise((r) => setTimeout(r, 1_200));
+    }
+  }
+}
+
 // —— 后端出参形状（schemas.py TaskOut / ProjectOut，只声明消费的字段）——
 export type ApiTask = {
   id: string;
@@ -57,7 +75,7 @@ export type ReminderEvent = {
 
 // export 供 lib/ai.ts（AI 助手数据接入）复用同一请求底座与错误口径
 export async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`);
+  const res = await withStartupRetry(() => fetch(`${API_BASE}${path}`));
   if (!res.ok) throw new Error(`GET ${path} 失败: ${res.status}`);
   return res.json() as Promise<T>;
 }
@@ -252,6 +270,26 @@ export const analyzeMerge = (path: string) =>
 /** 合并导入第二阶段：strategy=overwrite（冲突用备份覆盖）/ skip（保留本地）。 */
 export const applyMerge = (path: string, strategy: "overwrite" | "skip") =>
   request<MergeApplyResult>("POST", "/api/sync/merge-apply", { path, strategy }, 120_000);
+
+// ── 统计问答会话持久化（2026-11-16 真机批七）：此前纯前端内存态切页即清 ——
+export type StatsMessageRow = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+};
+
+/** 历史全量（created 升序）；空表回落欢迎语。 */
+export const fetchStatsMessages = () =>
+  getJson<StatsMessageRow[]>("/api/stats/messages");
+
+/** 追加一条（发送/接收后各记一条；欢迎语不落库）。 */
+export const appendStatsMessage = (role: "user" | "assistant", content: string) =>
+  request<StatsMessageRow>("POST", "/api/stats/messages", { role, content });
+
+/** /clear：清空统计问答历史（物理删 → 同步删除传播多端清空）。 */
+export const clearStatsMessages = () =>
+  request<void>("DELETE", "/api/stats/messages", undefined, 15_000);
 
 // ── 统计报告（2026-11-06 批 D；2026-11 扩口径：环比/负载率/分列/AI 协作/滞后）──
 
@@ -541,12 +579,14 @@ export async function request<T>(
   const timer = timeoutMs !== undefined ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, {
-      method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: controller.signal,
-    });
+    res = await withStartupRetry(() =>
+      fetch(`${API_BASE}${path}`, {
+        method,
+        headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      }),
+    );
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

@@ -674,6 +674,17 @@ fn greet(name: &str) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 单实例锁（2026-11-16 真机批：双击 exe 不再开第二个实例——第二实例
+        // 进程立即退出前经回调把已有主窗唤起）。官方要求必须第一个注册；
+        // 版本钉 ~2.3 与宿主 tauri ~2.11 配套（2.5.x 起 require tauri ^2.12）
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         // 注册 shell 插件，用于拉起边车
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())

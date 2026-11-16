@@ -905,3 +905,22 @@ def test_ask_injects_profile_facts_and_review(client: TestClient, fresh_db, monk
     assert "用户画像（个性化判断依据）" in sys and "周三上午效率最高" in sys
     assert "与问题相关的近期事实" in sys and "本周感冒需要多休息" in sys  # 「感冒」2-gram 召回
     assert "最近报告结论" in sys and "上期建议甲" in sys
+
+
+# —— 统计问答会话持久化（2026-11-16 真机批七）：历史/追加/清空三端点 ——
+
+
+def test_stats_messages_roundtrip(client):
+    """空表 → 追加两条（user→assistant 顺序保 created 升序）→ 清空物理删。"""
+    assert client.get("/api/stats/messages").json() == []
+    r1 = client.post("/api/stats/messages", json={"role": "user", "content": "完成情况怎么样"})
+    assert r1.status_code == 201
+    r2 = client.post("/api/stats/messages", json={"role": "assistant", "content": "本周完成 12 项"})
+    assert r2.status_code == 201
+    rows = client.get("/api/stats/messages").json()
+    assert [r["role"] for r in rows] == ["user", "assistant"]
+    # 非法 role 拒收
+    assert client.post("/api/stats/messages", json={"role": "system", "content": "x"}).status_code == 422
+    # /clear 物理删（同步删除传播多端清空的落点）
+    assert client.delete("/api/stats/messages").status_code == 204
+    assert client.get("/api/stats/messages").json() == []

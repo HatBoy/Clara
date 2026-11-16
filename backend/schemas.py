@@ -1507,3 +1507,27 @@ class MergeApplyOut(BaseModel):
     updated: int
     skipped: int
     message: str
+
+
+# —— 统计问答会话（2026-11-16 真机批七）：StatsChatPanel 持久化（此前纯前端
+#    内存态切页即清）；/clear 物理删全表 → 同步删除传播多端清空 ——
+
+
+class StatsMessageOut(BaseModel):
+    """单条统计问答消息（created 升序整表返回，前端全量渲染）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    role: str  # user / assistant
+    content: str
+    created_at: datetime
+
+
+class StatsMessageIn(BaseModel):
+    """追加一条消息（前端每轮发送/接收后各记一条；欢迎语不落库）。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=20000)

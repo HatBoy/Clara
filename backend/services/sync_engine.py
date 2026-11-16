@@ -68,8 +68,10 @@ NATURAL_KEYS: dict[str, tuple[str, ...]] = {
 DEBOUNCE_S = 3        # 变更防抖
 PROBE_S = 30          # 远端 manifest 轻探测（对端新数据 ~30s 可见，2026-11-15 迭代四）
 PERIODIC_S = 300      # 周期兜底（防脏表漏标）
-START_DELAY_S = 15    # 启动延迟（避开启动期建库/seed/恢复）
-MAX_PERIOD_S = 1800   # 失败退避上限（300→600→1200→1800，成功复位）
+START_DELAY_S = 2     # 启动延迟（lifespan 顺序已保证建库/恢复/seed 先完成；原 15s
+                      # 过度保守——2026-11-16 真机批：新装首拉等 15s 才开始是启动
+                      # 空白近分钟的直接原因之一）
+MAX_PERIOD_S = 1800   # 失败退避上限（300→600→1200→1800，成功复位；限频 503 跳升）
 
 # —— 守卫阈值 —————————————————————————————————————————————————————
 DELETE_GUARD_MIN = 100  # 删除行数绝对下限
@@ -493,8 +495,11 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
     冷启动（无 Base）**全自动**（2026-11-15 迭代四，用户拍板免手动确认）：
     远端空 → Force Push；远端非空 → union+同键取新（本地空即纯 Pull——union
     公式天然覆盖，不做特判）。个人多设备场景 union+LWW 几乎总正确：冷启动无
-    Base 不做删除传播、行不丢；「覆盖式迁移」诉求由覆盖恢复功能承担。"""
-    client.ensure_dirs()
+    Base 不做删除传播、行不丢；「覆盖式迁移」诉求由覆盖恢复功能承担。
+
+    请求量纪律（2026-11-16 真机批，坚果云限频治理）：ensure_dirs 仅首同步；
+    纯拉取轮（合并结果与远端一致）不回推该表；全表未推时 manifest 也不推——
+    「对端改→我拉」的轮次从 23+ 请求降到 ~1。"""
     manifest = client.fetch_manifest()
     base_exists = has_base()
 
@@ -507,6 +512,7 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
     # 首推竞态守卫：远端空（从未同步）时先以 If-None-Match 探测拿首推权——
     # 双端同时首同步，后到者收 412 → 重拉 manifest 直接走 union 合并（自动）
     if manifest is None:
+        client.ensure_dirs()  # 仅首同步建目录（原每轮 2 个 MKCOL 白发，限频元凶之一）
         probe = {"app": "clara-sync", "format": 1, "device_id": cfg.device_id,
                  "updated_at": datetime.now().isoformat(timespec="seconds"),
                  "tables": {}}
@@ -520,6 +526,8 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
 
     # —— 逐表：双 hash 比对 → 跳过 / 合并 ——
     remote_tables = (manifest or {}).get("tables") or {}
+    # 拉到的远端 manifest 原始形态（纯拉取轮的探测记忆基准，见尾部注释）
+    remote_hashes_at_fetch = {t: v.get("sha1") for t, v in remote_tables.items()}
     if base_exists:
         # 表级守卫：Base 有的表 manifest 缺（远端文件被手动删）→ 远端异常中止
         missing = [t for t in SYNC_TABLES
@@ -532,6 +540,7 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
              "bytes_pushed": 0, "bytes_pulled": 0}
     pushed_tables: dict[str, dict] = {}
     snapshots: dict[str, list[dict]] = {}  # 与推送同源的 Base 落盘内容
+    any_pushed = False  # 是否发生过表文件推送（False 且非首推 → manifest 也省）
     try:
         db.execute(text("PRAGMA defer_foreign_keys=ON"))
         for name in SYNC_TABLES:  # sorted_tables 序：父表在前
@@ -588,24 +597,36 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
             stats["updated"] += upd
             if ins or upd or del_local:
                 stats["tables_changed"] += 1
+            actual_hash = _hash_rows(actual)
+            if actual_hash == remote_hash:
+                # 纯拉取轮：合并结果与远端一致（本地只是应用了远端变更）——
+                # 不回推同内容（2026-11-16 真机批：对端改→我拉的轮次曾全量
+                # 回推 22 表 + manifest，请求翻倍直接撞坚果云限频）
+                snapshots[name] = actual
+                pushed_tables[name] = {"sha1": actual_hash, "rows": len(actual),
+                                       "updated_at": datetime.now().isoformat(timespec="seconds")}
+                continue
             payload = {"table": name, "rows": actual}
             client.push_table(name, payload)
+            any_pushed = True
             stats["bytes_pushed"] += len(json.dumps(payload, ensure_ascii=False))
             snapshots[name] = actual  # Base 与推送字节级同源（hash 恒一致）
-            pushed_tables[name] = {"sha1": _hash_rows(actual), "rows": len(actual),
+            pushed_tables[name] = {"sha1": actual_hash, "rows": len(actual),
                                    "updated_at": datetime.now().isoformat(timespec="seconds")}
         db.commit()
     except Exception:
         db.rollback()
         raise
 
-    # 提交点：最后推 manifest（滞后于表文件；首推的探测 manifest 已在前面落地）
-    manifest_out = {
-        "app": "clara-sync", "format": 1, "device_id": cfg.device_id,
-        "updated_at": datetime.now().isoformat(timespec="seconds"),
-        "tables": pushed_tables,
-    }
-    client.push_manifest(manifest_out)
+    # 提交点：最后推 manifest（滞后于表文件；首推的探测 manifest 已在前面落地）。
+    # 纯拉取轮全表未推 → manifest 内容无变化也不推（updated_at 不值得一个请求）
+    if any_pushed or manifest is None:
+        manifest_out = {
+            "app": "clara-sync", "format": 1, "device_id": cfg.device_id,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "tables": pushed_tables,
+        }
+        client.push_manifest(manifest_out)
 
     # 快照落地（与推送同源的 actual——manifest.sha1 与 Base 内容 hash 恒一致，
     # 「远端未变」判定才可靠；跳过的表 Base 本就未变不重写。失败 = 整轮失败，
@@ -613,23 +634,33 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
     for name, rows in snapshots.items():
         _save_base(name, rows)
     _save_base_meta(cfg.device_id or "")
-    # 远端探测记忆（2026-11-15 迭代四）：30s 轻探测的比对基准——本轮同步后
-    # 远端 manifest 就是这个形态，变了 = 对端有新数据要拉
+    # 远端探测记忆（2026-11-15 迭代四）：30s 轻探测的比对基准 = **远端 manifest
+    # 现状**——推了 manifest 记推送形态；纯拉取轮（manifest 未推）记拉到的原
+    # manifest（若记实际内容 hash，而远端 manifest 停在旧值（如对端写过后被
+    # 判纯拉取），探测会每轮误判「有变化」白跑同步——2026-11-16 真机批踩坑）
     global _last_seen_hashes
-    _last_seen_hashes = {t: v.get("sha1") for t, v in pushed_tables.items()}
+    if any_pushed or manifest is None:
+        _last_seen_hashes = {t: v.get("sha1") for t, v in pushed_tables.items()}
+    else:
+        _last_seen_hashes = remote_hashes_at_fetch
     return stats
 
 
-def _sync_once() -> dict:
+def _sync_once(manual: bool = False) -> dict:
     """一轮同步的完整编排（锁/配置/状态回写/广播；循环、手动与退出冲刷共用）。
-    返回 run_sync 的结果或错误态 dict（不抛——调用方零异常处理）。"""
+    manual=True 跳过 webdav_enabled 检查（2026-11-16 真机批用户拍板：「立即
+    同步」是手动一次性操作，不受自动同步开关约束——开关只管自动；地址仍必须
+    已配置）。返回 run_sync 的结果或错误态 dict（不抛——调用方零异常处理）；
+    限频失败（429/503）附 rate_limited=True 供 sync_loop 快速进入长退避。"""
     if not _sync_lock.acquire(blocking=False):
         return {"busy": True}
     try:
         with database.SessionLocal() as db:
             cfg = get_sync_config(db)
-            if not cfg.webdav_enabled or not cfg.webdav_url:
-                return {"error": "同步未启用或未配置 WebDAV 地址"}
+            if not cfg.webdav_url:
+                return {"error": "未配置 WebDAV 服务地址"}
+            if not manual and not cfg.webdav_enabled:
+                return {"error": "同步未启用（可点「立即同步」手动执行一次）"}
             client = _client_from_config(cfg)
             try:
                 result = run_sync(db, client, cfg)
@@ -645,16 +676,23 @@ def _sync_once() -> dict:
                 cfg.last_sync_ok = False
                 cfg.last_sync_error = str(e)[:400]
                 db.commit()
-                logger.warning("同步失败：%s", e)
+                rate_limited = isinstance(e, WebDavError) and e.status in (429, 503)
+                if rate_limited:
+                    logger.warning("同步撞限频（HTTP %s），进入长退避", e.status)
+                else:
+                    logger.warning("同步失败：%s", e)
                 _broadcast_sync(False, str(e)[:200], 0)
-                return {"error": str(e)[:400]}
+                out = {"error": str(e)[:400]}
+                if rate_limited:
+                    out["rate_limited"] = True
+                return out
     finally:
         _sync_lock.release()
 
 
 def sync_now() -> dict:
-    """手动「立即同步」入口（POST /api/sync/run 经 to_thread 调用）。"""
-    return _sync_once()
+    """手动「立即同步」入口（POST /api/sync/run 经 to_thread 调用；manual 语义）。"""
+    return _sync_once(manual=True)
 
 
 # 远端探测记忆（run_sync 成功尾部回写；None = 进程启动后未同步过 → 首次探测
@@ -721,7 +759,9 @@ async def sync_loop() -> None:
             last_attempt = now
             result = await asyncio.to_thread(_sync_once)
             if "error" in result:
-                fail_streak += 1
+                # 限频（429/503）窗口是分钟级：fail_streak 跳升 3 直接进
+                # 600s/1200s 长退避，短退避反复撞窗只会持续失败（真机批六根因）
+                fail_streak += 3 if result.get("rate_limited") else 1
             else:
                 fail_streak = 0
         except asyncio.CancelledError:

@@ -441,6 +441,17 @@ def test_sync_now_busy_and_lock_release():
         assert out == {"busy": True}
     finally:
         se._sync_lock.release()
-    # 释放后未启用 → 明确错误态
+    # 无地址 → 明确错误态；有地址未开开关：自动路径拦（manual 语义，真机批四）
     out = se._sync_once()
-    assert "未启用" in out["error"]
+    assert "未配置" in out["error"]
+    from services.sync_config import get_sync_config
+
+    with TestingSessionLocal() as db:
+        cfg = get_sync_config(db)
+        cfg.webdav_url = "https://dav.x"
+        db.commit()
+    assert "未启用" in se._sync_once()["error"]  # 自动路径（manual=False）
+    # 手动路径（sync_now）无视开关——错误只可能是网络层（真客户端连不上），
+    # 不再出现「未启用」
+    out = se.sync_now()
+    assert "未启用" not in out.get("error", "")
