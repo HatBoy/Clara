@@ -38,6 +38,8 @@ tauri-plugin-single-instance = "~2.3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Dwm"] }
+# 可操作提醒通知（2026-11-17 批 4）：带按钮的 Windows toast（锁文件已有 0.7.3）
+tauri-winrt-notification = "0.7"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

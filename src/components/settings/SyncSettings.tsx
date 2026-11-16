@@ -15,6 +15,8 @@ import {
   analyzeMerge,
   applyMerge,
   createBackup,
+  exportTasksCsv,
+  exportTasksIcs,
   fetchSyncConfig,
   resetSyncBase,
   restoreBackup,
@@ -26,7 +28,14 @@ import {
   type SyncConfigPatch,
 } from "../../lib/api";
 import { API_BASE } from "../../lib/api";
-import { isTauri, pickBackupZip, pickDirectory, restartBackend, saveBackupPath } from "../../lib/tauri";
+import {
+  isTauri,
+  pickBackupZip,
+  pickDirectory,
+  restartBackend,
+  saveBackupPath,
+  saveTaskExportPath,
+} from "../../lib/tauri";
 import EmptyState from "../EmptyState";
 import { SetInput, SetSegmented, SetToggle } from "./SettingsControls";
 import "./GeneralSettings.css";
@@ -69,6 +78,13 @@ type BackupState =
   | { kind: "bad"; text: string }
   | { kind: "confirm"; path: string };
 
+/** 数据导出（任务 CSV / ICS）反馈态：两个按钮共用一个结果位 */
+type DataExportState =
+  | { kind: "idle" }
+  | { kind: "busy"; fmt: "csv" | "ics" }
+  | { kind: "ok"; text: string }
+  | { kind: "bad"; text: string };
+
 type MergeState =
   | { kind: "idle" }
   | { kind: "analyzing" }
@@ -88,6 +104,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
   const [run, setRun] = useState<RunState>({ kind: "idle" });
   const [resetConfirm, setResetConfirm] = useState(false);
   const [backup, setBackup] = useState<BackupState>({ kind: "idle" });
+  const [dataExport, setDataExport] = useState<DataExportState>({ kind: "idle" });
   const [merge, setMerge] = useState<MergeState>({ kind: "idle" });
   const [version, setVersion] = useState<string | null>(null);
   const pollTimer = useRef<number | null>(null);
@@ -240,6 +257,22 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
       setBackup({ kind: "ok", text: `已导出到 ${path}（${(res.size_bytes / 1048576).toFixed(1)} MB）` });
     } catch (e) {
       if (mounted.current) setBackup({ kind: "bad", text: extractDetail(e) });
+    }
+  };
+
+  // 任务数据导出（2026-11-17 批 4）：CSV 表格 / .ics 日历，后端落盘
+  const doDataExport = async (fmt: "csv" | "ics") => {
+    const tag = new Date().toISOString().slice(0, 10);
+    const path = await saveTaskExportPath(`clara-tasks-${tag}.${fmt}`, fmt);
+    if (!path) return;
+    setDataExport({ kind: "busy", fmt });
+    try {
+      const res = fmt === "csv" ? await exportTasksCsv(path) : await exportTasksIcs(path);
+      if (mounted.current) {
+        setDataExport({ kind: "ok", text: `已导出 ${res.count} 条到 ${path}` });
+      }
+    } catch (e) {
+      if (mounted.current) setDataExport({ kind: "bad", text: extractDetail(e) });
     }
   };
 
@@ -585,6 +618,50 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
               </button>
               {merge.kind === "done" && <span className="settings-action-hint ok">{merge.text}</span>}
               {merge.kind === "bad" && <span className="settings-action-hint bad">{merge.text}</span>}
+            </div>
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <span className="settings-row-name">导出任务表格（CSV）</span>
+              <span className="settings-row-desc">
+                全部任务（含已完成与未排期）一条一行：项目、优先级、时间、备注、
+                子任务——Excel 直开中文正常
+              </span>
+            </div>
+            <div className="settings-row-control">
+              <button
+                type="button"
+                className="settings-action-btn"
+                disabled={dataExport.kind === "busy"}
+                onClick={() => doDataExport("csv")}
+              >
+                {dataExport.kind === "busy" && dataExport.fmt === "csv" ? "导出中…" : "导出 CSV"}
+              </button>
+            </div>
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <span className="settings-row-name">导出日历（.ics）</span>
+              <span className="settings-row-desc">
+                已排期任务导出为标准日历文件：重复规则与已取消实例一并带上，可导入
+                Google Calendar / Outlook / 手机日历
+              </span>
+            </div>
+            <div className="settings-row-control">
+              <button
+                type="button"
+                className="settings-action-btn"
+                disabled={dataExport.kind === "busy"}
+                onClick={() => doDataExport("ics")}
+              >
+                {dataExport.kind === "busy" && dataExport.fmt === "ics" ? "导出中…" : "导出 .ics"}
+              </button>
+              {dataExport.kind === "ok" && (
+                <span className="settings-action-hint ok">{dataExport.text}</span>
+              )}
+              {dataExport.kind === "bad" && (
+                <span className="settings-action-hint bad">{dataExport.text}</span>
+              )}
             </div>
           </div>
         </div>

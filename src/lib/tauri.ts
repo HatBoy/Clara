@@ -217,6 +217,49 @@ export async function sendSystemNotification(title: string, body: string): Promi
   }
 }
 
+/** toast 按钮回传事件载荷（Rust reminder-toast-action）。 */
+export type ReminderToastActionPayload = {
+  task_id: string;
+  action: string; // done / snooze10 / snooze60 / open（点通知本体）
+  ref_start: string | null;
+};
+
+/**
+ * 带动作按钮的提醒通知（2026-11-17 批 4）：Windows 原生 toast，按钮点击由 Rust
+ * 发 reminder-toast-action 事件回主窗。返回 false = 非 Windows / 显示失败——
+ * 调用方回落 sendSystemNotification。
+ */
+export async function showActionableReminderToast(payload: {
+  taskId: string;
+  title: string;
+  body: string;
+  canDone: boolean;
+  refStart?: string | null;
+}): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    return await invoke<boolean>("show_actionable_reminder", {
+      payload: {
+        task_id: payload.taskId,
+        title: payload.title,
+        body: payload.body,
+        can_done: payload.canDone,
+        ref_start: payload.refStart ?? null,
+      },
+    });
+  } catch (e) {
+    console.error("可操作提醒通知失败", e);
+    return false;
+  }
+}
+
+/** 订阅 toast 按钮回传事件（返回退订函数）。 */
+export async function onReminderToastAction(
+  cb: (payload: ReminderToastActionPayload) => void,
+): Promise<UnlistenFn> {
+  return listen<ReminderToastActionPayload>("reminder-toast-action", (e) => cb(e.payload));
+}
+
 /**
  * 系统文件夹选择对话框（数据接入页"本地文件夹"MCP 服务的"浏览"按钮）。
  * 返回选中目录的绝对路径；用户取消 / 非 Tauri / 失败均返回 null——调用方回落
@@ -308,6 +351,29 @@ export async function saveStatsReportPath(defaultPath: string): Promise<string |
     return typeof picked === "string" ? picked : null;
   } catch (e) {
     console.error("打开报告导出对话框失败", e);
+    return null;
+  }
+}
+
+/** 数据导出（任务 CSV / ICS，2026-11-17 批 4）的保存对话框。返回用户选定路径；
+ *  取消 / 非 Tauri / 失败均 null（调用方放弃导出）。 */
+export async function saveTaskExportPath(
+  defaultPath: string,
+  kind: "csv" | "ics",
+): Promise<string | null> {
+  if (!isTauri()) return null;
+  try {
+    const picked = await save({
+      defaultPath,
+      filters: [
+        kind === "csv"
+          ? { name: "CSV 表格", extensions: ["csv"] }
+          : { name: "日历文件", extensions: ["ics"] },
+      ],
+    });
+    return typeof picked === "string" ? picked : null;
+  } catch (e) {
+    console.error("打开数据导出对话框失败", e);
     return null;
   }
 }

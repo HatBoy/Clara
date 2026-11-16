@@ -484,6 +484,16 @@ export type AiUsageSummary = {
 export const fetchAiUsage = (days: 7 | 30 | 90) =>
   getJson<AiUsageSummary>(`/api/stats/ai-usage?days=${days}`);
 
+// —— 数据导出（POST /api/export/*，2026-11-17 批 4，path 来自原生保存对话框）——
+
+export const exportTasksCsv = (path: string) =>
+  request<{ ok: boolean; path: string; count: number; size_bytes: number }>(
+    "POST", "/api/export/tasks-csv", { path }, 30_000);
+
+export const exportTasksIcs = (path: string) =>
+  request<{ ok: boolean; path: string; count: number; size_bytes: number }>(
+    "POST", "/api/export/tasks-ics", { path }, 30_000);
+
 /** 统计报告整页截图落盘（前端 html2canvas → base64 → 后端校验 .png/大小/魔数）。 */
 export const exportStatsImage = (path: string, dataBase64: string) =>
   request<{ ok: boolean; path: string; size_bytes: number }>(

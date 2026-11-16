@@ -671,6 +671,75 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+// 可操作提醒通知（2026-11-17 批 4）：Windows toast 带「完成 / 10 分钟 / 1 小时」
+// 按钮，点击经 on_activated 发 reminder-toast-action 事件回主窗（完成 = 勾选任务，
+// 稍后 = 只推迟提醒不移动日程）。AppUserModelID 用应用 identifier；未安装形态
+// 失败回退 POWERSHELL_APP_ID（可能显示 PowerShell 名称，真机验证口径见
+// docs/tech-debt.md）。非 Windows 返回 false，前端回落插件通知。
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct ReminderToastIn {
+    task_id: String,
+    title: String,
+    body: String,
+    can_done: bool,
+    ref_start: Option<String>,
+}
+
+#[tauri::command]
+fn show_actionable_reminder(
+    app: tauri::AppHandle,
+    payload: ReminderToastIn,
+) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        use tauri_winrt_notification::{Duration, Toast};
+
+        let app_id = app.config().identifier.clone();
+        let show = |app_id: &str| -> Result<(), String> {
+            let handle = app.clone();
+            let task_id = payload.task_id.clone();
+            let ref_start = payload.ref_start.clone();
+            let mut toast = Toast::new(app_id)
+                .title(&payload.title)
+                .text1(&payload.body)
+                .duration(Duration::Short);
+            if payload.can_done {
+                toast = toast.add_button("完成", "done");
+            }
+            toast = toast
+                .add_button("10 分钟后再提醒", "snooze10")
+                .add_button("1 小时后再提醒", "snooze60");
+            toast
+                .on_activated(move |action| {
+                    let action = action.unwrap_or_else(|| "open".to_string());
+                    let _ = handle.emit(
+                        "reminder-toast-action",
+                        serde_json::json!({
+                            "task_id": task_id,
+                            "action": action,
+                            "ref_start": ref_start,
+                        }),
+                    );
+                    Ok(())
+                })
+                .show()
+                .map_err(|e| e.to_string())
+        };
+        match show(&app_id) {
+            Ok(()) => Ok(true),
+            Err(first) => show(Toast::POWERSHELL_APP_ID)
+                .map(|()| true)
+                .map_err(|second| format!("toast 显示失败：{first}；回退也失败：{second}")),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, payload);
+        Ok(false)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -724,7 +793,8 @@ pub fn run() {
             get_shortcuts,
             update_shortcut,
             reset_shortcuts,
-            restart_backend
+            restart_backend,
+            show_actionable_reminder
         ])
         // 关闭主窗口拦截："hide" 拦下关闭改为藏窗口（边车继续跑、托盘常驻）；
         // "quit" 放行销毁 → 既有 RunEvent::Exit kill 边车清理，零改动复用。

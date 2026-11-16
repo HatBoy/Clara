@@ -80,10 +80,12 @@ import { dispatchShortcutCmd, onCanvasJump } from "./lib/shortcuts";
 import {
   forwardReminderEvent,
   onAppShortcut,
+  onReminderToastAction,
   panelWidths,
   savePanelWidths,
   sendSystemNotification,
   setCloseBehavior,
+  showActionableReminderToast,
   syncAutostart,
 } from "./lib/tauri";
 import type { ParsedInput } from "./lib/syntax";
@@ -323,7 +325,18 @@ function App() {
         const timeText = `${String(startAt.getHours()).padStart(2, "0")}:${String(startAt.getMinutes()).padStart(2, "0")}`;
         // 会前准备已生成的会议附注记，引导去助手面板看清单（2026-10-20）
         const prepNote = ev.prep_proposal_id ? "（准备清单已生成，见助手面板）" : "";
-        void sendSystemNotification("Clara 日程提醒", `${ev.title} ${timeText} ${prepNote}`);
+        const body = `${ev.title} ${timeText} ${prepNote}`;
+        // 可操作 toast（2026-11-17 批 4）：带「完成 / 稍后」按钮；非 Windows
+        // 或显示失败回落插件通知（无按钮，动作走提醒窗/页内 toast）
+        void showActionableReminderToast({
+          taskId: ev.task_id,
+          title: "Clara 日程提醒",
+          body,
+          canDone: !ev.recurrence, // 系列 V1 不支持完成
+          refStart: ev.ref_start ?? ev.start_at,
+        }).then((ok) => {
+          if (!ok) void sendSystemNotification("Clara 日程提醒", body);
+        });
         return;
       }
       void forwardReminderEvent(ev).then((ok) => {
@@ -334,6 +347,37 @@ function App() {
       });
     };
     return () => es.close();
+  }, []);
+
+  // 系统 toast 按钮回传（2026-11-17 批 4）：完成 = 勾选任务；稍后 = 只推迟提醒
+  // 不移动日程；"open"（点通知本体）= 无动作。写回后整体重拉 + 通知对端窗口。
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void onReminderToastAction(({ task_id: taskId, action, ref_start: refStart }) => {
+      if (!taskId) return;
+      const req =
+        action === "done"
+          ? updateTask(taskId, { done: true })
+          : action === "snooze10" || action === "snooze60"
+            ? snoozeReminder(taskId, action === "snooze10" ? 10 : 60, refStart)
+            : null;
+      if (!req) return;
+      req
+        .then(() => {
+          reloadTasks();
+          notifyPeer("main", { kind: "reload" });
+        })
+        .catch((e) => console.error("提醒通知按钮写回失败", action, e));
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reloadTasks 定义在本 effect 之后（挂载一次即可）
   }, []);
 
   // AI 工作流事件流（SSE，后端 asyncio 调度推送）。2026-11-04 通知分轨（用户拍板，
