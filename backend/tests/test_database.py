@@ -11,6 +11,7 @@ from datetime import datetime
 from sqlalchemy import create_engine, inspect, text
 
 from database import (
+    _fix_proposal_declined_outcomes,
     _migrate_cancelled_dates_to_tombstones,
     _migrate_chat_channel_tables,
     _migrate_integration_settings_columns,
@@ -39,6 +40,31 @@ def test_migrate_task_columns_adds_and_idempotent():
     _migrate_task_columns(engine)
     cols = {c["name"] for c in inspect(engine).get_columns("tasks")}
     assert "cancelled_dates" in cols
+
+
+def test_fix_proposal_declined_outcomes():
+    """存量 declined 拒绝行归一 rejected（2026-11-17 二轮批 1）：'declined' 超出
+    ProposalOutcome Literal，含该值的行进 GET /api/ai/proposals 会炸响应模型 500。"""
+    engine = create_engine("sqlite://")
+    with engine.connect() as conn:
+        conn.execute(text(
+            "CREATE TABLE proposals (id VARCHAR(36) PRIMARY KEY, kind VARCHAR(20), "
+            "payload JSON, outcome VARCHAR(20), created_at DATETIME)"))
+        conn.execute(text(
+            "INSERT INTO proposals (id, kind, outcome) VALUES "
+            "('p1','schedule','declined'), ('p2','schedule','rejected'), "
+            "('p3','schedule',NULL)"))
+        conn.commit()
+
+    _fix_proposal_declined_outcomes(engine)
+    with engine.connect() as conn:
+        rows = dict(conn.execute(text("SELECT id, outcome FROM proposals")).all())
+    assert rows == {"p1": "rejected", "p2": "rejected", "p3": None}
+
+    _fix_proposal_declined_outcomes(engine)  # 幂等：无 declined 行零命中不炸
+    with engine.connect() as conn:
+        assert conn.execute(text(
+            "SELECT count() FROM proposals WHERE outcome='declined'")).scalar() == 0
 
 
 def test_migrate_cancelled_dates_to_tombstones():

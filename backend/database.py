@@ -499,6 +499,25 @@ def _drop_task_dependencies(eng) -> None:
         conn.execute(text("DROP TABLE IF EXISTS task_dependencies"))
 
 
+def _fix_proposal_declined_outcomes(eng) -> None:
+    """一次性数据修正（2026-11-17 二轮批 1）：对话拒绝曾落 outcome='declined'——
+    超出 ProposalOutcome 契约域（schemas Literal 无该值），存量行进
+    GET /api/ai/proposals 会炸响应模型校验 500（建议列表持续拉取失败）。归一到
+    'rejected'（统计口径等价）。幂等：无该值行零命中。"""
+    import logging
+
+    from sqlalchemy import inspect, text
+
+    if "proposals" not in inspect(eng).get_table_names():
+        return
+    with eng.begin() as conn:
+        n = conn.execute(text(
+            "UPDATE proposals SET outcome='rejected' WHERE outcome='declined'")).rowcount
+        if n:
+            logging.getLogger(__name__).warning(
+                "已把 %d 条历史 declined 拒绝行归一为 rejected（契约域修正）", n)
+
+
 # 同步地基（2026-11-14 同步备份）：10 张表补 updated_at 列 + WHEN 守卫触发器。
 # backfill 源按表映射——memory_dismissals / ingestion_items 无 created_at（分别是
 # dismissed_at / first_seen_at），其余默认 created_at
@@ -589,6 +608,7 @@ def init_db() -> None:
     _migrate_local_folder_paths(engine)
     _migrate_cancelled_dates_to_tombstones(engine)
     _drop_task_dependencies(engine)
+    _fix_proposal_declined_outcomes(engine)
     _migrate_updated_at_columns(engine)
     _ensure_updated_at_triggers(engine)
     _ensure_episodic_fts(engine)

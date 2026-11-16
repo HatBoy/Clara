@@ -311,6 +311,27 @@ def test_proposal_outcome_endpoint(client):
     assert client.post(f"/api/ai/proposals/{pid}/outcome", json={"outcome": "bogus"}).status_code == 422
 
 
+def test_proposals_list_survives_legacy_declined_row(client, fresh_db):
+    # 2026-11-17 二轮批 1 回归：对话拒绝曾落 outcome='declined'（超出 Literal），
+    # 含该值的行会让 GET /api/ai/proposals 响应模型校验 500——迁移归一后列表恢复
+    from sqlalchemy import text
+
+    from conftest import engine
+
+    with engine.begin() as conn:  # 绕过 Pydantic 直写脏值（模拟存量库）
+        conn.execute(text(
+            "INSERT INTO proposals (id, kind, payload, outcome, created_at, updated_at) "
+            "VALUES ('legacy-1', 'schedule', '{}', 'declined', "
+            "'2026-11-16 10:00:00', '2026-11-16 10:00:00')"))
+    from database import _fix_proposal_declined_outcomes
+
+    _fix_proposal_declined_outcomes(engine)
+    resp = client.get("/api/ai/proposals")
+    assert resp.status_code == 200
+    legacy = next((p for p in resp.json() if p["id"] == "legacy-1"), None)
+    assert legacy is not None and legacy["outcome"] == "rejected"
+
+
 # —— 记忆画像 CRUD 全链路 ——
 
 

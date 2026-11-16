@@ -147,5 +147,5 @@ def test_e2e_crisis_flow_to_brain(monkeypatch, fresh_db):
     # chat 轮 checklist 非空 → preflight 卡（headline 首行合成）；reply=策略+附注
     assert "未能自动改期" in out["inbox_items"][0]["notes"]
     assert out["preflight"]["headline"] == "先止血。"
-    assert "已放收件箱" in out["final_reply"]
+    assert "建议待确认，采纳后进收件箱" in out["final_reply"]
     assert not (out.keys() & {"draft_plan", "resolved_proposal", "question_plan"})

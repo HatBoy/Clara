@@ -3,7 +3,7 @@
 远程渠道无卡片按钮——草案/删除卡的确认走对话式消费，桌面同享（与点卡片
 采纳等价）。覆盖：active_draft / active_delete 消息锚点判定（活跃 / 顶替
 失活 / 已决 / 非目标 kind）；短路三分支（确认走 applied 出口落库 / 拒绝
-declined / 不命中放行）；删除确认节点内执行与拒绝；调整语不误吞；真图端
+rejected / 不命中放行）；删除确认节点内执行与拒绝；调整语不误吞；真图端
 到端（短路轮零 LLM 秒回直达 END）。"""
 
 from datetime import datetime, timedelta
@@ -123,13 +123,43 @@ def test_shortcut_decline():
     pid = _make_draft()
     ret = confirm_shortcut({"user_input": "先不用了"})
     assert "applied_plan" not in ret  # 拒绝不落库
-    assert ret["resolved_proposal"]["outcome"] == "declined"
+    assert ret["resolved_proposal"]["outcome"] == "rejected"
     with TestingSessionLocal() as db:
         finalize_turn(db, ret)
-    assert _outcome(pid) == "declined"
+    assert _outcome(pid) == "rejected"
     with TestingSessionLocal() as db:
         assert list_tasks(db, start=datetime.now(),
                           end=datetime.now() + timedelta(days=2)) == []
+
+
+def test_shortcut_decline_settles_ingest_ledger():
+    # 2026-11-17 二轮批 1：对话路径拒绝同样落采集台账（此前只挂 HTTP 结算端点——
+    # 拒绝过的指纹下轮采集再出卡重复打扰，远程渠道对话确认是唯一路径受影响最大）
+    from models import IngestionItem
+    from services import data_ingest
+
+    fp = "sha1:abc123"
+    entries = [{"title": "外部待办", "start": _tomorrow(10), "duration": 30}]
+    evidence = [{"idx": 0, "title": "外部待办", "source_key": "lark",
+                 "fingerprint": fp}]
+    with TestingSessionLocal() as db:
+        db.add(IngestionItem(source_key="lark", fingerprint=fp, item_title="外部待办",
+                             first_seen_at=datetime.now(),
+                             last_seen_at=datetime.now()))
+        db.commit()
+        row = ai_data.create_proposal(db, kind="schedule",
+                                      payload={"draft_plan": entries, "evidence": evidence})
+        ai_data.append_message(db, role="user", content="排一下")
+        ai_data.append_message(db, role="assistant", content="已出草案",
+                               proposal_id=row.id)
+    ret = confirm_shortcut({"user_input": "算了"})
+    assert ret["resolved_proposal"]["outcome"] == "rejected"
+    with TestingSessionLocal() as db:
+        finalize_turn(db, ret)
+        from sqlalchemy import select
+
+        item = db.scalar(select(IngestionItem).where(IngestionItem.fingerprint == fp))
+        assert item is not None and item.rejected_at is not None  # 指纹永静默
 
 
 def test_shortcut_delete_confirmed():
@@ -153,11 +183,11 @@ def test_shortcut_delete_declined_keeps_tasks():
     pid = _make_delete([(t1.id, "保留任务")])
 
     ret = confirm_shortcut({"user_input": "先不删了"})
-    assert ret["resolved_proposal"]["outcome"] == "declined"
+    assert ret["resolved_proposal"]["outcome"] == "rejected"
     with TestingSessionLocal() as db:
         finalize_turn(db, ret)
         assert any(t.id == t1.id for t in list_tasks(db, unscheduled=True))
-    assert _outcome(pid) == "declined"
+    assert _outcome(pid) == "rejected"
 
 
 def test_shortcut_no_match_passthrough():
@@ -171,6 +201,33 @@ def test_shortcut_no_match_passthrough():
         ai_data.record_proposal_outcome(db, pid, "ignored")
         assert ai_data.active_draft(db) is None
     assert confirm_shortcut({"user_input": "可以"}) == {}
+
+
+def test_finalize_inbox_card_marks_from_ingest_only_on_ingest_round():
+    # 2026-11-17 二轮批 1：from_ingest 只标采集轮——早版非采集轮（幕僚长教练
+    # 行动项）也恒打，被数据源页误当采集建议展示、徽标虚高、错用 7 天过期窗
+    from models import Proposal
+
+    def _inbox_payload(final: dict) -> dict:
+        with TestingSessionLocal() as db:
+            finalize_turn(db, final)
+            # 采集轮不出 proposal 事件（数据源页是唯一视图）——直接查最新 inbox 行
+            from sqlalchemy import select
+
+            row = db.scalars(select(Proposal).where(Proposal.kind == "inbox")
+                             .order_by(Proposal.created_at.desc()).limit(1)).one()
+            return row.payload
+
+    coach = _inbox_payload({
+        "intent": "coach", "final_reply": "已拆解",
+        "inbox_items": [{"title": "行动项A", "duration": 30}],
+    })
+    assert coach.get("from_ingest") is None
+    ingest = _inbox_payload({
+        "intent": "ingest", "final_reply": "已收录",
+        "inbox_items": [{"title": "外部待办B", "duration": 15}],
+    })
+    assert ingest.get("from_ingest") is True
 
 
 # —— 真图端到端（短路轮零 LLM，不需要替身）——————————————————————————————

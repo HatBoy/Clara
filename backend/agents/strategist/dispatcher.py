@@ -70,7 +70,8 @@ def dispatcher_node(state: StrategistState) -> dict:
                 notes.append(f"已出 {len(drafts)} 条时间草案，确认后写入日历")
             if inbox:
                 out["inbox_items"] = inbox
-                notes.append(f"{len(inbox)} 条已放收件箱")
+                # 文案对齐真实形态：条目进 kind=inbox 确认卡，用户采纳才落收件箱
+                notes.append(f"{len(inbox)} 条建议待确认，采纳后进收件箱")
         if memories and active_pending(db) is None:  # 活跃问询抑制（first-wins）
             rule = memories[0]
             ask = f"复盘出一条习惯规则：「{rule['content']}」，同意写入长期记忆吗？"

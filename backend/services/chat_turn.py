@@ -94,8 +94,13 @@ def finalize_turn(db: Session, final: dict, *, source: str | None = None) -> lis
 
     resolved = final.get("resolved_proposal")
     if isinstance(resolved, dict) and resolved.get("proposal_id"):
-        ai_data.record_proposal_outcome(
-            db, resolved["proposal_id"], resolved.get("outcome") or "ignored")
+        outcome = resolved.get("outcome") or "ignored"
+        settled = ai_data.record_proposal_outcome(db, resolved["proposal_id"], outcome)
+        # 对话路径拒绝同样落采集台账（2026-11-17 二轮批 1）：HTTP 结算端点早有
+        # on_proposal_settled 钩子，对话/远程渠道「算了」此前漏挂——拒绝过的指纹
+        # 下轮采集再出卡重复打扰（远程渠道对话确认是唯一路径，受影响最大）
+        if settled is not None:
+            data_ingest.on_proposal_settled(db, settled.kind, settled.payload, outcome)
 
     question = final.get("question_plan")
     # 幕僚问询（strategist_clarify/memory）无排期条目——entries 空放行
@@ -249,8 +254,13 @@ def finalize_turn(db: Session, final: dict, *, source: str | None = None) -> lis
              "payload": payload}
         )
     elif inbox_items:
-        proposal = ai_data.create_proposal(db, kind="inbox",
-                                           payload={"items": inbox_items, "from_ingest": True})
+        # from_ingest 只标采集轮（2026-10-25 功能边界；2026-11-17 二轮批 1 修正：
+        # 早版无条件恒打——幕僚长教练行动项被误标采集建议、徽标虚高、错用 7 天
+        # 过期窗。对照 draft 分支的条件注入同构）
+        inbox_payload: dict = {"items": inbox_items}
+        if is_ingest:
+            inbox_payload["from_ingest"] = True
+        proposal = ai_data.create_proposal(db, kind="inbox", payload=inbox_payload)
         data_ingest.mark_items_proposed(db, data_ingest.payload_refs("inbox", {"items": inbox_items}))
         if is_ingest:
             ingest_card_count += len(inbox_items)
