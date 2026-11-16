@@ -28,6 +28,11 @@ export type Task = {
   minutes?: number;
   /** 执行备注（如注意点、参考链接）：仅在待办卡展开编辑区可见，收起态不展示 */
   note?: string;
+  /** 地点（2026-11-17 批 2）：仅展示 */
+  location?: string;
+  /** 出行预留分钟数：非空时提醒提前量抬升为 travelMins+10（封顶 190），
+   *  日历渲染"出发"虚拟块 */
+  travelMins?: number;
   /** 重复规则：空 = 不重复（真展开语义见 Recurrence 与 occursOn） */
   recurrence?: Recurrence;
   /** 全天/跨天（2026-11-06 批 B）：已排期子集上有效——start=0 点（当日 0 时）、

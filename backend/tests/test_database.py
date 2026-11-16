@@ -314,3 +314,18 @@ def test_migrate_reminder_columns_backfills_auto():
             "SELECT kind, ref_start FROM reminders")).one()
     assert row[0] == "auto" and row[1] is None
     _migrate_reminder_columns(engine)  # 幂等
+
+
+def test_migrate_task_travel_columns():
+    from database import _migrate_task_columns
+
+    engine = create_engine("sqlite://")
+    with engine.connect() as conn:
+        conn.execute(text(
+            "CREATE TABLE tasks (id VARCHAR(36) PRIMARY KEY, title VARCHAR(30), "
+            "start_time DATETIME)"))
+        conn.commit()
+    _migrate_task_columns(engine)
+    with engine.connect() as conn:
+        cols = {r[1] for r in conn.execute(text("PRAGMA table_info(tasks)"))}
+    assert {"location", "travel_mins"} <= cols

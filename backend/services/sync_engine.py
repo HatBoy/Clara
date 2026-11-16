@@ -64,6 +64,7 @@ NATURAL_KEYS: dict[str, tuple[str, ...]] = {
     "model_providers": ("name",),
     "mcp_servers": ("name",),
     "chat_channels": ("provider",),
+    "schedule_templates": ("name",),  # 2026-11-17 批 2：模板同名两设备收敛
     "reminders": ("task_id", "fire_at"),
     "workflow_runs": ("name", "run_date"),
     "ingest_sources": ("source_key",),

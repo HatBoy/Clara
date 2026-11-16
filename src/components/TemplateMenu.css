@@ -1,0 +1,158 @@
+/* 日程模板入口与弹层（2026-11-17 批 2） */
+.template-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.template-menu-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-1, rgba(0, 0, 0, 0.12));
+  background: var(--surface-2, transparent);
+  color: var(--text-2, #444);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.template-menu-btn.primary {
+  background: var(--accent, #6c63ff);
+  border-color: transparent;
+  color: #fff;
+}
+
+.template-menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 900;
+  width: 260px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--border-1, rgba(0, 0, 0, 0.1));
+  background: var(--surface-1, #fff);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+}
+
+.template-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.template-menu-apply {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.template-menu-apply:hover {
+  background: var(--hover, rgba(108, 99, 255, 0.08));
+}
+
+.template-menu-name {
+  font-size: 12px;
+  color: var(--text-1, #222);
+}
+
+.template-menu-meta {
+  font-size: 10px;
+  color: var(--text-3, #999);
+}
+
+.template-menu-del {
+  border: none;
+  background: none;
+  color: var(--text-3, #999);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.template-menu-del.confirm {
+  color: #d64545;
+}
+
+.template-menu-empty,
+.template-menu-error {
+  padding: 8px;
+  font-size: 11px;
+  color: var(--text-3, #999);
+  line-height: 1.6;
+}
+
+.template-menu-error {
+  color: #d64545;
+}
+
+.template-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 16, 24, 0.4);
+}
+
+.template-modal {
+  width: min(380px, 90vw);
+  padding: 16px 18px;
+  border-radius: 12px;
+  background: var(--surface-1, #fff);
+  border: 1px solid var(--border-1, rgba(0, 0, 0, 0.1));
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.24);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.template-modal-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-1, #222);
+}
+
+.template-modal-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-2, #444);
+}
+
+.template-modal-row input {
+  flex: 1;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-1, rgba(0, 0, 0, 0.12));
+  background: var(--surface-2, #fff);
+  color: var(--text-1, inherit);
+  font-size: 12px;
+}
+
+.template-modal-note {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-3, #999);
+  line-height: 1.6;
+}
+
+.template-modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

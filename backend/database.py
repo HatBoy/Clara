@@ -60,6 +60,8 @@ def _migrate_task_columns(eng) -> None:
         "source_fingerprint": "VARCHAR(40)",  # 2026-10-23：来源条目指纹 sha1
         "source_evidence": "VARCHAR(500)",  # 2026-10-23：提炼时引用的素材摘录
         "all_day": "BOOLEAN DEFAULT 0",  # 2026-11-06 批 B：全天/跨天日程（占天不占时段）
+        "location": "VARCHAR(100)",  # 2026-11-17 批 2：地点（仅展示）
+        "travel_mins": "INTEGER",  # 2026-11-17 批 2：出行预留分钟数（抬升提醒提前量）
     }
     missing = {name: ddl for name, ddl in required.items() if name not in cols}
     if not missing:
@@ -506,6 +508,7 @@ _NEEDS_UPDATED_AT = [
     "stats_reports", "subtasks", "reminders", "proposals", "messages",
     "memory_dismissals", "episodic_facts", "behavior_events",
     "workflow_runs", "ingestion_items", "stats_messages",
+    "schedule_templates",  # 2026-11-17 批 2：模板参与同步（行级 LWW）
 ]
 _BACKFILL_TS = {"memory_dismissals": "dismissed_at", "ingestion_items": "last_seen_at"}
 

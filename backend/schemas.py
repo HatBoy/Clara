@@ -102,6 +102,9 @@ class TaskOut(BaseModel):
     # 完成时刻（2026-10-22 增，与软删正交）：空 = 未完成。收件箱据此隐藏已完成，
     # 日历历史/夜间复盘继续可见（done 任务仍占时段——排期避让保留）
     done_at: Optional[datetime] = None
+    # 地点与出行预留（2026-11-17 批 2）
+    location: Optional[str] = None
+    travel_mins: Optional[int] = None
     # 子任务清单（2026-11-06 批 C）：service 批量装配（同 cancelled_dates 模式，
     # 非 ORM relationship——list_tasks 批量主路径避免 N+1）；空清单 = []
     subtasks: list[SubtaskOut] = []
@@ -212,6 +215,9 @@ class TaskCreate(BaseModel):
     project_id: str | None = None
     priority: int | None = Field(default=None, ge=1, le=3)
     notes: str | None = Field(default=None, max_length=500)  # 与 TaskUpdate.notes 同源
+    # 地点与出行预留（2026-11-17 批 2）：location 仅展示；travel_mins 抬升提醒提前量
+    location: str | None = Field(default=None, max_length=100)
+    travel_mins: int | None = Field(default=None, ge=1, le=600)
     # 采集溯源三键（2026-10-23 增，additive）：inbox 建议（自动收录/手动采纳/快录
     # 直落）携带——条目 source_ref 透传，静态溯源地基（幕僚长教练按此回放素材）
     source_key: str | None = Field(default=None, max_length=60)
@@ -229,6 +235,66 @@ class TaskCreate(BaseModel):
     def _normalize_tz(cls, v: datetime | None) -> datetime | None:
         """body 内联时间与时区归一（同 TaskUpdate 口径）。"""
         return _to_naive_local(v) if v is not None else v
+
+
+class TemplateIn(BaseModel):
+    """日程模板新建（2026-11-17 批 2）：相对时刻 start_min（0-1439，空=未排期）。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=30)
+    title: str = Field(min_length=1, max_length=30)
+    duration_mins: int | None = Field(default=None, ge=1, le=1440)
+    start_min: int | None = Field(default=None, ge=0, le=1439)
+    priority: int = Field(default=2, ge=1, le=3)
+    notes: str | None = Field(default=None, max_length=500)
+    recurrence_rule: str | None = Field(default=None, max_length=100, pattern=_RRULE_PATTERN)
+    location: str | None = Field(default=None, max_length=100)
+    travel_mins: int | None = Field(default=None, ge=1, le=600)
+    subtasks: list[str] | None = None
+
+
+class TemplateUpdate(BaseModel):
+    """模板部分更新：键不出现 = 不动，显式 null = 清空（name/title 不允许置空由 service 拦）。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    name: str | None = Field(default=None, min_length=1, max_length=30)
+    title: str | None = Field(default=None, min_length=1, max_length=30)
+    duration_mins: int | None = Field(default=None, ge=1, le=1440)
+    start_min: int | None = Field(default=None, ge=0, le=1439)
+    priority: int | None = Field(default=None, ge=1, le=3)
+    notes: str | None = Field(default=None, max_length=500)
+    recurrence_rule: str | None = Field(default=None, max_length=100, pattern=_RRULE_PATTERN)
+    location: str | None = Field(default=None, max_length=100)
+    travel_mins: int | None = Field(default=None, ge=1, le=600)
+    subtasks: list[str] | None = None
+
+
+class TemplateOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    title: str
+    duration_mins: int | None = None
+    start_min: int | None = None
+    priority: int = 2
+    notes: str | None = None
+    recurrence_rule: str | None = None
+    location: str | None = None
+    travel_mins: int | None = None
+    subtasks: list[str] | None = None
+    sort_order: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class TemplateApplyIn(BaseModel):
+    """应用模板：date 缺省今天；start_time 显式覆盖模板时刻。"""
+
+    date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    start_time: datetime | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -254,6 +320,9 @@ class TaskUpdate(BaseModel):
     # 完成态开关（2026-10-22 增）：True = 完成（done_at=now）/ False = 撤销完成（done_at
     # = None）/ 不出现 = 不动。系列任务（recurrence_rule 非空）由 service 拦 422（V1 不支持）
     done: bool | None = None
+    # 地点与出行预留（2026-11-17 批 2）：显式 null 清空
+    location: str | None = Field(default=None, max_length=100)
+    travel_mins: int | None = Field(default=None, ge=1, le=600)
     # 子任务清单（2026-11-06 批 C）：键出现 = 全量替换（delete 旧行 + reinsert），
     # 空列表 = 清空清单；不出现 = 不动。重复系列编辑时与其他字段同走三问分流
     subtasks: list[SubtaskIn] | None = None

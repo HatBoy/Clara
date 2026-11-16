@@ -55,6 +55,8 @@ export type ApiTask = {
   done_at: string | null; // 完成时刻；null = 未完成（与软删正交，见 Task.done 注释）
   project_id: string | null;
   source_key: string | null; // 采集/纪要溯源键（null = 手建；纪要回看区块消费，2026-11-10）
+  location?: string | null; // 地点（2026-11-17 批 2）
+  travel_mins?: number | null; // 出行预留分钟数
 };
 export type ApiProject = { id: string; name: string; color: string; starred: boolean };
 
@@ -518,6 +520,8 @@ export function toFrontendTask(t: ApiTask, projectNameById: Map<string, string>)
     minutes,
     duration: minutes !== undefined ? durationText(minutes) : undefined,
     note: t.notes ?? undefined,
+    location: t.location ?? undefined,
+    travelMins: t.travel_mins ?? undefined,
     recurrence: parseRrule(t.recurrence_rule) ?? undefined,
     allDay: t.all_day ? true : undefined,
     checklist: t.subtasks?.length ? t.subtasks : undefined,
@@ -550,6 +554,8 @@ export type TaskPatchBody = {
   project_id?: string | null;
   done?: boolean; // true = 标记完成（done_at=now）/ false = 撤销完成（清 done_at）；系列任务后端 422
   subtasks?: { title: string; done: boolean }[]; // 键出现 = 全量替换（空数组 = 清空）
+  location?: string | null; // 地点（2026-11-17 批 2）
+  travel_mins?: number | null; // 出行预留分钟数
 };
 
 // 任务 POST 请求体（快捷录入新建；priority 后端默认 medium。notes 供 inbox 建议卡
@@ -567,6 +573,8 @@ export type TaskCreateBody = {
   source_key?: string; // 采集来源源键（2026-10-23）
   source_fingerprint?: string; // 来源条目指纹（2026-10-23）
   source_evidence?: string; // 提炼时引用的素材摘录（2026-10-23）
+  location?: string; // 地点（2026-11-17 批 2）
+  travel_mins?: number; // 出行预留分钟数
 };
 
 export type ProjectPatchBody = { name?: string; starred?: boolean; color?: string };
@@ -932,6 +940,8 @@ export function toTaskPatch(patch: Partial<Task>): TaskPatchBody {
   if ("done" in patch) body.done = patch.done; // 完成标记直译（boolean 不可 undefined 翻 null，语义本就是开关）
   if ("allDay" in patch && patch.allDay !== undefined)
     body.all_day = patch.allDay; // 全天开关（后端按库中 start/end 归一日期区间）
+  if ("location" in patch) body.location = patch.location ?? null;
+  if ("travelMins" in patch) body.travel_mins = patch.travelMins ?? null;
   if ("checklist" in patch)
     // 清单键出现即全量替换（undefined 翻空数组 = 清空）；行内 id 不回传（后端重生成）
     body.subtasks = (patch.checklist ?? []).map((s) => ({ title: s.title, done: !!s.done }));
@@ -1401,3 +1411,43 @@ export const completeOnboarding = (body: {
     "/api/onboarding/complete",
     body,
   );
+
+
+// —— 日程模板（2026-11-17 批 2）——
+export type ApiTemplate = {
+  id: string;
+  name: string;
+  title: string;
+  duration_mins: number | null;
+  start_min: number | null;
+  priority: number;
+  notes: string | null;
+  recurrence_rule: string | null;
+  location: string | null;
+  travel_mins: number | null;
+  subtasks: string[] | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export const fetchTemplates = () => getJson<ApiTemplate[]>("/api/templates");
+
+export const createTemplate = (body: {
+  name: string;
+  title: string;
+  duration_mins?: number | null;
+  start_min?: number | null;
+  priority?: number;
+  notes?: string | null;
+  recurrence_rule?: string | null;
+  location?: string | null;
+  travel_mins?: number | null;
+  subtasks?: string[] | null;
+}) => request<ApiTemplate>("POST", "/api/templates", body);
+
+export const deleteTemplate = (id: string) =>
+  request<void>("DELETE", `/api/templates/${id}`);
+
+export const applyTemplate = (id: string, body: { date?: string; start_time?: string }) =>
+  request<ApiTask>("POST", `/api/templates/${id}/apply`, body);

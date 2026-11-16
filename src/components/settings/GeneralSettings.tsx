@@ -315,6 +315,20 @@ function GeneralSettings({
           </div>
           <div className="settings-row">
             <div className="settings-row-info">
+              <span className="settings-row-name">会议前后缓冲块</span>
+              <span className="settings-row-desc">
+                重要会议前后空隙不足时，在日历上以虚线块提示「会前 10 分钟 / 会后 15 分钟」；纯展示不写库，单块可隐藏。AI 排期同样避开会议前 10 分钟
+              </span>
+            </div>
+            <div className="settings-row-control">
+              <SetToggle
+                checked={s.meetingBufferEnabled}
+                onChange={(v) => onUpdate({ meetingBufferEnabled: v })}
+              />
+            </div>
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-info">
               <span className="settings-row-name">助手消息轻提示音</span>
               <span className="settings-row-desc">
                 晨报 / 夜报 / 过载预警等助手消息到达时轻响一次（用上方所选音色）；关闭则完全静默，未读仅以日程页 ✨ 按钮角标提示（右栏折叠时可见）

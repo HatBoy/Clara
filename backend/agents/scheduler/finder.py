@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 COMMUTE_MINUTES = 30          # 差旅/外出条目前置通勤块（市内口径）
 BUFFER_MIN = 30               # 长会链尾/差旅落地后的缓冲（分钟）
 MEETING_TAIL_MIN = 15         # 单场会议尾缓冲（2026-10-22 批 5 场景用例泛化）
+MEETING_HEAD_MIN = 10         # 单场会议会前缓冲（2026-11-17 批 2：与前端虚拟块同口径）
 RAINY_PRECIP = 60             # 降水概率 ≥ 此值整日剔除（户外类，%）
 DEEP_BLOCK_MIN = 120          # deep-work 哲学下深度条目连续块下限（分钟）
 GARBAGE_DUR_MAX = 30          # 垃圾时间锚定的短任务上限（分钟）
@@ -69,9 +70,14 @@ def _extend_busy_buffers(busy: list, long_chain_ends: list[datetime],
 
         for m in busy_meta:
             end = m.get("end")
+            start = m.get("start")
             if (isinstance(end, datetime)
                     and MEETING_KEYWORDS_RE.search(m.get("title") or "")):
                 out.append((end, end + timedelta(minutes=MEETING_TAIL_MIN)))
+            if (isinstance(start, datetime)
+                    and MEETING_KEYWORDS_RE.search(m.get("title") or "")):
+                # 会前 10 分钟（2026-11-17 批 2）：AI 排期不紧贴重要会议前
+                out.append((start - timedelta(minutes=MEETING_HEAD_MIN), start))
     return out
 
 

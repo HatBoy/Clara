@@ -2040,3 +2040,87 @@
 .series-scope-cancel:hover {
   color: var(--text-secondary);
 }
+
+/* 拖拽冲突数徽标（2026-11-17 批 2）：红描边之外的量化提示 */
+.schedule-conflict-badge {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  z-index: 3;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #d64545;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* 虚拟块（2026-11-17 批 2）：会议缓冲与出行前置——不落库、不可拖拽、不参与冲突 */
+.timeline-event.virtual-block {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px dashed rgba(127, 127, 127, 0.45);
+  background: rgba(127, 140, 160, 0.12);
+  color: var(--text-3, #8a8a92);
+  font-size: 11px;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.timeline-event.virtual-block.travel {
+  background: rgba(108, 99, 255, 0.1);
+  border-color: rgba(108, 99, 255, 0.4);
+  color: var(--accent, #6c63ff);
+  pointer-events: auto;
+}
+
+.timeline-event.virtual-block.travel.overlap {
+  border-color: rgba(214, 140, 40, 0.75);
+  background: rgba(214, 140, 40, 0.14);
+  color: #b26b1f;
+}
+
+.timeline-event.virtual-block.week {
+  padding: 1px 4px;
+  font-size: 10px;
+}
+
+.virtual-block-title {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.virtual-block-sub {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.9;
+}
+
+.virtual-block-close {
+  pointer-events: auto;
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: inline-flex;
+}
+
+.virtual-block-close:hover {
+  background: rgba(127, 127, 127, 0.18);
+}

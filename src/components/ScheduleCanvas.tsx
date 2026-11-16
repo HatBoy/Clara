@@ -15,6 +15,7 @@ import {
   Timer,
   Trash2,
   X,
+  LayoutTemplate,
 } from "lucide-react";
 import { HolidayUtil, Solar } from "lunar-typescript";
 import {
@@ -47,6 +48,8 @@ import type { ParsedInput } from "../lib/syntax";
 import ConfirmPopover from "./ConfirmPopover";
 import { DURATION_PRESETS } from "./InboxPanel";
 import QuickAdd from "./QuickAdd";
+import { SaveTemplateModal, TemplateMenu } from "./TemplateMenu";
+import type { ApiTask } from "../lib/api";
 import SeriesScopeAsk from "./SeriesScopeAsk";
 import SubtaskList from "./SubtaskList";
 import WhenPicker from "./WhenPicker";
@@ -188,6 +191,18 @@ export function renderHourMarks(hours: number[], startHour: number) {
 }
 
 // 星期与 ISO 周工具（查看日期是组件 state，文本在组件内派生）
+// —— 虚拟块判定（2026-11-17 批 2）：会议缓冲与出行前置共用口径 ——
+const TRAVEL_TITLE_RE = /高铁|机场|航班|出差|跨城|火车|机票/;
+const MEETING_TITLE_RE = /会议|评审|汇报|路演|面试|答辩|复盘|review|1:1/i;
+const BUFFER_PRE_MIN = 10;
+const BUFFER_POST_MIN = 15;
+const BUFFER_HIDE_KEY = "clara.bufferHidden";
+
+function isImportantMeeting(t: ScheduledTask): boolean {
+  const dur = (t.end ?? t.start + 1) - t.start;
+  return t.priority === "high" || dur >= 1.5 || MEETING_TITLE_RE.test(t.title);
+}
+
 const WEEKDAY_NAMES = ["日", "一", "二", "三", "四", "五", "六"];
 
 function getISOWeek(date: Date): number {
@@ -276,6 +291,7 @@ function ScheduleCanvas({
   // 假空档。头部 chip 由本组件渲染，✕ 走 onClearProjectFilter
   projectFilter,
   onClearProjectFilter,
+  onTemplateApplied,
 }: {
   style?: CSSProperties;
   onExpandCopilot?: () => void;
@@ -301,6 +317,8 @@ function ScheduleCanvas({
   ) => Promise<void>;
   // 快捷录入框建任务（App 负责持久化与未知项目顺手创建；失败 reject 由输入框保留文本）
   onCreateTask: (draft: ParsedInput) => Promise<unknown>;
+  // 模板应用生成的任务（2026-11-17 批 2）：App upsert 进本地态
+  onTemplateApplied?: (task: ApiTask) => void;
   // 项目筛选（null = 全量）：App 态，触发 = 项目页"已排期"开关打开（受控开关
   // 同步 effect 见 App）；解除 = 关开关 / 离开项目页 / chip ✕
   projectFilter?: string | null;
@@ -412,6 +430,77 @@ function ScheduleCanvas({
   };
   // 全量口径（负载指示器/负载灯消费）：不受项目筛选影响
   const allOccurrencesOn = (offset: number) => collectOn(events, offset);
+
+  // —— 虚拟块（2026-11-17 批 2）：会议前后缓冲 + 出行前置 ——
+  // 纯渲染不落库：不进收件箱/统计/提醒，不参与拖拽冲突计数；单块可隐藏（localStorage）
+  const [, setBufferHiddenTick] = useState(0);
+  const bufferHidden = (key: string): boolean => {
+    try {
+      const raw = window.localStorage.getItem(BUFFER_HIDE_KEY);
+      const arr = raw ? (JSON.parse(raw) as string[]) : [];
+      return Array.isArray(arr) && arr.includes(key);
+    } catch {
+      return false;
+    }
+  };
+  const hideBuffer = (key: string) => {
+    try {
+      const raw = window.localStorage.getItem(BUFFER_HIDE_KEY);
+      const arr = raw ? (JSON.parse(raw) as string[]) : [];
+      if (!arr.includes(key)) arr.push(key);
+      window.localStorage.setItem(BUFFER_HIDE_KEY, JSON.stringify(arr.slice(-200)));
+    } catch {
+      /* 隐私模式不可用：仅本次会话不隐藏 */
+    }
+    setBufferHiddenTick((t) => t + 1);
+  };
+  type VirtualBlock = {
+    key: string; kind: "pre" | "post" | "travel";
+    start: number; end: number; title: string; sub?: string; overlap?: boolean;
+  };
+  const computeVirtualBlocks = (offset: number): VirtualBlock[] => {
+    const blocks: VirtualBlock[] = [];
+    const evs = allOccurrencesOn(offset)
+      .filter((e) => !e.allDay)
+      .sort((a, b) => a.start - b.start);
+    if (settings.meetingBufferEnabled) {
+      for (const m of evs.filter(isImportantMeeting)) {
+        const mEnd = m.end ?? m.start + 1;
+        const idx = evs.indexOf(m);
+        const prev = idx > 0 ? evs[idx - 1] : undefined;
+        const next = idx >= 0 && idx < evs.length - 1 ? evs[idx + 1] : undefined;
+        const prevEnd = prev ? prev.end ?? prev.start + 1 : 0;
+        const gapBefore = prev ? m.start - prevEnd : Infinity;
+        if (prev && gapBefore > 0 && gapBefore < BUFFER_PRE_MIN / 60) {
+          const key = `${m.id}:${offset}:pre`;
+          if (!bufferHidden(key)) {
+            blocks.push({ key, kind: "pre", start: Math.max(prevEnd, m.start - BUFFER_PRE_MIN / 60), end: m.start, title: "会前缓冲" });
+          }
+        }
+        const gapAfter = next ? next.start - mEnd : Infinity;
+        if (next && gapAfter > 0 && gapAfter < BUFFER_POST_MIN / 60) {
+          const key = `${m.id}:${offset}:post`;
+          if (!bufferHidden(key)) {
+            blocks.push({ key, kind: "post", start: mEnd, end: Math.min(next.start, mEnd + BUFFER_POST_MIN / 60), title: "会后缓冲" });
+          }
+        }
+      }
+    }
+    for (const t of evs) {
+      const tm = t.travelMins ?? (TRAVEL_TITLE_RE.test(t.title) ? 40 : 0);
+      if (!tm) continue;
+      const startH = t.start - tm / 60;
+      const overlap = evs.some((o) => o.id !== t.id
+        && startH < (o.end ?? o.start + 1) && o.start < t.start);
+      blocks.push({
+        key: `travel-${t.id}-${offset}`, kind: "travel", start: startH, end: t.start,
+        title: `去「${t.title}」路上`,
+        sub: `${fmtTime(startH)} 出发 · 预留 ${tm} 分钟`,
+        overlap,
+      });
+    }
+    return blocks;
+  };
   // 渲染口径（四视图卡片消费）：项目筛选态下只含筛选项目
   const occurrencesOn = (offset: number) => collectOn(viewEvents, offset);
   // 查看日的全部时间轴块（午休建议块 + 日程）与泳道分列结果，重叠块并排显示；
@@ -618,6 +707,10 @@ function ScheduleCanvas({
   const [detail, setDetail] = useState<{ id: string; offset: number; left: number; top: number } | null>(null);
   // 备注草稿（打开时装载，失焦/关闭时提交）
   const [noteDraft, setNoteDraft] = useState("");
+  // 地点草稿（2026-11-17 批 2）：浮层打开装载，失焦提交
+  const [locationDraft, setLocationDraft] = useState("");
+  // 「存为模板」弹窗（2026-11-17 批 2）
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
   // 标题内联编辑（双击进入）；titleDraft 为草稿
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -779,17 +872,16 @@ function ScheduleCanvas({
   // 半开区间、首尾相接不算重叠（assignLanes 同口径）；全天条不参与（占天不占时段）；
   // 同 id 系列实例跳过（拖到自家另一实例日不算冲突）。派生而非入 drag state——
   // move 高频 setDrag 不膨胀，松手自然消失
-  const dragConflict =
-    drag !== null &&
-    (() => {
-      const targetOffset = drag.sourceOffset + drag.dayShift;
-      for (const t of occurrencesOn(targetOffset)) {
-        if (t.allDay || t.id === drag.eventId) continue;
-        const tEnd = t.end ?? t.start + 1;
-        if (drag.start < tEnd && t.start < drag.end) return true;
-      }
-      return false;
-    })();
+  // 2026-11-17 批 2：布尔改为冲突列表（计数徽标 + tooltip）；数据源改用
+  // allOccurrencesOn（全量 events）——项目筛选态下被隐藏的日程同样要参与判定
+  const dragConflicts: ScheduledTask[] =
+    drag === null
+      ? []
+      : allOccurrencesOn(drag.sourceOffset + drag.dayShift).filter((t) => {
+          if (t.allDay || t.id === drag.eventId) return false;
+          const tEnd = t.end ?? t.start + 1;
+          return drag.start < tEnd && t.start < drag.end;
+        });
 
   const onCardPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     const base = dragBaseRef.current;
@@ -922,6 +1014,7 @@ function ScheduleCanvas({
     left = Math.min(Math.max(left, 12), Math.max(window.innerWidth - DETAIL_W - 12, 12)); // 视口 clamp 兜底
     const top = Math.min(Math.max(rect.top, 12), Math.max(window.innerHeight - 12 - 360, 12));
     setNoteDraft(task.note ?? "");
+    setLocationDraft(task.location ?? "");
     setEditingTitle(false);
     setRecurrenceOpen(false);
     setWhenOpen(false);
@@ -1191,8 +1284,12 @@ function ScheduleCanvas({
     const dragging = drag?.eventId === event.id && drag.sourceOffset === event.dateOffset;
     const start = dragging ? drag!.start : event.start;
     const end = dragging ? drag!.end : (event.end ?? event.start + 1); // 无结束时间的日程默认一小时
-    // 拖拽冲突（批 E2）：目标区间与既有日程相交时被拖卡红描边（仅视觉提示不阻止）
-    const conflict = dragging && dragConflict;
+    // 拖拽冲突（批 E2 / 2026-11-17 批 2）：红描边 + 冲突数徽标（仅提示不阻止）
+    const conflictCount = dragging ? dragConflicts.length : 0;
+    const conflict = conflictCount > 0;
+    const conflictTip = conflict
+      ? `与 ${conflictCount} 项日程冲突：${dragConflicts.slice(0, 3).map((t) => t.title).join("、")}`
+      : undefined;
     // 越界日程（区间收窄后落在时间轴外）几何 clamp 收边：数据不动（改回设置即恢复），
     // 坐标夹进轴内防负 top / 溢出轴底；区间内日程与原公式逐像素一致
     const top = Math.min(Math.max(y(start), 0), axisHeight);
@@ -1209,11 +1306,15 @@ function ScheduleCanvas({
           left: opts.left,
           right: opts.right,
         }}
+        title={conflictTip}
         onPointerDown={(e) => onCardPointerDown(e, event)}
         onPointerMove={onCardPointerMove}
         onPointerUp={onCardPointerUp}
         onPointerCancel={onCardPointerUp}
       >
+        {conflict && (
+          <span className="schedule-conflict-badge">{conflictCount}</span>
+        )}
         {opts.compact ? (
           <span className="timeline-event-compact">
             <span className="timeline-event-compact-time">
@@ -1417,6 +1518,21 @@ function ScheduleCanvas({
                     isPast: (endHour) => isPastOnDay(offset, endHour),
                   });
                 })}
+              {computeVirtualBlocks(offset).map((b) => (
+                <div
+                  key={b.key}
+                  className={`timeline-event virtual-block week ${b.kind}${b.overlap ? " overlap" : ""}`}
+                  style={{
+                    top: y(b.start),
+                    height: Math.max(8, y(b.end) - y(b.start)),
+                    left: 2,
+                    right: 2,
+                  }}
+                  title={b.sub ?? b.title}
+                >
+                  <span className="virtual-block-title">{b.title}</span>
+                </div>
+              ))}
             </div>
           ))}
         </div>
@@ -1878,6 +1994,10 @@ function ScheduleCanvas({
           onJumpDate={jumpToDate}
           hours={{ start: START, end: END }}
         />
+        <TemplateMenu
+          date={`${viewedDate.getFullYear()}-${String(viewedDate.getMonth() + 1).padStart(2, "0")}-${String(viewedDate.getDate()).padStart(2, "0")}`}
+          onApplied={(t) => onTemplateApplied?.(t)}
+        />
       </header>
 
       <div
@@ -2000,6 +2120,33 @@ function ScheduleCanvas({
             );
           })}
 
+          {/* 虚拟块（2026-11-17 批 2）：会议缓冲 + 出行前置；位于真实卡下层 */}
+          {computeVirtualBlocks(viewedOffset).map((b) => (
+            <div
+              key={b.key}
+              className={`timeline-event virtual-block ${b.kind}${b.overlap ? " overlap" : ""}`}
+              style={{
+                top: y(b.start),
+                height: Math.max(10, y(b.end) - y(b.start)),
+                left: 8,
+                right: 8,
+              }}
+            >
+              <span className="virtual-block-title">{b.title}</span>
+              {b.sub && <span className="virtual-block-sub">{b.sub}</span>}
+              {b.kind !== "travel" && (
+                <button
+                  type="button"
+                  className="virtual-block-close"
+                  onClick={() => hideBuffer(b.key)}
+                  aria-label="隐藏缓冲块"
+                >
+                  <X size={10} strokeWidth={2} />
+                </button>
+              )}
+            </div>
+          ))}
+
           {/* 模拟日程（渲染细节见 renderEventCard；全天条已在上方条区渲染） */}
           {dayTimeline.map((event) => {
             const lane = lanes.get(event)!;
@@ -2024,6 +2171,9 @@ function ScheduleCanvas({
           动态增高（纪要录入/面板展开）后 100vh-24 的静态上限兜不住「top+高度
           超视口底」（晚上低位卡片必现，底边按钮无法操作）——inline 上限改为
           视口底 - top - 12，内容超高时自身内滚 */}
+      {saveTemplateOpen && detailTask && (
+        <SaveTemplateModal task={detailTask} onClose={() => setSaveTemplateOpen(false)} />
+      )}
       {detail && detailTask && (
         <div
           className="schedule-detail"
@@ -2153,6 +2303,35 @@ function ScheduleCanvas({
             <span className="schedule-detail-note-count">
               {noteDraft.length}/{NOTE_MAX_LEN}
             </span>
+          </div>
+          {/* 地点与出行预留（2026-11-17 批 2）：地点失焦提交，出行预留即时提交 */}
+          <div className="inbox-todo-travel">
+            <input
+              className="inbox-todo-location"
+              value={locationDraft}
+              maxLength={100}
+              placeholder="地点（可选）"
+              onChange={(e) => setLocationDraft(e.target.value)}
+              onBlur={() => {
+                const loc = locationDraft.trim() || undefined;
+                if (loc !== detailTask.location) onUpdateTask(detailTask.id, { location: loc });
+              }}
+            />
+            <select
+              className="inbox-todo-travel-select"
+              value={detailTask.travelMins ?? 0}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                onUpdateTask(detailTask.id, { travelMins: v > 0 ? v : undefined });
+              }}
+            >
+              <option value={0}>无出行预留</option>
+              <option value={30}>出行 30 分钟</option>
+              <option value={45}>出行 45 分钟</option>
+              <option value={60}>出行 1 小时</option>
+              <option value={90}>出行 1.5 小时</option>
+              <option value={120}>出行 2 小时</option>
+            </select>
           </div>
           {/* 子任务清单（批 C；真机批改直发）：清单是任务级属性（无单次实例语义），
               重复系列也 all 直发——与重复规则编辑同款先例；此前走 queueEdit 三问
@@ -2445,6 +2624,16 @@ function ScheduleCanvas({
                 <CalendarSync size={14} strokeWidth={2} />
               </button>
             )}
+            {/* 存为模板（2026-11-17 批 2）：把当前任务字段保存成可复用模板 */}
+            <button
+              type="button"
+              className="inbox-todo-icon"
+              aria-label="存为模板"
+              title="存为模板"
+              onClick={() => setSaveTemplateOpen(true)}
+            >
+              <LayoutTemplate size={14} strokeWidth={2} />
+            </button>
             {/* 删除日程：二次确认气泡（任务已删草稿无意义，确认后不走 closeDetail 提交路径）；
                 重复系列纵向三选——仅删本次 = 后端墓碑挖空该日实例（系列行保留）、删及后续 =
                 UNTIL 截断到被删日前一天、删除所有 = 整任务删（后端按生命周期判定物理删/软删）；
@@ -2542,6 +2731,7 @@ function ScheduleCanvas({
                   onClick={() => {
                     setPendingEdit(null);
                     setNoteDraft(detailTask.note ?? "");
+                    setLocationDraft(detailTask.location ?? "");
                   }}
                 >
                   取消修改
