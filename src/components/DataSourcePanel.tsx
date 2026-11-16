@@ -13,6 +13,7 @@ import {
   Timer,
   Trash2,
 } from "lucide-react";
+import EmptyState from "./EmptyState";
 import {
   entryHasSource,
   fetchAiProposals,
@@ -180,6 +181,7 @@ function DataSourcePanel({
   onSettleItem,
   onSmartSchedule,
   onItemsSettled,
+  onOpenSettings,
   refreshKey = 0,
   syncTrigger = 0,
 }: {
@@ -203,6 +205,8 @@ function DataSourcePanel({
   ) => Promise<{ ok: boolean; scheduled: boolean }>;
   // 结算成功条数（乐观减徽标；不触发面板重拉）
   onItemsSettled: (count: number) => void;
+  // 空态动作（2026-11-17 批 1）：打开设置 → 数据接入
+  onOpenSettings?: () => void;
   // 重拉信号（App 的 aiRefreshKey：工作流事件递增；effect 初跑即挂载拉取）
   refreshKey: number;
   // 全局快捷键 sync-now 触发计数（App 递增；0 = 从未触发）。经 props 驱动而非
@@ -240,10 +244,17 @@ function DataSourcePanel({
   // 手动刷新态（2026-11-04 手动刷新批）：采集在途时按钮转圈禁点；完成按摘要反馈
   const [refreshing, setRefreshing] = useState(false);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   const refetch = () => {
     fetchAiProposals(true)
-      .then((rows) => setProposals(rows))
-      .catch((e) => console.error("数据源建议拉取失败", e));
+      .then((rows) => {
+        setProposals(rows);
+        setLoadError(null);
+      })
+      .catch((e) => {
+        console.error("数据源建议拉取失败", e);
+        setLoadError(e instanceof Error ? e.message : "拉取失败");
+      });
   };
 
   useEffect(() => {
@@ -487,7 +498,27 @@ function DataSourcePanel({
       <div className="inbox-main">
         <div className="ds-list">
           {groups.length === 0 ? (
-            <p className="inbox-empty">暂无待确认的数据源建议</p>
+            loadError ? (
+              <EmptyState
+                compact
+                tone="error"
+                title="数据源建议加载失败"
+                description={loadError}
+                action={{ label: "重试", onClick: refetch }}
+              />
+            ) : (
+              <EmptyState
+                compact
+                icon={<Database size={22} strokeWidth={1.6} />}
+                title="暂无待确认的数据源建议"
+                description="接入邮箱、日历或本地文件夹后，采集到的条目会先到这里等你确认"
+                action={
+                  onOpenSettings
+                    ? { label: "去配置数据源", onClick: onOpenSettings }
+                    : undefined
+                }
+              />
+            )
           ) : (
             groups.map((g) => (
               <div key={g.key} className="ds-group">

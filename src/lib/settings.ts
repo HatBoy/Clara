@@ -61,6 +61,10 @@ export type Settings = {
   chatAutocompactEnabled: boolean;
   coachProbeDeep: boolean; // 教练溯源深探（优化批 9，默认关）
   assistantChime: boolean; // 助手消息轻提示音（2026-11-04 通知分轨，默认关）
+  // 首启入职访谈完成时刻（2026-11-17 批 1）：null = 未访谈（App 据此弹向导）
+  onboardedAt: string | null;
+  // 会议前后虚拟缓冲块开关（2026-11-17 批 2）
+  meetingBufferEnabled: boolean;
   // 排期天气对照城市（空 = 停用；Open-Meteo geocoding 解析坐标）
   weatherCity: string | null;
   // AI 个性化（2026-10-20）：回复风格 + 内置管理哲学（预设 id 数组，后端逗号串）
@@ -102,6 +106,8 @@ export const DEFAULT_SETTINGS: Settings = {
   chatAutocompactEnabled: true,
   coachProbeDeep: false,
   assistantChime: false,
+  onboardedAt: null,
+  meetingBufferEnabled: true,
   weatherCity: null,
   aiStyle: "balanced",
   aiPhilosophy: [],

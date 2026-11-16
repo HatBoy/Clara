@@ -68,6 +68,8 @@ DEFAULTS: dict = {
     # 助手消息轻提示音（2026-11-04 通知分轨）：默认关——AI 定时任务产物走
     # 收件箱轨（聊天框+徽标），声音是可选增强
     "assistant_chime": False,
+    # 会议前后虚拟缓冲块（2026-11-17 批 2）：默认开，纯展示不写库
+    "meeting_buffer_enabled": True,
 }
 
 # 参与粒度与跨字段校验的分钟字段（work_minutes 同走 30 粒度口径）

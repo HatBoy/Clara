@@ -18,6 +18,7 @@ import {
   Timer,
   Trash2,
 } from "lucide-react";
+import EmptyState from "./EmptyState";
 import {
   isScheduled,
   NOTE_MAX_LEN,
@@ -114,6 +115,10 @@ function InboxPanel({
   projectToggleOn,
   onProjectToggleChange,
   focusTask,
+  onQuickAdd,
+  onOpenData,
+  loadError,
+  onRetry,
 }: {
   style?: CSSProperties;
   onCollapse: () => void;
@@ -145,6 +150,11 @@ function InboxPanel({
   // 搜索定位请求（2026-11-06 搜索批，App 递增 seq 触发）：展开目标卡 + 滚入
   // 视口 + 短暂高亮。props 驱动（seq 依赖）——挂载后必达且同 id 可重复触发
   focusTask?: { id: string; seq: number } | null;
+  // 空态动作（2026-11-17 批 1）：快速添加 / 去数据源 / 启动失败重试
+  onQuickAdd?: () => void;
+  onOpenData?: () => void;
+  loadError?: string | null;
+  onRetry?: () => void;
 }) {
   // 头部开关（默认关）：inbox=只看未归属项目的，project=只看未排期的；
   // project 模式受控化（2026-11-10 项目筛选联动）——App 传入 projectToggleOn 时
@@ -543,8 +553,31 @@ function InboxPanel({
 
       <div className="inbox-main">
         <div className="inbox-list">
-          {list.length === 0 ? (
-            <p className="inbox-empty">暂无待办</p>
+          {loadError ? (
+            <EmptyState
+              compact
+              tone="error"
+              title="待办加载失败"
+              description={loadError}
+              action={onRetry ? { label: "重试", onClick: onRetry } : undefined}
+            />
+          ) : list.length === 0 ? (
+            <EmptyState
+              compact
+              icon={<Inbox size={22} strokeWidth={1.6} />}
+              title={mode === "inbox" ? "收件箱是空的" : "这个项目还没有任务"}
+              description={
+                mode === "inbox"
+                  ? "随手记一条待办，或从接入的数据源里看看有什么要处理的"
+                  : "把想法加成这个项目的待办，或在日历里为它安排时间"
+              }
+              action={onQuickAdd ? { label: "快速添加", onClick: onQuickAdd } : undefined}
+              secondaryAction={
+                mode === "inbox" && onOpenData
+                  ? { label: "去数据源看看", onClick: onOpenData }
+                  : undefined
+              }
+            />
           ) : (
             list.map((todo) => {
               const scheduled = isScheduled(todo);

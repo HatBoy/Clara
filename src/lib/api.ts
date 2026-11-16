@@ -71,6 +71,10 @@ export type ReminderEvent = {
   // 会前重推标记（2026-10-20 增）：该会议有未决 prep 建议卡时后端附带，前端
   // 提醒文案分叉「准备清单已生成」；卡已决/无卡无此键，普通提醒
   prep_proposal_id?: string;
+  // 稍后提醒（2026-11-17 批 1）：manual=true 时用户点过「稍后」，ref_start 为原定
+  // 实例开始时刻（展示「稍后提醒 · 原定 HH:MM」）；普通自动提醒无此二键
+  manual?: boolean;
+  ref_start?: string;
 };
 
 // export 供 lib/ai.ts（AI 助手数据接入）复用同一请求底座与错误口径
@@ -702,6 +706,8 @@ export type ApiSettings = {
   chat_autocompact_enabled: boolean; // 对话上下文自动压缩（2026-10-26，默认开）
   coach_probe_deep: boolean; // 教练溯源深探（优化批 9，默认关）
   assistant_chime: boolean; // 助手消息轻提示音（2026-11-04 通知分轨）
+  onboarded_at: string | null; // 首启访谈完成时刻（2026-11-17 批 1；空=未访谈）
+  meeting_buffer_enabled: boolean; // 会议前后虚拟缓冲块开关（2026-11-17 批 2）
   weather_city: string | null; // 排期天气对照城市（空 = 停用，Open-Meteo）
   // AI 个性化（2026-10-20）：风格四档 / 哲学预设 id 逗号串 / 自定义哲学文本
   ai_style: "balanced" | "concise" | "detailed" | "rigorous";
@@ -765,6 +771,8 @@ export function toFrontendSettings(s: ApiSettings): Settings {
     chatAutocompactEnabled: s.chat_autocompact_enabled,
     coachProbeDeep: s.coach_probe_deep,
     assistantChime: s.assistant_chime,
+    onboardedAt: s.onboarded_at ?? null,
+    meetingBufferEnabled: s.meeting_buffer_enabled,
     weatherCity: s.weather_city ?? null,
     aiStyle: s.ai_style,
     aiPhilosophy: (s.ai_philosophy ?? "").split(",").filter(Boolean),
@@ -805,6 +813,8 @@ export function toSettingsPatch(patch: Partial<Settings>): Partial<ApiSettings> 
   if ("chatAutocompactEnabled" in patch) body.chat_autocompact_enabled = patch.chatAutocompactEnabled;
   if ("coachProbeDeep" in patch) body.coach_probe_deep = patch.coachProbeDeep;
   if ("assistantChime" in patch) body.assistant_chime = patch.assistantChime;
+  if ("meetingBufferEnabled" in patch)
+    body.meeting_buffer_enabled = patch.meetingBufferEnabled;
   if ("weatherCity" in patch) body.weather_city = patch.weatherCity || null; // 空串=停用
   if ("aiStyle" in patch) body.ai_style = patch.aiStyle;
   // 哲学数组 → 逗号串；空数组 → null（清空全部）。"in patch" 判显式设置——否则
@@ -1357,4 +1367,37 @@ export const pollWechatLoginStatus = (ticket: string, verifyCode?: string) =>
   getJson<ApiWechatLoginStatus>(
     `/api/chat-channels/wechat/login/status?ticket=${encodeURIComponent(ticket)}` +
       (verifyCode ? `&verify_code=${encodeURIComponent(verifyCode)}` : "")
+  );
+
+
+// —— 撤销最近一次操作（2026-11-17 批 1）——
+export type UndoState = { available: boolean; label: string | null; at: string | null };
+
+export const fetchUndoState = () => getJson<UndoState>("/api/undo");
+
+export const applyUndo = () =>
+  request<{ ok: boolean; label: string }>("POST", "/api/undo");
+
+// —— 稍后提醒（只推迟提醒，不移动日程）——
+export const snoozeReminder = (
+  taskId: string,
+  minutes: 10 | 60,
+  refStart?: string | null,
+) =>
+  request<{ ok: boolean; fire_at: string }>(
+    "POST",
+    `/api/reminders/${taskId}/snooze`,
+    { minutes, ref_start: refStart ?? null },
+  );
+
+// —— 首启入职访谈（2026-11-17 批 1）——
+export const completeOnboarding = (body: {
+  settings?: Partial<ApiSettings>;
+  rules?: { category: string; content: string; evidence?: string | null }[];
+  skipped: boolean;
+}) =>
+  request<{ settings: ApiSettings; rules_created: number }>(
+    "POST",
+    "/api/onboarding/complete",
+    body,
   );

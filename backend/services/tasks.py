@@ -433,13 +433,18 @@ def _record_event(db: Session, task: Task, kind: str, *,
         from models import BehaviorEvent
 
         anchor = prev_start or new_start
-        db.add(BehaviorEvent(
+        event = BehaviorEvent(
             task_id=task.id, kind=kind,
             prev_start=prev_start, new_start=new_start,
             delta_min=delta_min, planned_min=planned_min,
             context=_event_context(db, anchor),
-        ))
+        )
+        db.add(event)
         db.flush()
+        # 让撤销能删掉本次操作产生的遥测（2026-11-17 批 1；无捕获上下文时 no-op）
+        from services import undo
+
+        undo.note_event(event.id)
     except Exception as exc:  # noqa: BLE001——遥测防御边界
         logger.warning("行为遥测写入失败（%s %s）：%s", kind, task.id, exc)
 
@@ -483,6 +488,13 @@ def update_task(
             raise ValueError("单次例外不支持修改重复规则")
     if not data and done_flag is None and subtask_items is None:
         return task  # 空 patch 短路：不发 UPDATE、不误抬 updated_at
+    # 撤销快照（2026-11-17 批 1）：在首次改动前捕获任务+子行；成功后由各返回点
+    # 调 undo.finish，异常路径不记录（下次 begin 覆盖线程内胎记）
+    from services import undo
+
+    undo_entry = undo.begin("task.update", f"修改「{(task.title or '')[:12]}」")
+    undo.capture_task(undo_entry, db, task_id)
+    _snapshot_ids = {r["id"] for r in undo_entry["tasks"]}
     # Optional 入参会放行显式 null，但 title/priority 是 NOT NULL 列——拦为 422（否则 IntegrityError 500）
     for key, label in (("title", "标题"), ("priority", "优先级")):
         if data.get(key) is None and key in data:
@@ -495,6 +507,8 @@ def update_task(
             raise ValueError("所属项目不存在")  # FK 真约束下脏 id 会打 IntegrityError 500
     if mode == "this":  # 场景 A：虚拟实例实体化为单次例外，主记录不动
         exception = _materialize_exception(db, task, date, data)
+        if exception.id not in _snapshot_ids:
+            undo.note_created_task(exception.id)
         if subtask_items is not None:  # 三问路径的清单编辑落在例外行上（构造已复制主行清单，此处覆盖）
             _replace_subtasks(db, exception, subtask_items)
             db.commit()
@@ -513,12 +527,16 @@ def update_task(
                                          - exception.duration_mins
                                          if exception.start_time else None))
                 db.commit()
+        undo.finish(undo_entry)
         return exception
     if mode == "following":  # 场景 B：老系列 UNTIL 截断 + 新建主记录
         new = _split_series(db, task, date, data)
+        if new.id not in _snapshot_ids:
+            undo.note_created_task(new.id)
         if subtask_items is not None:  # 新系列承接清单（构造已复制，此处覆盖为提交态）
             _replace_subtasks(db, new, subtask_items)
             db.commit()
+        undo.finish(undo_entry)
         return new
     # mode == all：直接更新任务本体
     if task.parent_id is not None and data.get("recurrence_rule") is not None:
@@ -613,6 +631,7 @@ def update_task(
         task_id, task.title,
         sorted(data) + (["done"] if done_flag is not None else []),
     )
+    undo.finish(undo_entry)
     return task
 
 
@@ -863,6 +882,12 @@ def delete_task(db: Session, task_id: str, *, mode: str = "auto", date: str | No
         return False
     if mode in ("this", "following"):
         _validate_series_mode(task, mode, date)
+    # 撤销快照（2026-11-17 批 1）：删除前捕获整行集，误删可恢复
+    from services import undo
+
+    del_entry = undo.begin("task.delete", f"删除「{(task.title or '')[:12]}」")
+    undo.capture_task(del_entry, db, task_id)
+    _del_snapshot_ids = {r["id"] for r in del_entry["tasks"]}
 
     if mode == "this":  # 场景 4：挖空单次实例，主任务与规则不动。
         # 该日已实体化为活体例外（Clone & Override 场景 A 产物）→ 软删该实体行
@@ -877,6 +902,7 @@ def delete_task(db: Session, task_id: str, *, mode: str = "auto", date: str | No
                 "删除单次实例（已实体化，软删实体行）：任务 id=%s「%s」%s → 例外 id=%s",
                 task_id, task.title, date, exception.id,
             )
+            undo.finish(del_entry)
             return True
         created = _create_tombstone(db, task, date)
         logger.info(
@@ -884,6 +910,11 @@ def delete_task(db: Session, task_id: str, *, mode: str = "auto", date: str | No
             task_id, task.title, date, "建墓碑" if created else "已有墓碑，跳过",
         )
         db.commit()
+        if created:
+            tomb = _find_exception(db, task.id, _instance_time(task, date))
+            if tomb is not None and tomb.id not in _del_snapshot_ids:
+                undo.note_created_task(tomb.id)
+        undo.finish(del_entry)
         return True
     if mode == "following":  # 场景 5：UNTIL 截断，被点日之前的实例保留
         y, m, d = (int(x) for x in date.split("-"))
@@ -904,6 +935,7 @@ def delete_task(db: Session, task_id: str, *, mode: str = "auto", date: str | No
         _drop_series_reminders_from(db, task.id, date)
         logger.info("删除此日程及后续：任务 id=%s「%s」UNTIL=%s", task_id, task.title, until_day.date())
         db.commit()
+        undo.finish(del_entry)
         return True
 
     # mode == auto / all：整任务删除（非重复场景 1-3 与重复场景 6 共用此段）。
@@ -930,6 +962,7 @@ def delete_task(db: Session, task_id: str, *, mode: str = "auto", date: str | No
         db.delete(task)
         db.commit()
         logger.info("物理删除任务（闪建闪删）：id=%s「%s」", task_id, task.title)
+        undo.finish(del_entry)
         return True
     # 场景 2（草稿流产，TTL 后清理）与场景 3/6（永久软删）同为软删——是否会被
     # purge 清理由行状态（非重复且从未排期）决定，无需在此分叉
@@ -944,6 +977,7 @@ def delete_task(db: Session, task_id: str, *, mode: str = "auto", date: str | No
     )
     db.commit()
     logger.info("软删任务：id=%s「%s」", task_id, task.title)
+    undo.finish(del_entry)
     return True
 
 

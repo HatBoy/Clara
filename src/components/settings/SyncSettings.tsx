@@ -27,6 +27,7 @@ import {
 } from "../../lib/api";
 import { API_BASE } from "../../lib/api";
 import { isTauri, pickBackupZip, pickDirectory, restartBackend, saveBackupPath } from "../../lib/tauri";
+import EmptyState from "../EmptyState";
 import { SetInput, SetSegmented, SetToggle } from "./SettingsControls";
 import "./GeneralSettings.css";
 import "./AboutSettings.css"; // .about-link（确认/取消文字钮，与备份恢复行同款）
@@ -328,16 +329,24 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
           <span className="settings-page-sub">WebDAV 同步 · 导入导出 · 自动备份</span>
         </div>
         <div className="settings-card">
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <span className="settings-row-name">加载失败</span>
-              <span className="settings-row-desc">{loadError}</span>
-            </div>
-          </div>
+          <EmptyState
+            tone="error"
+            title="同步配置加载失败"
+            description={loadError}
+            action={{ label: "重试", onClick: () => { void reload(); } }}
+          />
         </div>
       </div>
     );
-  if (!cfg) return null;
+  if (!cfg) {
+    return (
+      <div className="settings-group">
+        <div className="settings-card">
+          <EmptyState title="正在加载同步配置…" />
+        </div>
+      </div>
+    );
+  }
 
   /** 「同步操作」卡底部提示行（占满行宽、位置恒定——按钮行不再被 hint 挤动）：
    *  动作结果轮显（重置确认 > 本次测试 > 本次同步），无动作时回落持久化的

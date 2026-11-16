@@ -1,0 +1,60 @@
+/* 全局撤销条（2026-11-17 批 1）：底部居中，视觉沿用 .inbox-notice 的轻量胶囊 */
+.undo-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 26px;
+  transform: translateX(-50%);
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(560px, 80vw);
+  padding: 8px 10px 8px 14px;
+  border-radius: 10px;
+  background: var(--surface-2, #ffffff);
+  border: 1px solid var(--border-1, rgba(0, 0, 0, 0.08));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  font-size: 12px;
+  color: var(--text-2, #333);
+  animation: undo-bar-in 160ms ease-out;
+}
+
+.undo-bar-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.undo-bar-action,
+.undo-bar-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--accent, #6c63ff);
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+
+.undo-bar-close {
+  color: var(--text-3, #888);
+}
+
+.undo-bar-action:hover,
+.undo-bar-close:hover {
+  background: var(--hover, rgba(108, 99, 255, 0.1));
+}
+
+@keyframes undo-bar-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}

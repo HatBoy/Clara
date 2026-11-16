@@ -1,0 +1,62 @@
+/* 统一空态/失败态（2026-11-17 批 1） */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 32px 18px;
+  text-align: center;
+  color: var(--text-3, #8a8a92);
+}
+
+.empty-state.compact {
+  padding: 20px 12px;
+}
+
+.empty-state-icon {
+  color: var(--text-3, #9a9aa2);
+  margin-bottom: 2px;
+}
+
+.empty-state-title {
+  font-size: 13px;
+  color: var(--text-2, #555);
+}
+
+.empty-state.error .empty-state-title {
+  color: #c04545;
+}
+
+.empty-state-desc {
+  font-size: 11px;
+  line-height: 1.6;
+  max-width: 320px;
+  color: var(--text-3, #8a8a92);
+}
+
+.empty-state-actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.empty-state-btn {
+  padding: 5px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--border-1, rgba(0, 0, 0, 0.12));
+  background: var(--surface-2, #fff);
+  color: var(--text-2, #444);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.empty-state-btn.primary {
+  background: var(--accent, #6c63ff);
+  border-color: transparent;
+  color: #fff;
+}
+
+.empty-state-btn:hover {
+  filter: brightness(0.98);
+}

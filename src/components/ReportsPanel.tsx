@@ -27,6 +27,7 @@ import {
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import EmptyState from "./EmptyState";
 import remarkGfm from "remark-gfm";
 import {
   createTask,
@@ -286,6 +287,8 @@ export default function ReportsPanel({
   style?: React.CSSProperties;
 }) {
   const [summary, setSummary] = useState<StatsSummary | null>(null);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [summarySeq, setSummarySeq] = useState(0);
   const [insight, setInsight] = useState<string | null>(null);
   const [insightLoading, setInsightLoading] = useState(false);
   const [reports, setReports] = useState<StatsReportRow[]>([]);
@@ -301,11 +304,17 @@ export default function ReportsPanel({
 
   useEffect(() => {
     let alive = true;
-    fetchStatsSummary(days).then((s) => alive && setSummary(s)).catch(() => {});
+    setSummaryError(null);
+    fetchStatsSummary(days)
+      .then((s) => alive && setSummary(s))
+      .catch((e) => {
+        if (!alive) return;
+        setSummaryError(e instanceof Error ? e.message : "统计加载失败");
+      });
     return () => {
       alive = false;
     };
-  }, [days]);
+  }, [days, summarySeq]);
 
   // AI 动态洞察（首次加载 + 切换范围走后端 1 小时 TTL 缓存；手动刷新跳过缓存）
   const loadInsight = (refresh: boolean) => {
@@ -418,7 +427,16 @@ export default function ReportsPanel({
 
       <div className="report-body">
         {!summary || !ov ? (
-          <div className="report-loading">加载统计数据中…</div>
+          summaryError ? (
+            <EmptyState
+              tone="error"
+              title="统计数据加载失败"
+              description={summaryError}
+              action={{ label: "重试", onClick: () => setSummarySeq((n) => n + 1) }}
+            />
+          ) : (
+            <div className="report-loading">加载统计数据中…</div>
+          )
         ) : (
           <div className="report-body-inner">
             {/* ① AI 洞察：一卡三段（总评/值得关注/本期建议/习惯洞察，Markdown）；

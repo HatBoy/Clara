@@ -16,9 +16,10 @@ import ReminderToast, {
   beginToastExit,
   scheduleToastExit,
   toToastItem,
-  toastActionPatch,
   type ReminderToastItem,
 } from "./components/ReminderToast";
+import UndoBar from "./components/UndoBar";
+import OnboardingWizard from "./components/OnboardingWizard";
 import {
   PROJECT_COLORS,
   durationText,
@@ -40,7 +41,10 @@ import {
   fetchSettings,
   fetchSyncConfig,
   fetchTasks,
+  applyUndo,
+  fetchUndoState,
   scheduleToISO,
+  snoozeReminder,
   toFrontendProject,
   toNaiveLocalISO,
   toFrontendSettings,
@@ -174,6 +178,9 @@ function App() {
   // 序号防同刻多事件撞键）
   const [reminderToasts, setReminderToasts] = useState<ReminderToastItem[]>([]);
   const toastKeyRef = useRef(0);
+  // 全局撤销条（2026-11-17 批 1）：只展示后端栈顶（最近一次编辑/删除）
+  const [undoHint, setUndoHint] = useState<{ label: string } | null>(null);
+  const undoTimerRef = useRef<number | null>(null);
   // AI 排期草案（幽灵方块，阶段二）：chat 的 draft 事件驱动，采纳/拒绝后清空。
   // 仅主窗口内存态（不经 notifyPeer——widget 无画布消费方）
   const [aiDraft, setAiDraft] = useState<{ proposalId: string; items: DraftPlanItem[] } | null>(null);
@@ -187,6 +194,13 @@ function App() {
   // 启动首拉提示（2026-11-16 真机批）：新装机配好 WebDAV 后本地空、后台正在
   // 同步——期间主界面显示「正在从云端同步数据」条，SSE sync 完成事件清除
   const [syncBootHint, setSyncBootHint] = useState(false);
+  // 启动失败提示与重试（2026-11-17 批 1）：后端未起/正在启动时不再只 console
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [bootSeq, setBootSeq] = useState(0);
+  const retryBoot = () => setBootSeq((n) => n + 1);
+  // 首启访谈（2026-11-17 批 1）：设置加载完成 + 未访谈 + 非云端同步中 → 弹向导
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
   // sync-now 快捷键触发计数：DataSourcePanel 经 props 消费（条件挂载面板收
   // 一次性 CustomEvent 有订阅竞态，2026-11-05 真机回归的修复——见该面板注释）
   const [syncNowTick, setSyncNowTick] = useState(0);
@@ -250,6 +264,7 @@ function App() {
         // 开机自启同步注册表；主题由下方 themeMode effect 驱动，无需在此重复调用
         const frontendSettings = toFrontendSettings(apiSettings);
         setSettings(frontendSettings);
+        setSettingsLoaded(true);
         setCloseBehavior(frontendSettings.closeAction);
         void syncAutostart(frontendSettings.autoStart);
         // 先拿 projects 建 name 映射再转 tasks（映射依赖）；两批任务合并 upsert
@@ -260,15 +275,17 @@ function App() {
         // 提示条（2026-11-16 真机批：此前空白近一分钟无任何反馈）；SSE sync
         // 事件（同步完成）到达时清除，数据经 reloadTasks 自然到达
         if (apiSync?.syncing && merged.length === 0) setSyncBootHint(true);
+        setBootError(null);
       } catch (e) {
         console.error("从后端加载数据失败", e);
+        setBootError(e instanceof Error ? e.message : "无法连接后端，请确认服务已启动");
       }
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [bootSeq]);
 
   // 主题驱动：themeMode 变化时应用（dark 或 system+系统深色 → html[data-theme="dark"]）；
   // system 模式下常挂 matchMedia 监听实时跟随系统切换（清理函数移除，防泄漏）
@@ -407,7 +424,7 @@ function App() {
       })
       .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [bootSeq]);
 
   // 桌面小部件同步监听：widget 只发 upsert（快捷录入建任务/拖动拉伸改排期，载荷为
   // 前端形状零转换直接入列）、整删与 reload 三类。接收处理纯读不回发，双窗写操作各发
@@ -438,7 +455,7 @@ function App() {
       unlisten();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [bootSeq]);
 
   // 全局快捷键落地（键串注册与按下识别全在 Rust，此处只收 action id）：视图切换与
   // 右栏折叠是 App 自持 state 直接做；日历档位/翻页/录入聚焦/助手聚焦属组件内部
@@ -500,7 +517,7 @@ function App() {
       unlisten();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [bootSeq]);
 
   // Ctrl+K 开搜索（2026-11-06 搜索批）：window capture，任何上下文（含输入框
   // 内）都唤起——组合键不经 IME，无 isComposing 顾虑
@@ -577,9 +594,55 @@ function App() {
   // 把两窗都拉回后端真值——不回滚本地（无快照机制，重拉语义等价且能顺带纠偏对端）
   const recoverFromWriteError = (label: string, e: unknown) => {
     console.error(label, e);
+    setUndoHint(null); // 写失败已重拉真值，旧快照不可再撤销
     reloadTasks();
     notifyPeer("main", { kind: "reload" });
   };
+
+  // —— 撤销最近一次操作（2026-11-17 批 1）：写成功后刷新栈顶，6 秒自动收 ——
+  const refreshUndo = () => {
+    fetchUndoState()
+      .then((s) => {
+        if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+        if (!s.available) {
+          setUndoHint(null);
+          return;
+        }
+        setUndoHint({ label: s.label ?? "上一步操作" });
+        undoTimerRef.current = window.setTimeout(() => setUndoHint(null), 6000);
+      })
+      .catch(() => {});
+  };
+
+  const handleUndo = () => {
+    if (undoTimerRef.current) window.clearTimeout(undoTimerRef.current);
+    applyUndo()
+      .then(() => {
+        setUndoHint(null);
+        reloadTasks();
+        notifyPeer("main", { kind: "reload" });
+      })
+      .catch((e) => {
+        console.error("撤销失败", e);
+        setUndoHint(null);
+        reloadTasks();
+      });
+  };
+
+  // Ctrl+Z 撤销：输入框/可编辑区内不拦截（保留文字撤销语义）
+  useEffect(() => {
+    if (!undoHint) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.key.toLowerCase() !== "z") return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || t?.isContentEditable) return;
+      e.preventDefault();
+      handleUndo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   // 设置项更新（乐观 + 响应回填，口径同任务写回惯例）：本地 setState 先行；系统级副作用
   // 即时分发（关闭行为同步 Rust、开机自启同步注册表——不等网络，托盘拦截要读它；
@@ -682,7 +745,10 @@ function App() {
       );
       notifyPeer("main", { kind: "reload" });
       updateTask(taskId, body, opts)
-        .then((created) => upsertTasks([toFrontendTask(created, projectNameById)]))
+        .then((created) => {
+          upsertTasks([toFrontendTask(created, projectNameById)]);
+          refreshUndo();
+        })
         .catch((e) => recoverFromWriteError("重复日程排期写回失败", e));
       return;
     }
@@ -690,7 +756,9 @@ function App() {
     // 排期变化同步给桌面小部件（乐观前端形状整任务，widget 按 id upsert）
     const src = tasks.find((t) => t.id === taskId);
     if (src) notifyPeer("main", { kind: "upsert", tasks: [apply(src)] });
-    updateTask(taskId, body).catch((e) => recoverFromWriteError("排期写回后端失败", e));
+    updateTask(taskId, body)
+      .then(() => refreshUndo())
+      .catch((e) => recoverFromWriteError("排期写回后端失败", e));
   };
 
   // 待办拖入侧栏项目：写入/转移项目归属（排期字段不动）。前端以 name 引用项目，
@@ -704,9 +772,9 @@ function App() {
     if (src) notifyPeer("main", { kind: "upsert", tasks: [{ ...src, project: projectName }] });
     const project = projects.find((p) => p.name === projectName);
     if (project?.id) {
-      updateTask(taskId, { project_id: project.id }).catch((e) =>
-        recoverFromWriteError("任务归属项目写回后端失败", e),
-      );
+      updateTask(taskId, { project_id: project.id })
+        .then(() => refreshUndo())
+        .catch((e) => recoverFromWriteError("任务归属项目写回后端失败", e));
     } else {
       console.warn("项目无后端 id，跳过归属持久化", projectName);
     }
@@ -748,7 +816,10 @@ function App() {
       // 虚拟实例与例外实体双渲染——取舍同下方删除 this/following 分支）
       notifyPeer("main", { kind: "reload" });
       updateTask(taskId, toTaskPatch(patch), opts)
-        .then((created) => upsertTasks([toFrontendTask(created, projectNameById)]))
+        .then((created) => {
+          upsertTasks([toFrontendTask(created, projectNameById)]);
+          refreshUndo();
+        })
         .catch((e) => recoverFromWriteError("任务编辑写回后端失败", e));
       return;
     }
@@ -761,9 +832,9 @@ function App() {
           : { ...src, ...patch };
       notifyPeer("main", { kind: "upsert", tasks: [merged] });
     }
-    updateTask(taskId, toTaskPatch(patch)).catch((e) =>
-      recoverFromWriteError("任务编辑写回后端失败", e),
-    );
+    updateTask(taskId, toTaskPatch(patch))
+      .then(() => refreshUndo())
+      .catch((e) => recoverFromWriteError("任务编辑写回后端失败", e));
   };
 
   // 删除任务三分支（与后端 DELETE mode 对齐）：this = 墓碑挖空单次（追加 cancelledDates，
@@ -790,7 +861,9 @@ function App() {
     // 整删按 id 通知 widget 移除；this/following 保系列行的派生变化（挖空/截断）
     // 交给 widget 整体重拉
     notifyPeer("main", keepRow ? { kind: "reload" } : { kind: "delete", taskIds: [taskId] });
-    deleteTask(taskId, opts).catch((e) => recoverFromWriteError("任务删除写回后端失败", e));
+    deleteTask(taskId, opts)
+      .then(() => refreshUndo())
+      .catch((e) => recoverFromWriteError("任务删除写回后端失败", e));
   };
 
   // 一键智能安排（统一排期引擎，2026-10-20）：规则层定时间并落库，成功行转前端对象
@@ -1382,9 +1455,9 @@ function App() {
   const handleRenameProject = (oldName: string, newName: string) => {
     const project = projects.find((p) => p.name === oldName);
     if (project?.id) {
-      updateProject(project.id, { name: newName }).catch((e) =>
-        recoverFromWriteError("项目重命名写回后端失败", e),
-      );
+      updateProject(project.id, { name: newName })
+        .then(() => refreshUndo())
+        .catch((e) => recoverFromWriteError("项目重命名写回后端失败", e));
     }
     setProjects((prev) =>
       prev.map((p) => (p.name === oldName ? { ...p, name: newName } : p)),
@@ -1402,7 +1475,9 @@ function App() {
   const handleDeleteProject = (name: string) => {
     const project = projects.find((p) => p.name === name);
     if (project?.id) {
-      deleteProject(project.id).catch((e) => recoverFromWriteError("项目删除写回后端失败", e));
+      deleteProject(project.id)
+        .then(() => refreshUndo())
+        .catch((e) => recoverFromWriteError("项目删除写回后端失败", e));
     }
     setProjects((prev) => prev.filter((p) => p.name !== name));
     setTasks((prev) =>
@@ -1420,9 +1495,9 @@ function App() {
   const handleToggleProjectStar = (name: string) => {
     const project = projects.find((p) => p.name === name);
     if (project?.id) {
-      updateProject(project.id, { starred: !project.starred }).catch((e) =>
-        recoverFromWriteError("项目星标写回后端失败", e),
-      );
+      updateProject(project.id, { starred: !project.starred })
+        .then(() => refreshUndo())
+        .catch((e) => recoverFromWriteError("项目星标写回后端失败", e));
     }
     setProjects((prev) =>
       prev.map((p) => (p.name === name ? { ...p, starred: !p.starred } : p)),
@@ -1495,6 +1570,14 @@ function App() {
       {/* 首拉反馈：新装机后台同步中（数据到达经 SSE reloadTasks 自然接管） */}
       {syncBootHint && (
         <div className="sync-boot-hint">正在从云端同步数据，稍候…</div>
+      )}
+      {bootError && (
+        <div className="sync-boot-hint error">
+          无法加载数据：{bootError}
+          <button type="button" className="sync-boot-retry" onClick={retryBoot}>
+            重试
+          </button>
+        </div>
       )}
       <Sidebar
         style={{ width: leftWidth, flexShrink: 0 }}
@@ -1644,6 +1727,13 @@ function App() {
               projectToggleOn={projScheduledOn}
               onProjectToggleChange={setProjScheduledOn}
               focusTask={searchFocus}
+              onQuickAdd={() => {
+                setActiveView("schedule");
+                window.setTimeout(() => dispatchShortcutCmd("quick-add"), 60);
+              }}
+              onOpenData={() => setActiveView("datasource")}
+              loadError={bootError}
+              onRetry={retryBoot}
             />
           ) : activeView === "datasource" ? (
             <DataSourcePanel
@@ -1654,6 +1744,7 @@ function App() {
               // 乐观减徽标（2026-10-24 竞态根修）：结算不再触发 aiRefreshKey 重拉——
               // 重拉与后端回写竞态曾致「点两次才消失」；权威对账留给外部事件/切页
               onItemsSettled={(count) => setDsPendingCount((c) => Math.max(0, c - count))}
+              onOpenSettings={() => handleOpenSettings("data")}
               refreshKey={aiRefreshKey}
               syncTrigger={syncNowTick}
             />
@@ -1745,6 +1836,33 @@ function App() {
         />
       )}
 
+      {/* 首启入职访谈（2026-11-17 批 1）：仅未访谈且非云端同步中弹出一次 */}
+      {settingsLoaded && settings.onboardedAt === null && !syncBootHint
+        && !onboardingDismissed && (
+        <OnboardingWizard
+          settings={settings}
+          onClose={() => setOnboardingDismissed(true)}
+          onDone={(next) => {
+            setSettings(next);
+            setOnboardingDismissed(true);
+            notifyPeer("main", { kind: "settings", settings: next });
+          }}
+          onOpenModel={() => {
+            setOnboardingDismissed(true);
+            handleOpenSettings("model");
+          }}
+        />
+      )}
+
+      {/* 全局撤销条（2026-11-17 批 1）：主窗底部居中，6 秒自动消失 */}
+      {undoHint && (
+        <UndoBar
+          label={undoHint.label}
+          onUndo={handleUndo}
+          onClose={() => setUndoHint(null)}
+        />
+      )}
+
       {/* 日程提醒页内兜底（纯浏览器 dev 无独立悬浮窗时呈现，inline 居中偏上；
            Tauri 下悬浮框由独立置顶窗口承载，此队列恒空不渲染）。操作按钮走
            直接写库 + 整体重拉（此形态无 widget/提醒窗对端，notifyPeer 无意义） */}
@@ -1754,8 +1872,10 @@ function App() {
         onClose={(key) => beginToastExit(key, setReminderToasts)}
         onAction={(it, action) => {
           if (!it.taskId) return;
-          const { body, opts } = toastActionPatch(it, action);
-          updateTask(it.taskId, body, opts)
+          const req = action === "done"
+            ? updateTask(it.taskId, { done: true })
+            : snoozeReminder(it.taskId, action === "snooze10" ? 10 : 60, it.refStartIso);
+          req
             .then(() => {
               reloadTasks();
               beginToastExit(it.key, setReminderToasts);

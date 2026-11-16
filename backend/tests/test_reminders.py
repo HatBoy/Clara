@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from conftest import TestingSessionLocal
 from models import Project, Reminder, Task
-from services.reminders import _BYDAY_TO_ISO, claim_due, scan_due
+from services.reminders import _BYDAY_TO_ISO, claim_due, clear_pending, scan_due, snooze_reminder
 from services.settings import get_settings
 
 # 默认提前量（DEFAULTS 同源）：入列时刻 = 实例开始 − 15 分钟
@@ -492,3 +492,115 @@ def test_claim_tier_drift_drops_stale_row():
     with TestingSessionLocal() as db:
         assert claim_due(db, now) == []
     assert _queue_rows() == []
+
+
+# —— 稍后提醒（2026-11-17 批 1）：只推迟提醒，不移动日程 ————————————————
+
+
+def test_snooze_creates_manual_row_without_moving_task():
+    _set_lead(15)
+    now = datetime.now()
+    start = now + timedelta(minutes=30)
+    tid = _add_task(title="评审会", start_time=start,
+                    end_time=start + timedelta(minutes=60), duration_mins=60)
+    with TestingSessionLocal() as db:
+        fire = snooze_reminder(db, tid, 10)
+        row = db.scalar(select(Reminder).where(Reminder.task_id == tid))
+        task = db.get(Task, tid)
+    assert task.start_time == start  # 日程时间未移动
+    assert task.end_time == start + timedelta(minutes=60)
+    assert row.kind == "manual" and row.ref_start == start
+    assert abs((fire - (now + timedelta(minutes=10))).total_seconds()) < 5
+
+
+def test_snooze_replaces_previous_manual_row():
+    _set_lead(15)
+    start = datetime.now() + timedelta(hours=1)
+    tid = _add_task(start_time=start)
+    with TestingSessionLocal() as db:
+        snooze_reminder(db, tid, 10)
+        snooze_reminder(db, tid, 60)
+    rows = [r for r in _queue_rows() if r.task_id == tid]
+    assert len(rows) == 1 and (rows[0].fire_at - datetime.now()).total_seconds() > 3000
+
+
+def test_manual_claim_ignores_reschedule_validation():
+    """manual 行不校验 fire_at == start−eff（只推迟提醒语义）。"""
+    _set_lead(15)
+    now = datetime.now()
+    start = now + timedelta(hours=3)
+    with TestingSessionLocal() as db:
+        t = Task(title="晚点提醒", start_time=start)
+        db.add(t)
+        db.flush()
+        db.add(Reminder(task_id=t.id, fire_at=now - timedelta(seconds=5),
+                        kind="manual", ref_start=start))
+        db.commit()
+    with TestingSessionLocal() as db:
+        events = claim_due(db, now)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["manual"] is True
+    assert ev["start_at"] == start.isoformat()
+    assert ev["lead_min"] == 0
+
+
+def test_manual_claim_long_grace():
+    """manual 宽限 30 分钟：睡眠 20 分钟后仍补响（auto 会在 120s 丢弃）。"""
+    _set_lead(15)
+    now = datetime.now()
+    with TestingSessionLocal() as db:
+        t = Task(title="补响", start_time=now + timedelta(hours=2))
+        db.add(t)
+        db.flush()
+        db.add(Reminder(task_id=t.id, fire_at=now - timedelta(minutes=20),
+                        kind="manual", ref_start=t.start_time))
+        db.commit()
+    with TestingSessionLocal() as db:
+        events = claim_due(db, now)
+    assert len(events) == 1 and events[0]["manual"] is True
+
+
+def test_manual_claim_drops_done_and_deleted():
+    _set_lead(15)
+    now = datetime.now()
+    with TestingSessionLocal() as db:
+        done = Task(title="已完成", start_time=now + timedelta(hours=2),
+                    done_at=now)
+        deleted = Task(title="已删除", start_time=now + timedelta(hours=2),
+                       is_deleted=True)
+        db.add_all([done, deleted])
+        db.flush()
+        db.add(Reminder(task_id=done.id, fire_at=now - timedelta(seconds=1),
+                        kind="manual", ref_start=done.start_time))
+        db.add(Reminder(task_id=deleted.id, fire_at=now - timedelta(seconds=1),
+                        kind="manual", ref_start=deleted.start_time))
+        db.commit()
+    with TestingSessionLocal() as db:
+        assert claim_due(db, now) == []
+
+
+def test_clear_pending_keeps_manual_rows():
+    now = datetime.now()
+    tid = _add_task(start_time=now + timedelta(hours=1))
+    with TestingSessionLocal() as db:
+        db.add(Reminder(task_id=tid, fire_at=now + timedelta(minutes=5), kind="auto"))
+        db.add(Reminder(task_id=tid, fire_at=now + timedelta(minutes=10),
+                        kind="manual", ref_start=now + timedelta(hours=1)))
+        db.commit()
+        clear_pending(db)
+    rows = _queue_rows()
+    assert len(rows) == 1 and rows[0].kind == "manual"
+
+
+def test_snooze_endpoint_contract(client: TestClient):
+    _set_lead(15)
+    start = datetime.now() + timedelta(hours=2)
+    tid = _add_task(title="端点测试", start_time=start)
+    res = client.post(f"/api/reminders/{tid}/snooze", json={"minutes": 10})
+    assert res.status_code == 200, res.text
+    assert res.json()["ok"] is True
+    assert client.post(f"/api/reminders/{tid}/snooze",
+                       json={"minutes": 30}).status_code == 422
+    assert client.post("/api/reminders/no-such/snooze",
+                       json={"minutes": 10}).status_code == 422

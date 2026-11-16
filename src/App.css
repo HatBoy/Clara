@@ -18,6 +18,24 @@
   pointer-events: none;
 }
 
+.sync-boot-hint.error {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #e3a5a5;
+}
+
+.sync-boot-retry {
+  border: 1px solid rgba(227, 165, 165, 0.5);
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
 .app {
   position: relative;
   display: flex;

@@ -65,6 +65,11 @@ def update_project(db: Session, project_id: str, patch: ProjectUpdate) -> Projec
     data = patch.model_dump(exclude_unset=True)
     if not data:
         return project  # 空 patch 短路：不发 UPDATE、不误抬 updated_at
+    # 撤销快照（2026-11-17 批 1）
+    from services import undo
+
+    undo_entry = undo.begin("project.update", f"修改项目「{(project.name or '')[:12]}」")
+    undo.capture_project(undo_entry, db, project_id)
     for key, label in _NOT_NULL_FIELDS.items():
         if key in data and data[key] is None:
             raise ValueError(f"{label}不允许置空")
@@ -83,6 +88,7 @@ def update_project(db: Session, project_id: str, patch: ProjectUpdate) -> Projec
     db.commit()
     db.refresh(project)
     logger.info("更新项目 id=%s「%s」：字段 %s", project_id, project.name, sorted(data))
+    undo.finish(undo_entry)
     return project
 
 
@@ -95,6 +101,11 @@ def delete_project(db: Session, project_id: str) -> bool:
     project = get_project(db, project_id)
     if project is None:
         return False
+    # 撤销快照（2026-11-17 批 1）：项目行 + 归属任务映射；删除会改名墓碑
+    from services import undo
+
+    undo_entry = undo.begin("project.delete", f"删除项目「{(project.name or '')[:12]}」")
+    undo.capture_project(undo_entry, db, project_id)
     detached = db.execute(
         update(Task)
         .where(Task.project_id == project_id, Task.is_deleted.is_(False))
@@ -105,4 +116,5 @@ def delete_project(db: Session, project_id: str) -> bool:
     project.name = old_name[:7] + f"#del#{project_id[:8]}"
     db.commit()
     logger.info("删除项目「%s」id=%s：归属任务 %d 条置空", old_name, project_id, detached.rowcount)
+    undo.finish(undo_entry)
     return True

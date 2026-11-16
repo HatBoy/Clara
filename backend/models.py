@@ -274,6 +274,11 @@ class AppSettings(Base):
     # 过载/简报等）落聊天框时用所选提示音轻响一次；默认关——通知分轨后 AI 产物
     # 走收件箱轨（聊天框+徽标），声音是可选增强不是默认
     assistant_chime: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"), comment="助手消息轻提示音（默认关）")
+    # 首启入职访谈完成时刻（2026-11-17 新功能批 1）：空 = 尚未访谈；老库迁移时
+    # 回填 created_at（老用户不重看）。随 app_settings 单行同步。
+    onboarded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, comment="首启访谈完成时刻；空=未访谈")
+    # 会议前后虚拟缓冲块开关（2026-11-17 批 2）：默认开；只影响前端渲染与 AI 避让
+    meeting_buffer_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"), comment="会议前后虚拟缓冲块开关")
     # 时间戳统一 Python 侧本地 naive（同 Task/Project 口径，避免 SQLite CURRENT_TIMESTAMP 的 UTC 恒差时区）
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, server_default=func.now(), comment="创建时间")
     updated_at: Mapped[datetime] = mapped_column(
@@ -298,6 +303,11 @@ class Reminder(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
     task_id: Mapped[str] = mapped_column(String(36), ForeignKey("tasks.id"), nullable=False, comment="任务 id（重复系列指向主行）")
     fire_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, comment="计划触发时刻 = 实例开始 − 提前量")
+    # 提醒类型（2026-11-17 新功能批 1）：auto = 扫描自动入列；manual = 用户点
+    # 「稍后」产生的延后提醒（claim 时跳过改期校验，只推迟提醒不移动日程）
+    kind: Mapped[str] = mapped_column(String(10), default="auto", server_default="auto", comment="auto=自动 / manual=稍后提醒")
+    # manual 行对应的原实例开始时刻（展示“原定 HH:MM”用；auto 为 NULL）
+    ref_start: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, comment="稍后提醒的原实例开始时刻")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="入列时刻")
     # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据；触发器单点盖章（同 StatsReport.updated_at 注）
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")

@@ -337,6 +337,10 @@ class SettingsOut(BaseModel):
     coach_probe_deep: bool
     # 助手消息轻提示音（2026-11-04 通知分轨）：AI 定时任务产物落聊天框时轻响
     assistant_chime: bool
+    # 首启入职访谈完成时刻（2026-11-17 批 1）：空 = 尚未访谈（前端据此弹向导）
+    onboarded_at: Optional[datetime] = None
+    # 会议前后虚拟缓冲块开关（2026-11-17 批 2）
+    meeting_buffer_enabled: bool = True
     updated_at: datetime
 
 
@@ -399,6 +403,20 @@ class SettingsUpdate(BaseModel):
     coach_probe_deep: bool | None = None
     # 助手消息轻提示音（2026-11-04 通知分轨）：开 = AI 定时任务产物落聊天框时轻响
     assistant_chime: bool | None = None
+    # 会议前后虚拟缓冲块开关（2026-11-17 批 2）：只影响前端渲染与 AI 避让
+    meeting_buffer_enabled: bool | None = None
+
+
+class ReminderSnoozeIn(BaseModel):
+    """稍后提醒入参（2026-11-17 批 1）：只允许 10 / 60 分钟两档。"""
+
+    minutes: Literal[10, 60]
+    ref_start: datetime | None = None  # 原实例开始时刻（前端从提醒事件透传）
+
+
+class ReminderSnoozeOut(BaseModel):
+    ok: bool
+    fire_at: datetime
 
 
 class PhilosophyOut(BaseModel):
@@ -1073,6 +1091,19 @@ class MemoryRuleCreate(BaseModel):
     def _empty_to_none(cls, v: str | None) -> str | None:
         """trim 后空串归一 None（同 ModelProviderCreate.api_key 口径）。"""
         return None if v == "" else v
+
+
+class OnboardingCompleteIn(BaseModel):
+    """首启访谈提交（2026-11-17 批 1）：设置子集 + 记忆规则 + 是否跳过。"""
+
+    settings: SettingsUpdate | None = None
+    rules: list[MemoryRuleCreate] = []
+    skipped: bool = False
+
+
+class OnboardingCompleteOut(BaseModel):
+    settings: SettingsOut
+    rules_created: int
 
 
 class MemoryRuleUpdate(BaseModel):

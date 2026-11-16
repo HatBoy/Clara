@@ -21,7 +21,7 @@ import re
 from datetime import date, datetime, timedelta
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -36,6 +36,10 @@ logger = logging.getLogger(__name__)
 REMINDER_TICK_SECONDS = 20
 REMINDER_LOOKAHEAD_SECONDS = 40
 REMINDER_GRACE_SECONDS = 120
+# 稍后提醒（2026-11-17 批 1）：合法档位；manual 行宽限放宽到 30 分钟以免
+# 电脑睡眠后 10 分钟 snooze 被当过期丢弃
+SNOOZE_MINUTES_CHOICES = (10, 60)
+MANUAL_GRACE_SECONDS = 1800
 
 # 任务级提前量覆盖档（2026-10-22 批 2 情境感知）：重要会议 60 / 差旅出行 40 /
 # 其余走用户全局偏好档（REMINDER_LEAD_CHOICES 0/5/10/15/30 不动——那是用户
@@ -199,14 +203,15 @@ def claim_due(db: Session, now: datetime, grace: float = REMINDER_GRACE_SECONDS)
     prep_map = pending_prep_by_task(db)
     for r in rows:
         db.execute(sa_delete(Reminder).where(Reminder.id == r.id))
-        if now - r.fire_at > timedelta(seconds=grace):
-            continue  # 过期放弃
+        is_manual = (r.kind or "auto") == "manual"
+        if now - r.fire_at > timedelta(seconds=MANUAL_GRACE_SECONDS if is_manual else grace):
+            continue  # 过期放弃（manual 宽限 30 分钟：睡眠/锁屏后仍应补响）
         task = db.get(Task, r.task_id)
         if task is None or task.is_deleted or task.done_at is not None or task.start_time is None:
             continue  # 幽灵提醒（任务已删/已完成/取消排期）
         eff = _effective_lead_min(task, lead)
         effective_lead = 0 if eff is None else eff  # "不提醒"档队列按准时入列
-        if task.recurrence_rule is None and r.fire_at != task.start_time - timedelta(
+        if not is_manual and task.recurrence_rule is None and r.fire_at != task.start_time - timedelta(
             minutes=effective_lead
         ):
             continue  # 单次任务已改期或档位漂移（系列重锚属边缘场景，不校验放行）
@@ -217,15 +222,22 @@ def claim_due(db: Session, now: datetime, grace: float = REMINDER_GRACE_SECONDS)
                     Project.id == task.project_id, Project.is_deleted.is_(False)
                 )
             )
+        # manual（稍后提醒）：原定时刻取 ref_start，展示“稍后提醒 · 原定 HH:MM”；
+        # start_at 不重算（任务本身没被移动）
+        start_at = (r.ref_start or task.start_time) if is_manual else (
+            r.fire_at + timedelta(minutes=effective_lead))
         event = {
             "task_id": task.id,
             "title": task.title,
-            "start_at": (r.fire_at + timedelta(minutes=effective_lead)).isoformat(),
+            "start_at": start_at.isoformat(),
             "end_at": task.end_time.isoformat() if task.end_time else None,
-            "lead_min": eff,  # 任务级有效提前量；None = "不提醒"档仅提示音（前端只播声音）
+            "lead_min": 0 if is_manual else eff,  # manual 无提前量语义，按"准时"呈现
             "recurrence": bool(task.recurrence_rule),  # 前端据此隐藏"完成"按钮（系列 V1 不支持）
             "project_name": project_name,
+            "manual": is_manual,
         }
+        if is_manual and r.ref_start is not None:
+            event["ref_start"] = r.ref_start.isoformat()
         pid = prep_map.get(task.id)
         if pid is not None:
             event["prep_proposal_id"] = pid
@@ -235,11 +247,37 @@ def claim_due(db: Session, now: datetime, grace: float = REMINDER_GRACE_SECONDS)
 
 
 def clear_pending(db: Session) -> int:
-    """清空待发队列（提醒提前量变更时调用：fire_at 口径已变，旧队列整体失效，
-    下轮扫描按新口径重算）。返回清除行数。表里只有待发行（发完即删），全删即清。"""
-    result = db.execute(sa_delete(Reminder))
+    """清空**自动**待发队列（提醒提前量变更时调用：fire_at 口径已变，旧队列
+    整体失效，下轮扫描按新口径重算）。manual（用户点的稍后提醒）保留——设置
+    变更不应吞噬用户主动延后的提醒（2026-11-17 批 1）。返回清除行数。"""
+    result = db.execute(sa_delete(Reminder).where(
+        or_(Reminder.kind.is_(None), Reminder.kind == "auto")))
     db.commit()
     return result.rowcount or 0
+
+
+def snooze_reminder(db: Session, task_id: str, minutes: int,
+                    ref_start: datetime | None = None) -> datetime:
+    """稍后提醒（2026-11-17 批 1）：只插 manual 提醒行，**不移动任务日程**。
+
+    先清该任务现有的 manual/auto 待发行：同一任务重复点稍后只保留最新一次，
+    且避免原自动提醒在同一时段再次弹出。返回新的 fire_at。"""
+    if minutes not in SNOOZE_MINUTES_CHOICES:
+        raise ValueError("稍后提醒仅支持 10 或 60 分钟")
+    task = db.get(Task, task_id)
+    if task is None or task.is_deleted:
+        raise ValueError("任务不存在")
+    if task.done_at is not None:
+        raise ValueError("任务已完成，无需提醒")
+    if task.start_time is None:
+        raise ValueError("任务尚未排期，无需提醒")
+    fire_at = datetime.now() + timedelta(minutes=minutes)
+    db.execute(sa_delete(Reminder).where(Reminder.task_id == task_id))
+    db.add(Reminder(task_id=task_id, fire_at=fire_at, kind="manual",
+                    ref_start=ref_start or task.start_time))
+    db.commit()
+    logger.info("稍后提醒：任务 id=%s %d 分钟后（fire_at=%s）", task_id, minutes, fire_at)
+    return fire_at
 
 
 # —— SSE 订阅广播（进程内队列；单前端客户端，无持久化无回放） ——

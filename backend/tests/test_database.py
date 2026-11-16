@@ -274,3 +274,43 @@ def test_clamp_clock_minutes_repairs_legacy_1440():
         assert tuple(row) == (1410, 1410, 1200)
         assert conn.execute(text("SELECT brief_min FROM custom_briefs")).scalar_one() == 1410
     _clamp_clock_minutes(engine)  # 幂等
+
+
+def test_migrate_onboarded_at_backfills_existing_row():
+    """老库已有设置行：补列时回填 created_at → 老用户不重看首启访谈。"""
+    from database import _migrate_app_settings_columns
+
+    engine = create_engine("sqlite://")
+    with engine.connect() as conn:
+        conn.execute(text(
+            "CREATE TABLE app_settings (id VARCHAR(10) PRIMARY KEY, "
+            "created_at DATETIME, updated_at DATETIME)"))
+        conn.execute(text(
+            "INSERT INTO app_settings VALUES ('default', '2026-01-02 03:04:05', "
+            "'2026-01-02 03:04:05')"))
+        conn.commit()
+    _migrate_app_settings_columns(engine)
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT onboarded_at, meeting_buffer_enabled FROM app_settings")).one()
+    assert str(row[0]).startswith("2026-01-02")  # 回填 created_at
+    assert row[1] == 1  # 缓冲开关默认开
+
+
+def test_migrate_reminder_columns_backfills_auto():
+    from database import _migrate_reminder_columns
+
+    engine = create_engine("sqlite://")
+    with engine.connect() as conn:
+        conn.execute(text(
+            "CREATE TABLE reminders (id VARCHAR(36) PRIMARY KEY, task_id VARCHAR(36), "
+            "fire_at DATETIME)"))
+        conn.execute(text(
+            "INSERT INTO reminders VALUES ('r1', 't1', '2026-01-01 10:00:00')"))
+        conn.commit()
+    _migrate_reminder_columns(engine)
+    with engine.connect() as conn:
+        row = conn.execute(text(
+            "SELECT kind, ref_start FROM reminders")).one()
+    assert row[0] == "auto" and row[1] is None
+    _migrate_reminder_columns(engine)  # 幂等

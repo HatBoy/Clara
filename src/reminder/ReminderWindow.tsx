@@ -13,12 +13,12 @@ import ReminderToast, {
   beginToastExit,
   scheduleToastExit,
   toToastItem,
-  toastActionPatch,
   type ReminderAction,
   type ReminderToastItem,
 } from "../components/ReminderToast";
 import {
   fetchSettings,
+  snoozeReminder,
   toFrontendSettings,
   updateTask,
   type ReminderEvent,
@@ -118,8 +118,11 @@ function ReminderWindow() {
   // 失败仅日志留卡（用户可手动关闭重试）
   const handleAction = (it: ReminderToastItem, action: ReminderAction) => {
     if (!it.taskId) return;
-    const { body, opts } = toastActionPatch(it, action);
-    updateTask(it.taskId, body, opts)
+    // 完成 = PATCH done；稍后 = /snooze（只推迟提醒，不移动日程，2026-11-17 批 1）
+    const req = action === "done"
+      ? updateTask(it.taskId, { done: true })
+      : snoozeReminder(it.taskId, action === "snooze10" ? 10 : 60, it.refStartIso);
+    req
       .then(() => {
         notifyPeer("reminder", { kind: "reload" });
         beginToastExit(it.key, setItems);

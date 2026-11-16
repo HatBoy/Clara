@@ -10,9 +10,12 @@
 import asyncio
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from sqlalchemy.orm import Session
 
+from database import get_db
+from schemas import ReminderSnoozeIn, ReminderSnoozeOut
 from services import reminders as reminders_service
 
 router = APIRouter(prefix="/api/reminders", tags=["reminders"])
@@ -40,3 +43,14 @@ async def stream_reminders():
             reminders_service.unsubscribe(q)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/{task_id}/snooze", response_model=ReminderSnoozeOut)
+def snooze(task_id: str, body: ReminderSnoozeIn, db: Session = Depends(get_db)):
+    """稍后提醒（10 / 60 分钟）：只延后提醒，不移动日程（2026-11-17 批 1）。"""
+    try:
+        fire_at = reminders_service.snooze_reminder(
+            db, task_id, body.minutes, ref_start=body.ref_start)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    return ReminderSnoozeOut(ok=True, fire_at=fire_at)

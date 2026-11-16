@@ -104,6 +104,8 @@ def _migrate_app_settings_columns(eng) -> None:
         "chat_autocompact_enabled": "BOOLEAN DEFAULT 1 NOT NULL",  # 2026-10-26：对话上下文自动压缩开关
         "coach_probe_deep": "BOOLEAN DEFAULT 0 NOT NULL",  # 2026-11-01：教练溯源深探（有界工具循环，默认关）
         "assistant_chime": "BOOLEAN DEFAULT 0 NOT NULL",  # 2026-11-04：助手消息轻提示音（通知分轨，默认关）
+        "onboarded_at": "DATETIME",  # 2026-11-17：首启访谈完成时刻（老库回填）
+        "meeting_buffer_enabled": "BOOLEAN DEFAULT 1 NOT NULL",  # 2026-11-17：会议缓冲块开关
     }
     missing = [name for name in required if name not in cols]
     if not missing:
@@ -111,6 +113,13 @@ def _migrate_app_settings_columns(eng) -> None:
     with eng.begin() as conn:
         for name in missing:
             conn.execute(text(f"ALTER TABLE app_settings ADD COLUMN {name} {required[name]}"))
+    if "onboarded_at" in missing:
+        # 老库已有设置行：回填 created_at，老用户不会重新看到首启访谈；
+        # 新库此刻还没有设置行（首次 GET 才 get_or_create），保持 NULL → 触发访谈
+        with eng.begin() as conn:
+            conn.execute(text(
+                "UPDATE app_settings SET onboarded_at = COALESCE(created_at, datetime('now','localtime')) "
+                "WHERE onboarded_at IS NULL"))
 
 
 def _clamp_clock_minutes(eng) -> None:
@@ -129,6 +138,29 @@ def _clamp_clock_minutes(eng) -> None:
                     f"UPDATE app_settings SET {col} = 1410 WHERE {col} >= 1440"))
         if "custom_briefs" in names:
             conn.execute(text("UPDATE custom_briefs SET brief_min = 1410 WHERE brief_min >= 1440"))
+
+
+def _migrate_reminder_columns(eng) -> None:
+    """reminders 表补 kind/ref_start（2026-11-17 批 1：稍后提醒 manual 行）。
+    机制同 app_settings 版；老行 kind 回填 auto。"""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(eng)
+    if "reminders" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("reminders")}
+    required = {
+        "kind": "VARCHAR(10) DEFAULT 'auto' NOT NULL",
+        "ref_start": "DATETIME",
+    }
+    missing = [name for name in required if name not in cols]
+    if not missing:
+        return
+    with eng.begin() as conn:
+        for name in missing:
+            conn.execute(text(f"ALTER TABLE reminders ADD COLUMN {name} {required[name]}"))
+        if "kind" in missing:
+            conn.execute(text("UPDATE reminders SET kind = 'auto' WHERE kind IS NULL"))
 
 
 def _migrate_integration_settings_columns(eng) -> None:
@@ -544,6 +576,7 @@ def init_db() -> None:
     _migrate_task_columns(engine)
     _migrate_app_settings_columns(engine)
     _clamp_clock_minutes(engine)
+    _migrate_reminder_columns(engine)
     _migrate_integration_settings_columns(engine)
     _migrate_mcp_server_columns(engine)
     _migrate_cli_tool_columns(engine)
