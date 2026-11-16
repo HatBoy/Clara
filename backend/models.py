@@ -323,6 +323,33 @@ class AppSettings(Base):
         return f"<AppSettings id={self.id}>"
 
 
+class AiUsageEvent(Base):
+    """AI 用量事件（2026-11-17 批 3）：每次 LLM 调用一行，设备本地遥测。
+
+    不参与同步（SYNC_EXCLUDED_TABLES）——高频追加行会让 WebDAV 体积快速增长，
+    且面板语义是「本设备花了多少」。成本按 LiteLLM 本地价格表估算；未知模型
+    cost_known=False、面板显示「—」。
+    """
+
+    __tablename__ = "ai_usage_events"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_new_uuid)
+    model_name: Mapped[str] = mapped_column(String(100), nullable=False, comment="LiteLLM 模型标识")
+    role: Mapped[str] = mapped_column(String(10), default="main", server_default="main", comment="main / aux")
+    feature: Mapped[str | None] = mapped_column(String(60), nullable=True, comment="调用点（system 提示词头）")
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="输入 token")
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="输出 token")
+    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="总 token")
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True, comment="估算成本（美元）")
+    cost_known: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"), comment="价格表是否覆盖")
+    usage_source: Mapped[str] = mapped_column(String(10), default="unknown", server_default="unknown", comment="provider / unknown")
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="耗时（毫秒）")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="发生时刻")
+
+    def __repr__(self) -> str:
+        return f"<AiUsageEvent {self.model_name} {self.total_tokens}>"
+
+
 class Reminder(Base):
     """日程提醒队列表（2026-09-15 增）：一行 = 一次待触发的提醒。
 

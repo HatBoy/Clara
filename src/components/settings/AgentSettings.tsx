@@ -6,6 +6,7 @@
 import { useState } from "react";
 import { testWeatherCity } from "../../lib/api";
 import type { Settings } from "../../lib/settings";
+import AiUsageCard from "./AiUsageCard";
 import { SetInput, SetToggle } from "./SettingsControls";
 import "./GeneralSettings.css";
 
@@ -78,6 +79,9 @@ function AgentSettings({
           </div>
         </div>
       </div>
+
+      {/* AI 用量与成本（2026-11-17 批 3）：本设备遥测聚合 */}
+      <AiUsageCard />
     </div>
   );
 }

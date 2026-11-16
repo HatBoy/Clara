@@ -19,6 +19,7 @@
     "@tauri-apps/plugin-notification": "^2.4.0",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-shell": "^2.3.6",
+    "html2canvas": "^1.4.1",
     "lucide-react": "^1.43.0",
     "lunar-typescript": "^1.8.6",
     "qrcode.react": "^4.2.0",

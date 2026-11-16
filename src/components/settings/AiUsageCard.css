@@ -1,0 +1,170 @@
+/* AI 用量卡（设置 → 智能体）：KPI 四格 + 按日柱条 + 按功能表 + 模型 chip。
+   容器复用 .settings-card，此处只加 .ai-usage-* 增量样式。 */
+.ai-usage-card {
+  gap: 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.ai-usage-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-usage-ico {
+  color: var(--text-muted);
+  vertical-align: -2px;
+  margin-right: 4px;
+}
+
+.ai-usage-range {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  background: var(--glass-track);
+  border-radius: 7px;
+  padding: 2px;
+}
+
+.ai-usage-range-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.ai-usage-range-btn.active {
+  background: var(--surface);
+  color: var(--text-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.ai-usage-loading {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  padding: 8px 0;
+}
+
+.ai-usage-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.ai-usage-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: var(--glass-track);
+}
+
+.ai-usage-kpi-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-usage-kpi-label {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.ai-usage-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 56px;
+  padding: 0 2px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ai-usage-bar {
+  flex: 1;
+  min-width: 1px;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+  opacity: 0.75;
+  transition: opacity 0.15s ease;
+}
+
+.ai-usage-bar:hover {
+  opacity: 1;
+}
+
+.ai-usage-bar.zero {
+  background: var(--border);
+  opacity: 1;
+}
+
+.ai-usage-table {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ai-usage-row {
+  display: grid;
+  grid-template-columns: 1fr 56px 72px 64px;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-primary);
+  padding: 3px 4px;
+  border-radius: 5px;
+}
+
+.ai-usage-row:not(.ai-usage-row-head):nth-child(even) {
+  background: var(--glass-track);
+}
+
+.ai-usage-row > span:not(:first-child) {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-usage-row > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-usage-row-head {
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.ai-usage-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.ai-usage-model-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  background: var(--glass-track);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.ai-usage-model-chip em {
+  font-style: normal;
+  color: var(--text-muted);
+}
+
+.ai-usage-note {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}

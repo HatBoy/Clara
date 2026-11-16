@@ -1767,6 +1767,7 @@ function App() {
             days={statsDays}
             onDaysChange={setStatsDays}
             onOpenProject={handleSelectProject}
+            onOpenMemory={() => handleOpenSettings("memory")}
             onOpenInbox={() => {
               setActiveView("inbox");
               setActiveProject(null);

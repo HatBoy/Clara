@@ -1,0 +1,203 @@
+/* 精力曲线卡（统计报告页）：头部 + 峰谷 chip + 星期 Tab + SVG 折线 + 白盒规则。
+   增量样式一律 .energy-* 前缀；卡片外壳复用 .report-card。颜色走设计变量。 */
+.energy-card {
+  gap: 10px;
+}
+
+.energy-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.energy-head-sub {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.energy-collecting {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  background: var(--accent-softer);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.energy-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.energy-chip {
+  font-size: 10.5px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.energy-chip.up {
+  color: var(--green);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.energy-chip.down {
+  color: var(--danger);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* 星期筛选：小号分段钮（与 .report-range 同视觉语言） */
+.energy-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--glass-track);
+  border-radius: 8px;
+  padding: 2px;
+  align-self: flex-start;
+}
+
+.energy-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.energy-tab:hover {
+  color: var(--text-primary);
+}
+
+.energy-tab.active {
+  background: var(--surface);
+  color: var(--text-primary);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.energy-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.energy-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+.energy-axis {
+  fill: var(--text-muted);
+  font-size: 9px;
+}
+
+.energy-line {
+  fill: none;
+  stroke: var(--chart-1, #6366f1);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.energy-area {
+  fill: var(--chart-1, #6366f1);
+  opacity: 0.08;
+}
+
+.energy-dot {
+  fill: var(--chart-1, #6366f1);
+}
+
+.energy-insights {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.energy-insights li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+
+.energy-insight-evi {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.energy-rules-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.energy-rules-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary, var(--text-primary));
+}
+
+.energy-memory-link {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--accent-deep);
+  font-size: 10.5px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 5px;
+}
+
+.energy-memory-link:hover {
+  background: var(--accent-softer);
+}
+
+.energy-rules {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.energy-rule {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: var(--glass-track);
+}
+
+.energy-rule-content {
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+
+.energy-rule-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.energy-rule-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+}

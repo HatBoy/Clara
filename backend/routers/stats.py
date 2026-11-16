@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from database import get_db
-from schemas import StatsMessageIn, StatsMessageOut, StatsReportOut
+from schemas import StatsImageExportIn, StatsMessageIn, StatsMessageOut, StatsReportOut
 from services import stats as stats_service
 from services.llm import NoActiveModelError, call_llm_stream
 from services.model_providers import get_active_model
@@ -293,3 +293,30 @@ def clear_stats_messages(db: Session = Depends(get_db)):
     db.execute(delete(StatsMessage))
     db.commit()
     note_table_cleared("stats_messages")
+
+
+@router.post("/export-image")
+def export_image(body: StatsImageExportIn):
+    """统计报告整页 PNG 导出（2026-11-17 批 3）：前端截图 → 后端校验落盘。"""
+    try:
+        return stats_service.export_stats_png(body.path, body.data_base64)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+
+@router.get("/ai-usage")
+def get_ai_usage(days: int = 30, db: Session = Depends(get_db)):
+    """AI 用量与成本（2026-11-17 批 3）：本设备统计（用量表不参与同步）。"""
+    if days not in (7, 30, 90):
+        raise HTTPException(status_code=422, detail="days 仅支持 7 / 30 / 90")
+    from services import llm_usage
+
+    return llm_usage.usage_summary(db, days=days)
+
+
+@router.get("/energy-profile")
+def get_energy_profile(days: int = 30, db: Session = Depends(get_db)):
+    """精力画像（2026-11-17 批 3）：行为遥测派生的完成倾向曲线 + 白盒规则证据。"""
+    if days not in (7, 30, 90):
+        raise HTTPException(status_code=422, detail="days 仅支持 7 / 30 / 90")
+    return stats_service.energy_profile(db, days=days)

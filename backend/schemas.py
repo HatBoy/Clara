@@ -476,6 +476,13 @@ class SettingsUpdate(BaseModel):
     meeting_buffer_enabled: bool | None = None
 
 
+class StatsImageExportIn(BaseModel):
+    """统计报告 PNG 导出（2026-11-17 批 3）：前端 html2canvas 产物 base64。"""
+
+    path: str
+    data_base64: str
+
+
 class ReminderSnoozeIn(BaseModel):
     """稍后提醒入参（2026-11-17 批 1）：只允许 10 / 60 分钟两档。"""
 

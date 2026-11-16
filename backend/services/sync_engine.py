@@ -52,7 +52,11 @@ logger = logging.getLogger(__name__)
 # - sync_settings：同步自身状态（last_sync_*），同步它会触发无限空转
 # - workflow_runs：设备本地执行账本（"今日已跑"认领）——跨设备同步会让先同步
 #   到的设备抑制另一台的自动备份/简报槽位
-SYNC_EXCLUDED_TABLES = {"sync_settings", "workflow_runs"}
+SYNC_EXCLUDED_TABLES = {
+    "sync_settings",     # 同步自身状态
+    "workflow_runs",     # 设备本地执行账本
+    "ai_usage_events",   # 设备本地 AI 用量遥测（2026-11-17 批 3）
+}
 SYNC_TABLES: list[str] = [
     t.name for t in Base.metadata.sorted_tables if t.name not in SYNC_EXCLUDED_TABLES
 ]

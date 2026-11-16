@@ -1485,3 +1485,131 @@ def split_ask_reply(text: str) -> tuple[str, list[dict]]:
     模式无块零影响。router 消费——reply 帧发剥离后正文，facts 帧带候选。"""
     body, structured = _parse_structured_tail(text)
     return body, structured.get("fact_candidates") or []
+
+
+# —— 精力画像（2026-11-17 批 3）：行为遥测派生的白盒曲线 ——
+
+ENERGY_SAMPLE_MIN = 3       # 每桶样本门槛（不足不给分）
+ENERGY_TOTAL_MIN = 8        # 总样本门槛（不足整体标 collecting）
+_ENERGY_DEFER_KINDS = ("reschedule", "unschedule", "abandon")
+
+
+def energy_profile(db: Session, *, days: int = 30) -> dict:
+    """精力曲线 + Energy Profile 白盒（只读派生，无新表）。
+
+    数据源：BehaviorEvent 的完成/改期事件按实例原时刻落 (weekday, hour) 桶；
+    分数 = 完成 / (完成 + 改期)（样本 ≥3 才给分）；总样本 ≥8 才给峰谷。
+    白盒证据：MemoryRule 中 slot=rhythm 的规则原文/置信度/证据。
+    """
+    from datetime import date as _date
+
+    since = datetime.now() - timedelta(days=days)
+    evs = list(db.scalars(
+        select(BehaviorEvent).where(BehaviorEvent.created_at >= since)))
+    buckets: dict[tuple[int, int], dict] = {}
+    for e in evs:
+        anchor = e.prev_start or e.created_at
+        if anchor is None:
+            continue
+        hour = anchor.hour
+        if hour < 6 or hour > 23:
+            continue
+        b = buckets.setdefault((anchor.weekday(), hour), {"done": 0, "defer": 0})
+        if e.kind == "done":
+            b["done"] += 1
+        elif e.kind in _ENERGY_DEFER_KINDS:
+            b["defer"] += 1
+
+    slots: list[dict] = []
+    by_weekday: dict[int, dict] = {i: {"done": 0, "defer": 0} for i in range(7)}
+    by_hour: dict[int, dict] = {}
+    for (wd, hour), b in buckets.items():
+        sample = b["done"] + b["defer"]
+        score = round(100 * b["done"] / sample) if sample >= ENERGY_SAMPLE_MIN else None
+        slots.append({"weekday": wd, "hour": hour, "done": b["done"],
+                      "defer": b["defer"], "sample": sample, "score": score})
+        by_weekday[wd]["done"] += b["done"]
+        by_weekday[wd]["defer"] += b["defer"]
+        hb = by_hour.setdefault(hour, {"done": 0, "defer": 0})
+        hb["done"] += b["done"]
+        hb["defer"] += b["defer"]
+    slots.sort(key=lambda s: (s["weekday"], s["hour"]))
+
+    total = sum(b["done"] + b["defer"] for b in buckets.values())
+    hour_scores = [
+        (h, round(100 * b["done"] / (b["done"] + b["defer"])), b["done"] + b["defer"])
+        for h, b in by_hour.items() if b["done"] + b["defer"] >= ENERGY_SAMPLE_MIN
+    ]
+    peak = low = None
+    if total >= ENERGY_TOTAL_MIN and hour_scores:
+        peak = max(hour_scores, key=lambda x: (x[1], x[2]))
+        low = min(hour_scores, key=lambda x: (x[1], x[2]))
+
+    from models import MemoryRule
+
+    rules = list(db.scalars(
+        select(MemoryRule).where(MemoryRule.slot == "rhythm")))
+    profile_rules = [{
+        "id": r.id, "category": r.category, "content": r.content,
+        "slot": r.slot, "source": r.source, "confidence": r.confidence,
+        "evidence": r.evidence,
+        "last_confirmed_at": r.last_confirmed_at.isoformat() if r.last_confirmed_at else None,
+        "structured_anchor": r.structured_anchor,
+    } for r in rules]
+
+    insights: list[dict] = []
+    if peak:
+        insights.append({"text": f"你的完成倾向高峰约在 {peak[0]:02d}:00（完成倾向 {peak[1]}%）",
+                         "evidence": f"{peak[2]} 次完成/改期样本"})
+    if low and peak and low[0] != peak[0]:
+        insights.append({"text": f"低谷约在 {low[0]:02d}:00（完成倾向 {low[1]}%），"
+                                 "高认知任务尽量避开",
+                         "evidence": f"{low[2]} 次完成/改期样本"})
+
+    return {
+        "window_days": days,
+        "status": "ok" if total >= ENERGY_TOTAL_MIN else "collecting",
+        "threshold": ENERGY_SAMPLE_MIN,
+        "total_threshold": ENERGY_TOTAL_MIN,
+        "sample_count": total,
+        "hours": list(range(6, 24)),
+        "slots": slots,
+        "by_weekday": [{"weekday": i, **by_weekday[i]} for i in range(7)],
+        "peak": ({"hour": peak[0], "score": peak[1], "sample": peak[2]} if peak else None),
+        "low": ({"hour": low[0], "score": low[1], "sample": low[2]} if low else None),
+        "profile": {
+            "derived_from": "behavior_events+memory_rules",
+            "note": "分数 = 该时段完成 / (完成+改期)；每时段样本≥3 才给分，总量≥8 才给峰谷",
+            "rules": profile_rules,
+        },
+        "insights": insights,
+    }
+
+
+def export_stats_png(path: str, data_base64: str) -> dict:
+    """把前端截图 base64 写成 PNG（2026-11-17 批 3）。
+
+    安全闸：绝对路径 + .png 后缀 + 父目录存在 + 解码上限 15MB + PNG 魔数校验
+    （与 export_report_md 同款路径纪律；异常抛 ValueError → router 422）。
+    """
+    import base64
+    from pathlib import Path
+
+    out = Path(path)
+    if not out.is_absolute():
+        raise ValueError("导出路径须为绝对路径")
+    if out.suffix.lower() != ".png":
+        raise ValueError("导出文件须以 .png 结尾")
+    if not out.parent.is_dir():
+        raise ValueError(f"目标目录不存在：{out.parent}")
+    try:
+        raw = base64.b64decode(data_base64, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise ValueError("图片数据无法解码") from exc
+    if len(raw) > 15 * 1024 * 1024:
+        raise ValueError("图片超过 15MB 上限")
+    if not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise ValueError("不是有效的 PNG 图片")
+    out.write_bytes(raw)
+    logger.info("统计报告图片已导出：%s（%.1f MB）", out, len(raw) / 1048576)
+    return {"ok": True, "path": str(out), "size_bytes": len(raw)}

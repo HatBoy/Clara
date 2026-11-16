@@ -78,6 +78,54 @@
   color: var(--accent-deep);
 }
 
+/* 整页截图导出（2026-11-17 批 3）：文字钮 + 结果提示（3s 自清） */
+.report-export-image {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.report-export-image:hover:not(:disabled) {
+  background: var(--accent-softer);
+  color: var(--accent-deep);
+  border-color: var(--accent-border);
+}
+
+.report-export-image:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.report-export-hint.ok {
+  color: var(--green);
+}
+
+.report-export-hint.bad {
+  color: var(--danger);
+}
+
+/* 捕获态：关毛玻璃与动画、隐藏滚动条（html2canvas 还原退化样式的兜底） */
+.report-capturing .report-body-inner,
+.report-capturing .report-body-inner * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  animation: none !important;
+  transition: none !important;
+}
+
+.report-capturing .report-body {
+  scrollbar-width: none;
+}
+
 /* 滚动主体：细滚动条同 .schedule-scroll 全局惯例（5px、默认隐藏悬停浮现） */
 .report-body {
   flex: 1;

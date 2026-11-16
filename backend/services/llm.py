@@ -365,6 +365,46 @@ def init_llm(
     return llm
 
 
+def _usage_dict(obj) -> dict | None:
+    """从消息对象取 provider usage（langchain usage_metadata 优先，回落 token_usage）。"""
+    um = getattr(obj, "usage_metadata", None)
+    if isinstance(um, dict) and um:
+        return um
+    meta = getattr(obj, "response_metadata", None) or {}
+    for key in ("token_usage", "usage"):
+        value = meta.get(key)
+        if isinstance(value, dict) and value:
+            return value
+    return None
+
+
+def _record_stream_usage(client, usage: dict | None, feature: str, t0: float) -> None:
+    try:
+        from services.llm_usage import record_usage
+
+        record_usage(
+            model_name=getattr(client, "model", "") or "", role="main",
+            feature=feature, usage=usage,
+            latency_ms=int((time.perf_counter() - t0) * 1000),
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("流式用量打点异常（忽略）", exc_info=True)
+
+
+def _record_usage(client, msg, role: str, feature: str, t0: float) -> None:
+    """用量打点（2026-11-17 批 3）：失败静默，绝不影响调用。"""
+    try:
+        from services.llm_usage import record_usage
+
+        record_usage(
+            model_name=getattr(client, "model", "") or "",
+            role=role, feature=feature, usage=_usage_dict(msg),
+            latency_ms=int((time.perf_counter() - t0) * 1000),
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("用量打点异常（忽略）", exc_info=True)
+
+
 def call_llm_aux(
     messages: list[dict],
     *,
@@ -386,8 +426,10 @@ def call_llm_aux(
     tag = _log_enter(messages, json_mode=json_mode, max_tokens=max_tokens)
     t0 = time.perf_counter()
     try:
-        out = init_llm(role="aux", json_mode=json_mode,
-                       max_tokens=max_tokens).invoke(messages).content or ""
+        client = init_llm(role="aux", json_mode=json_mode, max_tokens=max_tokens)
+        msg = client.invoke(messages)
+        out = msg.content or ""
+        _record_usage(client, msg, "aux", tag, t0)
     except NoActiveModelError:
         raise
     except Exception as exc:
@@ -417,20 +459,28 @@ def call_llm(
     """
     tag = _log_enter(messages, json_mode=json_mode, max_tokens=max_tokens)
     t0 = time.perf_counter()
-    out = init_llm(json_mode=json_mode, max_tokens=max_tokens).invoke(messages).content or ""
+    client = init_llm(json_mode=json_mode, max_tokens=max_tokens)
+    msg = client.invoke(messages)
+    out = msg.content or ""
+    _record_usage(client, msg, "main", tag, t0)
     # 空正文重试（2026-11-16 优化批 2）：推理模型把 max_tokens 全花在思考上时会
     # 返回空 content。结构化/小预算调用再给一次更大的输出预算（思考参数仍按
     # 小调用规则压掉），仍空则原样返回由调用方降级。
     if not out.strip() and (json_mode or (max_tokens is not None and max_tokens < _THINKING_MIN_MAX_TOKENS)):
         retry_max = max(max_tokens or 0, _EMPTY_RETRY_MAX_TOKENS)
         logger.info("[llm] 空正文，按更大预算重试一次（max=%d）", retry_max)
-        out = init_llm(json_mode=json_mode, max_tokens=retry_max).invoke(messages).content or ""
+        retry_t0 = time.perf_counter()
+        client2 = init_llm(json_mode=json_mode, max_tokens=retry_max)
+        msg2 = client2.invoke(messages)
+        out = msg2.content or ""
+        _record_usage(client2, msg2, "main", tag, retry_t0)
     logger.info("[llm] 调用 %s → %d 字符（%.1fs）", tag, len(out),
                 time.perf_counter() - t0)
     return out
 
 
-def stream_model(model, messages: list[dict], *, on_chunk: Callable[[str], None]) -> str:
+def stream_model(model, messages: list[dict], *, on_chunk: Callable[[str], None],
+                 usage_sink: Callable[[dict | None], None] | None = None) -> str:
     """在给定模型实例上流式驱动 + 前导 <think> 三态过滤（2026-11-01 优化批 6
     从 call_llm_stream 抽出的内核）——smalltalk 经 init_llm(temperature=0.7)
     直用（闲聊自然度：参数策略注释预留的「闲聊可显式调高」首次落地），过滤
@@ -444,7 +494,11 @@ def stream_model(model, messages: list[dict], *, on_chunk: Callable[[str], None]
             parts.append(text)
             on_chunk(text)
 
+    last_usage: dict | None = None
     for chunk in model.stream(messages):
+        usage = _usage_dict(chunk)
+        if usage:
+            last_usage = usage  # 流式 usage 常在末帧；保留最后一个非空值
         delta = chunk.content
         if not (isinstance(delta, str) and delta):
             continue
@@ -476,6 +530,8 @@ def stream_model(model, messages: list[dict], *, on_chunk: Callable[[str], None]
         # 流在未决态结束（总输出恰为 "<think>" 真前缀，如 "<th"）：按正文收尾
         # （打字机已随流终结束，不再补回调，返回值完整性由 parts 保证）
         parts.append(buf)
+    if usage_sink is not None:
+        usage_sink(last_usage)
     return "".join(parts)
 
 
@@ -507,8 +563,10 @@ def call_llm_stream(
     tag = _log_enter(messages, json_mode=json_mode, max_tokens=max_tokens)
     t0 = time.perf_counter()
     # 内核抽 stream_model（2026-11-01 批 6：smalltalk 温度直用同款过滤）
-    out = stream_model(init_llm(json_mode=json_mode, max_tokens=max_tokens),
-                       messages, on_chunk=on_chunk)
+    client = init_llm(json_mode=json_mode, max_tokens=max_tokens)
+    out = stream_model(client, messages, on_chunk=on_chunk,
+                       usage_sink=lambda usage: _record_stream_usage(
+                           client, usage, tag, t0))
     logger.info("[llm] 流式调用 %s → %d 字符（%.1fs）", tag, len(out),
                 time.perf_counter() - t0)
     return out

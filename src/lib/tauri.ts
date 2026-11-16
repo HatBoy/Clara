@@ -312,6 +312,22 @@ export async function saveStatsReportPath(defaultPath: string): Promise<string |
   }
 }
 
+/** 统计报告图片导出的保存对话框（.png，2026-11-17 批 3）。返回用户选定路径；
+ *  取消 / 非 Tauri / 失败均 null（调用方放弃导出）。 */
+export async function saveStatsImagePath(defaultPath: string): Promise<string | null> {
+  if (!isTauri()) return null;
+  try {
+    const picked = await save({
+      defaultPath,
+      filters: [{ name: "PNG 图片", extensions: ["png"] }],
+    });
+    return typeof picked === "string" ? picked : null;
+  } catch (e) {
+    console.error("打开报告图片导出对话框失败", e);
+    return null;
+  }
+}
+
 /**
  * 备份恢复的进程编排（打包版）：杀本应用管理的边车 → 等端口释放 → 重新拉起，
  * 新进程启动时应用 restore_staging 完成数据替换。dev 形态 / 复用外部实例时

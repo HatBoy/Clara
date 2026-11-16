@@ -412,6 +412,83 @@ export const exportStatsReport = (id: string, path: string) =>
   request<{ ok: boolean; path: string; size_bytes: number }>(
     "POST", `/api/stats/reports/${id}/export`, { path }, 30_000);
 
+// —— 精力画像（GET /api/stats/energy-profile，2026-11-17 批 3）——
+
+/** 精力时段桶：score = 完成/(完成+改期)，样本 <3 时为 null */
+export type EnergySlot = {
+  weekday: number;
+  hour: number;
+  done: number;
+  defer: number;
+  sample: number;
+  score: number | null;
+};
+
+export type EnergyRule = {
+  id: string;
+  category: string;
+  content: string;
+  slot: string;
+  source: string;
+  confidence: number;
+  evidence: string | null;
+  last_confirmed_at: string | null;
+  structured_anchor?: unknown;
+};
+
+export type EnergyProfile = {
+  window_days: number;
+  status: "ok" | "collecting";
+  threshold: number;
+  total_threshold: number;
+  sample_count: number;
+  hours: number[];
+  slots: EnergySlot[];
+  by_weekday: { weekday: number; done: number; defer: number }[];
+  peak: { hour: number; score: number; sample: number } | null;
+  low: { hour: number; score: number; sample: number } | null;
+  profile: { derived_from: string; note: string; rules: EnergyRule[] };
+  insights: { text: string; evidence: string }[];
+};
+
+export const fetchEnergyProfile = (days: 7 | 30 | 90) =>
+  getJson<EnergyProfile>(`/api/stats/energy-profile?days=${days}`);
+
+// —— AI 用量与成本（GET /api/stats/ai-usage，2026-11-17 批 3，本设备统计）——
+
+export type AiUsageBucket = { calls: number; tokens: number; cost_usd: number };
+
+export type AiUsageSummary = {
+  days: number;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  unknown_usage_calls: number;
+  unknown_cost_calls: number;
+  by_day: ({ date: string } & AiUsageBucket)[];
+  by_model: ({ model_name: string } & AiUsageBucket)[];
+  by_feature: ({ feature: string } & AiUsageBucket)[];
+  recent: {
+    created_at: string;
+    model_name: string;
+    feature: string | null;
+    role: string;
+    total_tokens: number | null;
+    cost_usd: number | null;
+    cost_known: boolean;
+  }[];
+};
+
+export const fetchAiUsage = (days: 7 | 30 | 90) =>
+  getJson<AiUsageSummary>(`/api/stats/ai-usage?days=${days}`);
+
+/** 统计报告整页截图落盘（前端 html2canvas → base64 → 后端校验 .png/大小/魔数）。 */
+export const exportStatsImage = (path: string, dataBase64: string) =>
+  request<{ ok: boolean; path: string; size_bytes: number }>(
+    "POST", "/api/stats/export-image", { path, data_base64: dataBase64 }, 30_000);
+
 /** 建议打卡：确认某条建议的执行情况（下期报告对照点评的反馈信号）。 */
 export const setStatsAdvice = (
   id: string,

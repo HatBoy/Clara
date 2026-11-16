@@ -16,6 +16,7 @@ import {
   Flame,
   HeartPulse,
   HelpCircle,
+  ImageDown,
   Inbox,
   LineChart,
   ListChecks,
@@ -31,6 +32,7 @@ import EmptyState from "./EmptyState";
 import remarkGfm from "remark-gfm";
 import {
   createTask,
+  exportStatsImage,
   exportStatsReport,
   fetchStatsInsight,
   fetchStatsReports,
@@ -41,7 +43,8 @@ import {
   type StatsReportRow,
   type StatsSummary,
 } from "../lib/api";
-import { saveStatsReportPath } from "../lib/tauri";
+import { saveStatsImagePath, saveStatsReportPath } from "../lib/tauri";
+import EnergyCurve from "./EnergyCurve";
 import { HBars } from "./StatsCharts";
 import HealthRadar from "./HealthRadar";
 import HabitHeatmap from "./HabitHeatmap";
@@ -266,6 +269,7 @@ export default function ReportsPanel({
   onOpenProject,
   onOpenInbox,
   refreshKey,
+  onOpenMemory,
   chatOpen,
   onToggleChat,
   style,
@@ -273,6 +277,8 @@ export default function ReportsPanel({
   /** 统计范围（受控：App 层持有，右侧问答面板共享同一范围） */
   days: RangeDays;
   onDaysChange: (d: RangeDays) => void;
+  /** 精力曲线卡「去记忆画像管理」（App 打开设置 → 记忆画像分区） */
+  onOpenMemory?: () => void;
   /** 指标下钻：「时间花费 by 项目」横条点击 → 项目页（「未归类」条不可点） */
   onOpenProject?: (name: string) => void;
   /** 指标下钻：「收件箱积压」KPI 点击 → 收件箱页 */
@@ -301,6 +307,12 @@ export default function ReportsPanel({
   const [hint, setHint] = useState<{ id: string; ok: boolean; text: string } | null>(null);
   const copyTimer = useRef<number | undefined>(undefined);
   const hintTimer = useRef<number | undefined>(undefined);
+  // 整页截图导出（2026-11-17 批 3）：捕获中挂 .report-capturing（关毛玻璃/动画），
+  // 截图元素 = .report-body-inner（含 AI 洞察与全部图表）
+  const bodyInnerRef = useRef<HTMLDivElement>(null);
+  const [capturing, setCapturing] = useState(false);
+  const [imgHint, setImgHint] = useState<{ ok: boolean; text: string } | null>(null);
+  const imgHintTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     let alive = true;
@@ -339,6 +351,7 @@ export default function ReportsPanel({
     () => () => {
       window.clearTimeout(copyTimer.current);
       window.clearTimeout(hintTimer.current);
+      window.clearTimeout(imgHintTimer.current);
     },
     [],
   );
@@ -389,6 +402,45 @@ export default function ReportsPanel({
     }
   };
 
+  /** 整页截图导出 PNG：先出保存对话框（取消即止），再截图投递后端落盘 */
+  const doExportImage = async () => {
+    const el = bodyInnerRef.current;
+    if (!el || capturing) return;
+    const path = await saveStatsImagePath(
+      `clara-统计报告-近${days}天-${new Date().toISOString().slice(0, 10)}.png`,
+    );
+    if (!path) return;
+    setCapturing(true);
+    try {
+      await document.fonts.ready;
+      // 两帧等待：让 .report-capturing（去毛玻璃/动画）先完成一次布局与绘制
+      await new Promise<void>((r) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => r())),
+      );
+      const { default: html2canvas } = await import("html2canvas");
+      const side = Math.max(el.scrollWidth, el.scrollHeight, 1);
+      const canvas = await html2canvas(el, {
+        scale: Math.min(2, 16000 / side),
+        backgroundColor: getComputedStyle(document.documentElement)
+          .getPropertyValue("--bg-app")
+          .trim(),
+        logging: false,
+        windowWidth: el.scrollWidth,
+        windowHeight: el.scrollHeight,
+      });
+      const dataUrl = canvas.toDataURL("image/png");
+      await exportStatsImage(path, dataUrl.slice(dataUrl.indexOf(",") + 1));
+      setImgHint({ ok: true, text: "已导出图片" });
+    } catch (e) {
+      const detail = (e as Error & { detail?: string }).detail;
+      setImgHint({ ok: false, text: detail || "导出图片失败" });
+    } finally {
+      setCapturing(false);
+      window.clearTimeout(imgHintTimer.current);
+      imgHintTimer.current = window.setTimeout(() => setImgHint(null), 3000);
+    }
+  };
+
   const ov = summary?.overview;
   const rhythm = summary?.rhythm;
   const habits = summary?.habits;
@@ -397,7 +449,7 @@ export default function ReportsPanel({
   const history = reports.slice(1);
 
   return (
-    <section className="report-page" style={style}>
+    <section className={`report-page${capturing ? " report-capturing" : ""}`} style={style}>
       <header className="report-page-head">
         <span className="report-page-title">统计报告</span>
         <div className="report-head-controls">
@@ -413,6 +465,24 @@ export default function ReportsPanel({
               </button>
             ))}
           </div>
+          <button
+            type="button"
+            className="report-export-image"
+            onClick={doExportImage}
+            disabled={capturing || !summary}
+            title="导出整页为 PNG 图片"
+          >
+            {imgHint ? (
+              <span className={`report-export-hint${imgHint.ok ? " ok" : " bad"}`}>
+                {imgHint.text}
+              </span>
+            ) : (
+              <>
+                <ImageDown size={14} strokeWidth={2} />
+                {capturing ? "截图中…" : "导出图片"}
+              </>
+            )}
+          </button>
           <button
             type="button"
             className={`report-ask-toggle${chatOpen ? " active" : ""}`}
@@ -438,7 +508,7 @@ export default function ReportsPanel({
             <div className="report-loading">加载统计数据中…</div>
           )
         ) : (
-          <div className="report-body-inner">
+          <div className="report-body-inner" ref={bodyInnerRef}>
             {/* ① AI 洞察：一卡三段（总评/值得关注/本期建议/习惯洞察，Markdown）；
                 后端 1 小时缓存，刷新钮跳过缓存手动重新生成 */}
             <section className="report-card report-insight">
@@ -580,6 +650,9 @@ export default function ReportsPanel({
                 </button>
               </div>
             </div>
+
+            {/* ②′ 精力曲线（2026-11-17 批 3）：行为遥测派生的完成倾向 + 白盒规则 */}
+            <EnergyCurve days={days} onOpenMemory={onOpenMemory} />
 
             {/* ③ 时间去向：趋势折线 + 习惯热力图同排（两张时间分布图互补）→
                 项目花费/优先级分布两列 */}
