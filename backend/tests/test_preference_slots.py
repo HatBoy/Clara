@@ -59,6 +59,21 @@ def test_parse_three_guards_reject():
     ]) == []
 
 
+def test_low_confidence_ai_rule_not_hard_gate():
+    """低置信 AI 学习规则只作文本参考，不产硬避让窗（2026-11-16 优化批 2）；
+    高置信 AI 规则与用户明示规则保留硬闸。"""
+    assert parse_avoid_windows([
+        "[排期偏好·AI学习·置信0.55] 周五下午别排事",
+        "[排期偏好·AI学习·置信0.79] 每天晚上不排事",
+    ]) == []
+    high = parse_avoid_windows(["[排期偏好·AI学习·置信0.9] 周五下午别排事"])
+    assert high and high[0]["weekday"] == 4
+    user = parse_avoid_windows(["周五下午别排事"])
+    assert user and user[0]["weekday"] == 4
+    chat = parse_avoid_windows(["[排期偏好·聊天设置] 周五下午别排事"])
+    assert chat and chat[0]["weekday"] == 4
+
+
 def test_parse_cache_signature_invalidation():
     a = parse_avoid_windows(["周五下午别排事"])
     assert parse_avoid_windows(["周五下午别排事"]) is a  # 同签名命中缓存

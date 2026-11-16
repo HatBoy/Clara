@@ -414,7 +414,7 @@ def _collect_remote(db: Session, now: datetime,
     except Exception as e:
         logger.warning("Composio 连接列表拉取失败", exc_info=True)
         results.append(("composio", "composio", "Composio",
-                        (False, None, None, integrations._translate_upstream(e), False)))
+                        (False, None, None, str(integrations._translate_upstream(e)), False)))
         connections = []
     client = None
     if connections:
@@ -423,7 +423,7 @@ def _collect_remote(db: Session, now: datetime,
                 integrations.get_key_settings(db).composio_api_key)
         except Exception as e:
             results.append(("composio", "composio", "Composio",
-                            (False, None, None, integrations._translate_upstream(e), False)))
+                            (False, None, None, str(integrations._translate_upstream(e)), False)))
             connections = []
     for conn in connections:
         row = _source_row(db, conn.id)
@@ -694,26 +694,34 @@ def _finalize_source(db: Session, key: str, kind: str, name: str,
     回写/台账单源失败 rollback 降级不毁整批——指纹在两 db 步之间戳，回放条目自带
     fingerprint（模板 meta 消费不缺键）。"""
     ok, items, note, error, clipped = outcome
-    try:
-        streak = _note_attempt(db, key, ok, error)
-    except Exception:
-        logger.warning("源 %s 尝试回写失败（数据照常返回）", key, exc_info=True)
-        db.rollback()
-        streak = 0
     entry = {"source": name, "kind": kind, "ok": ok, "error": error, "note": note,
-             "key": key, "fail_streak": streak, "deduped": 0}
+             "key": key, "fail_streak": 0, "deduped": 0}
     if not ok:
+        try:
+            entry["fail_streak"] = _note_attempt(db, key, False, error)
+        except Exception:
+            logger.warning("源 %s 尝试回写失败（数据照常返回）", key, exc_info=True)
+            db.rollback()
         entry["items"] = []
         return entry, False
     items = items or []
     for it in items:
         it["fingerprint"] = _fingerprint(key, it)
+    ledger_ok = True
     try:
         kept, deduped = _filter_and_keepalive(db, key, items)
     except Exception:
         logger.warning("源 %s 台账过滤失败（本轮回放全部条目）", key, exc_info=True)
         db.rollback()
         kept, deduped = items, 0
+        ledger_ok = False
+    # 游标推进放在台账落库之后（2026-11-16 优化批 2）：台账失败时不推进增量
+    # 窗口——否则这段条目既没进台账也不再被下一轮窗口覆盖（永久漏采）。
+    try:
+        entry["fail_streak"] = _note_attempt(db, key, True, advance_cursor=ledger_ok)
+    except Exception:
+        logger.warning("源 %s 尝试回写失败（数据照常返回）", key, exc_info=True)
+        db.rollback()
     entry["items"] = kept
     entry["deduped"] = deduped
     return entry, clipped
@@ -755,9 +763,14 @@ def _auth_failure(error: str) -> bool:
     return any(m in low for m in _AUTH_ERROR_MARKERS)
 
 
-def _mark_auth(error: str) -> str:
+def _mark_auth(error: str | Exception) -> str:
     """认证类错误统一打 [认证] 前缀（幂等）：落库 last_error 与返回 LLM 的 error
-    同源可辨——综述据此提示用户重配 Key，补采模型据此换源不再重试本源。"""
+    同源可辨——综述据此提示用户重配 Key，补采模型据此换源不再重试本源。
+
+    2026-11-16 优化批 2：接受异常对象并先 str 化——integrations._translate_upstream
+    返回的是 UpstreamError 实例，此前直接 .startswith/.lower 会 AttributeError，
+    认证分类与降级链在 Composio 异常路径整体失效。"""
+    error = str(error) if isinstance(error, Exception) else (error or "")
     if error and not error.startswith("[认证]") and _auth_failure(error):
         return f"[认证] {error}"
     return error
@@ -783,23 +796,29 @@ def _resolve_action(row: IngestSource | None, default) -> tuple | None:
     return default
 
 
-def _note_attempt(db: Session, key: str, ok: bool, error: str | None = None) -> int:
+def _note_attempt(db: Session, key: str, ok: bool, error: str | None = None, *,
+                  advance_cursor: bool = True) -> int:
     """回写一次尝试（get_or_create 源行）：成功清零连败 + 记 success/ok_at + 清 error；
-    失败连败 +1 + 记中文摘要（≤200）。返回本次后的连败计数。"""
+    失败连败 +1 + 记中文摘要（≤200）。返回本次后的连败计数。
+
+    advance_cursor=False（2026-11-16 优化批 2）：只记健康不推进增量游标——
+    last_success_at 同时是 _window_for 的窗口锚，只读探测（probe_source）成功
+    若推进它，下次定时采集会跳过探测到采集之间的新条目（数据丢失级）。"""
     row = _source_row(db, key)
     if row is None:
         row = IngestSource(source_key=key)
         db.add(row)
     row.last_attempt_at = datetime.now()
     if ok:
-        row.last_success_at = row.last_attempt_at
+        if advance_cursor:
+            row.last_success_at = row.last_attempt_at
         row.last_ok_at = row.last_attempt_at
         row.fail_streak = 0
         row.last_error = None
     else:
         row.fail_streak = (row.fail_streak or 0) + 1
         if error:
-            row.last_error = error[:200]
+            row.last_error = str(error)[:200]
     db.commit()
     return row.fail_streak or 0
 
@@ -1226,7 +1245,8 @@ def list_source_actions(db) -> list[dict]:
     return out
 
 
-def call_readonly_tool(db: Session, *, key: str, tool: str, arguments) -> dict:
+def call_readonly_tool(db: Session, *, key: str, tool: str, arguments,
+                       track_cursor: bool = True) -> dict:
     """受控单源单工具补采（LLM 不可绕过的 service 层硬闸，提示词只是软约束）。
 
     硬闸五条：① key 解析到启用源（local_folder 拒绝——纯函数已全量直采，补采无意义）
@@ -1342,7 +1362,8 @@ def call_readonly_tool(db: Session, *, key: str, tool: str, arguments) -> dict:
             raw = _json_or_text(payload["result"])
     except Exception as e:
         logger.warning("补采 %s/%s 失败", key, tool, exc_info=True)
-        msg = integrations._translate_upstream(e) if kind == "composio" else mcp_servers._describe_error(e)
+        msg = (str(integrations._translate_upstream(e)) if kind == "composio"
+               else mcp_servers._describe_error(e))
         return _fail_tool(msg)
     # 尾段（整形/台账/回写）兜底（2026-10-16 起）：此前在大 try 之外，DB 异常会
     # 冒泡违背「不抛异常」承诺——降级为静态失败条目（不再碰 db）
@@ -1366,7 +1387,8 @@ def call_readonly_tool(db: Session, *, key: str, tool: str, arguments) -> dict:
             )
         )}
         items = [it for it in items if it["fingerprint"] not in rejected]
-        streak = _note_attempt(db, key, True)
+        # track_cursor=False（教练溯源探测）：只记健康，不推进 last_success_at
+        streak = _note_attempt(db, key, True, advance_cursor=track_cursor)
     except Exception as e:
         logger.warning("补采 %s/%s 结果处理异常", key, tool, exc_info=True)
         db.rollback()
@@ -1438,7 +1460,7 @@ def probe_source(db: Session, source_key: str, query: str) -> str | None:
     if tool is None:
         return None
     result = call_readonly_tool(db, key=source_key, tool=tool[0],
-                                arguments={tool[1]: query})
+                                arguments={tool[1]: query}, track_cursor=False)
     if not result.get("ok"):
         return None
     parts = [f"【{(it.get('title') or '条目').strip()[:60]}】"

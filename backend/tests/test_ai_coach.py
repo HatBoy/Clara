@@ -961,3 +961,25 @@ def test_messages_after_accepts_utc_z_watermark(client):
     resp2 = client.get("/api/ai/messages",
                        params={"after": (utc_cutoff + timedelta(hours=1)).isoformat().replace("+00:00", "Z")})
     assert resp2.json() == []
+
+
+def test_finalize_turn_downgrade_overrides_false_applied_reply(monkeypatch):
+    """落库失败降级为草案卡时，回复必须改口为"待确认"（2026-11-16 优化批 2）——
+    草案确认短路预先写的「已安排」会造成假采纳文案。"""
+    from services import tasks as tasks_svc
+
+    def boom(db, entries):
+        raise ValueError("模拟校验失败")
+
+    monkeypatch.setattr(tasks_svc, "apply_plan_entries", boom)
+    with TestingSessionLocal() as db:
+        events = ai_coach._finalize_turn(db, {
+            "applied_plan": [{"title": "体检", "start": "2026-11-18T10:00:00",
+                              "duration": 60}],
+            "final_reply": "已安排：体检，已写入日历。",
+        })
+        drafts = [e for e in events if e.get("type") == "draft"]
+        assert drafts, events
+        replies = [m.content for m in ai_data.list_messages(db) if m.role == "assistant"]
+        assert replies and "已安排" not in replies[-1]
+        assert "确认" in replies[-1]

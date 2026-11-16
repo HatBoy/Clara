@@ -477,8 +477,11 @@ def test_thinking_params_small_max_tokens_skipped():
     # 平台默认开思考时照样思考）；其余协议族默认不思考维持空 dict
     assert llm._thinking_params("qwen/qwen3-max", True, 800) == {
         "extra_body": {"enable_thinking": False}}
-    for model in ("anthropic/claude-sonnet-5", "deepseek/deepseek-reasoner"):
-        assert llm._thinking_params(model, True, 800) == {}
+    assert llm._thinking_params("anthropic/claude-sonnet-5", True, 800) == {}
+    # 2026-11-16 优化批 2：DeepSeek reasoner 默认思考且与小预算共享输出预算，
+    # 小调用须显式压掉（原断言 {} 是缺陷行为）。
+    assert llm._thinking_params("deepseek/deepseek-reasoner", True, 800) == {
+        "extra_body": {"thinking": {"type": "disabled"}}}
 
 
 def test_call_llm_stream_filters_leading_think_inline(monkeypatch):
@@ -580,7 +583,8 @@ def test_thinking_params_json_mode_short_circuit():
     assert llm._thinking_params(
         "qwen/qwen3-max", True, None, json_mode=True) == {"extra_body": {"enable_thinking": False}}
     assert llm._thinking_params(
-        "deepseek/deepseek-reasoner", True, 800, json_mode=True) == {}
+        "deepseek/deepseek-reasoner", True, 800, json_mode=True) == {
+        "extra_body": {"thinking": {"type": "disabled"}}}
 
 
 def test_thinking_params_disabled_empty():
@@ -694,3 +698,39 @@ def test_call_llm_aux_routes_to_aux_row(monkeypatch):
         db.commit()
     out = llm.call_llm_aux([{"role": "user", "content": "hi"}], max_tokens=100)
     assert out == "aux-ok"
+
+
+# —— 批 2：思考族覆盖与 aux 回落 ——————————————————————————————————————
+
+
+def test_no_thinking_covers_reasoning_model_families():
+    """DeepSeek reasoner / OpenAI o 系列与 gpt-5 / Gemini 2.5 / Grok 3-4 默认思考
+    且与正文共享 max_tokens（2026-11-16 优化批 2）——小调用须显式压掉。"""
+    disabled = {"extra_body": {"thinking": {"type": "disabled"}}}
+    assert llm._no_thinking("deepseek/deepseek-reasoner") == disabled
+    assert llm._no_thinking("gemini/gemini-2.5-flash") == disabled
+    minimal = {"reasoning_effort": "minimal"}
+    assert llm._no_thinking("openai/o3-mini") == minimal
+    assert llm._no_thinking("openai/gpt-5") == minimal
+    assert llm._no_thinking("xai/grok-3-mini") == minimal
+    # 普通对话族不误伤
+    assert llm._no_thinking("openai/gpt-4o-mini") == {}
+    assert llm._no_thinking("deepseek/deepseek-chat") == {}
+
+
+def test_call_llm_aux_falls_back_to_main_on_failure(monkeypatch):
+    """aux 槽故障（不支持 JSON/上下文太小/不可用）回落主模型（优化批 2）。"""
+
+    class FakeModel:
+        def __init__(self, role: str):
+            self.role = role
+
+        def invoke(self, messages):
+            if self.role == "aux":
+                raise RuntimeError("aux down")
+            return AIMessage(content="main-ok")
+
+    monkeypatch.setattr(llm, "init_llm",
+                        lambda **kw: FakeModel(kw.get("role", "main")))
+    out = llm.call_llm_aux([{"role": "user", "content": "u"}], json_mode=True)
+    assert out == "main-ok"

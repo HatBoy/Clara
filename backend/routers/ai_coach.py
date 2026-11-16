@@ -218,9 +218,13 @@ async def chat(body: ChatIn, db: Session = Depends(get_db)):
                         out.put_nowait({"type": "error", "code": "no_model", "message": "未激活任何模型"})
                     except NotImplementedError:
                         out.put_nowait({"type": "error", "code": "not_ready", "message": "智能体尚未就绪（build_graph 未实现）"})
-                    except Exception:
+                    except Exception as exc:
                         logger.exception("智能体运行异常（chat: %s）", body.message[:50])
-                        out.put_nowait({"type": "error", "code": "agent_error", "message": "智能体运行异常，详见后端日志"})
+                        # 用户可读分类（2026-11-16 优化批 2）：401/429/超时/超限
+                        # 分别给操作建议，不再一律「详见后端日志」。
+                        from services.model_providers import describe_llm_error
+                        out.put_nowait({"type": "error", "code": "agent_error",
+                                        "message": describe_llm_error(exc)})
                     else:
                         for event in _finalize_turn(turn_db, final):
                             out.put_nowait(event)

@@ -54,10 +54,11 @@ def test_probe_ok_latency_and_kwargs(monkeypatch):
     out = mp.probe_model("deepseek/deepseek-chat", "sk-test", "https://relay.example.com/v1")
     assert out.ok is True and out.latency_ms >= 0 and out.error is None
     kw = seen["kwargs"]
-    # 参数原样透传给 litellm.completion；max_tokens=1 控耗时与 token 消耗
+    # 参数原样透传给 litellm.completion；max_tokens=16 控成本又避免推理模型
+    # 因极小输出预算被误判不可用（2026-11-16 优化批 2）
     assert kw["model"] == "deepseek/deepseek-chat"
     assert kw["messages"] == [{"role": "user", "content": "ping"}]
-    assert kw["max_tokens"] == 1
+    assert kw["max_tokens"] == 16
     assert kw["timeout"] == mp._TEST_TIMEOUT_S
     assert kw["api_key"] == "sk-test"
     assert kw["base_url"] == "https://relay.example.com/v1"
@@ -156,7 +157,7 @@ def test_probe_unexpected_exception_fallback(monkeypatch):
     # 兜底：非 litellm 异常也归为结果（固定文案不读 str(e)），永不向上抛
     _patch_completion(monkeypatch, lambda: RuntimeError("boom"))
     out = mp.probe_model("deepseek/deepseek-chat", None, None)
-    assert out.ok is False and out.error == "探测异常：RuntimeError"
+    assert out.ok is False and out.error == "模型调用异常：RuntimeError"
 
 
 # —— API：读路径 / 新建 ——

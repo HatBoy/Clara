@@ -186,8 +186,12 @@ def finalize_turn(db: Session, final: dict, *, source: str | None = None) -> lis
             from services import tasks as tasks_svc
             created = tasks_svc.apply_plan_entries(db, applied)
         except ValueError:
-            # 原子降级：整批并入 draft 走确认卡——用户明确指令也不硬落半个批次
+            # 原子降级：整批并入 draft 走确认卡——用户明确指令也不硬落半个批次。
+            # 同步纠正回复文案（2026-11-16 优化批 2）：草案确认短路预先写好了
+            # 「已安排」，降级后必须改成待确认，避免"假采纳"文案。
             final["draft_plan"] = applied + list(final.get("draft_plan") or [])
+            final["final_reply"] = "这批调整需要你确认，已转为确认卡，请查看后决定。"
+            reply = final["final_reply"]  # 局部 reply 已在上方捕获，须同步
         else:
             from schemas import TaskOut
             payload = {"draft_plan": applied, "auto": True}

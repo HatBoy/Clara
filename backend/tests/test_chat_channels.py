@@ -416,7 +416,7 @@ def test_feishu_extract_filters():
     assert ext(_feishu_event(sender_type="app")) is None       # bot 自回环
     assert ext(_feishu_event(message_id="m-2")) == ("ok", "你好", "ou_1")
     assert ext(_feishu_event(message_id="m-2")) is None        # 同消息重投
-    assert ext(_feishu_event(msg_type="image", message_id="m-3")) == ("hint", None, None)
+    assert ext(_feishu_event(msg_type="image", message_id="m-3")) == ("hint", None, "ou_1")
     long = _feishu_event(content=json.dumps({"text": "长" * 5000}), message_id="m-4")
     assert ext(long)[1] == "长" * chat_channels._MAX_TEXT      # 输入截断
     assert ext(_feishu_event(open_id="", message_id="m-5")) is None  # 缺 open_id
@@ -435,7 +435,7 @@ def test_dingtalk_extract_filters():
     ext = chat_channels._dingtalk_extract
     chat_channels._reset_for_tests()
     assert ext(_dingtalk_msg(conv="2")) is None                # 群聊不响应
-    assert ext(_dingtalk_msg(mtype="picture", mid="d-2")) == ("hint", None, None)
+    assert ext(_dingtalk_msg(mtype="picture", mid="d-2")) == ("hint", None, "https://oapi.dingtalk.com/wh")
     assert ext(_dingtalk_msg(mid="d-3")) == ("ok", "你好",
                                              "https://oapi.dingtalk.com/wh")
     assert ext(_dingtalk_msg(mid="d-3")) is None               # 同消息重投
@@ -459,7 +459,7 @@ def test_wecom_extract_filters():
     ok = ext(_wecom_frame(msgid="w-4"))
     assert ok == ("ok", "你好", _wecom_frame(msgid="w-4"))  # 原帧回传作回帖凭据
     assert ext(_wecom_frame(msgid="w-4")) is None             # 同消息重投
-    assert ext(_wecom_frame(msgtype="voice", msgid="w-5")) == ("hint", None, None)
+    assert ext(_wecom_frame(msgtype="voice", msgid="w-5")) == ("hint", None, _wecom_frame(msgtype="voice", msgid="w-5"))
     assert ext(_wecom_frame(content="  ", msgid="w-6")) is None
     long = ext(_wecom_frame(content="长" * 5000, msgid="w-7"))
     assert long[1] == "长" * chat_channels._MAX_TEXT           # 输入截断
@@ -627,7 +627,7 @@ def test_wechat_extract_filters():
     ok = ext(_wechat_msg(cid="c-4"))
     assert ok == ("ok", "你好", "u9")                             # 第三元=回帖键
     assert ext(_wechat_msg(cid="c-4")) is None                    # 同 client_id 重投
-    assert ext(_wechat_msg(text=None, cid="c-5")) == ("hint", None, None)
+    assert ext(_wechat_msg(text=None, cid="c-5")) == ("hint", None, "u9")
     long = ext(_wechat_msg(text="长" * 5000, cid="c-6"))
     assert long[1] == "长" * chat_channels._MAX_TEXT              # 输入截断
 
@@ -810,8 +810,10 @@ def test_save_push_target_cache_and_skip(monkeypatch):
 
 
 def test_push_to_channels_dispatch(monkeypatch):
-    """只发 enabled ∧ push_enabled ∧ 有目标的行；微信无会话令牌跳过、注入后可达；
-    enabled=False（停用监听）即使推送开着也整体跳过——监听与推送正交但停用优先。"""
+    """只发 push_enabled ∧ 有目标的行；微信无会话令牌跳过、注入后可达。
+
+    2026-11-16 优化批 2：推送与监听正交（enabled=False 不影响推送），与
+    docs/chat-comm.md 及设置页文案一致。"""
     chat_channels._reset_for_tests()
     with TestingSessionLocal() as db:
         db.add(ChatChannel(provider="feishu", app_id="f-id", app_secret="f-sec",
@@ -836,7 +838,9 @@ def test_push_to_channels_dispatch(monkeypatch):
                         lambda *a: sent.append(("wechat", a)))
 
     chat_channels.push_to_channels("早报内容")
-    assert {s[0] for s in sent} == {"feishu", "dingtalk"}  # wecom 停用 / wechat 无令牌
+    # 2026-11-16 优化批 2：推送只认 push_enabled（停用监听不再静默整渠道）；
+    # wechat 仍因无会话令牌跳过
+    assert {s[0] for s in sent} == {"feishu", "dingtalk", "wecom"}
     f = [s for s in sent if s[0] == "feishu"][0][1]
     assert f == ("f-id", "f-sec", "ou-1", "早报内容")
 
@@ -844,7 +848,7 @@ def test_push_to_channels_dispatch(monkeypatch):
     chat_channels._wechat_ctx_tokens["u-9"] = "ct-1"
     sent.clear()
     chat_channels.push_to_channels("早报内容")
-    assert {s[0] for s in sent} == {"feishu", "dingtalk", "wechat"}
+    assert {s[0] for s in sent} == {"feishu", "dingtalk", "wecom", "wechat"}
     w = [s for s in sent if s[0] == "wechat"][0][1]
     assert w == ("w-tk", "w-base", "u-9", "ct-1", "早报内容")
 
@@ -853,7 +857,7 @@ def test_push_to_channels_dispatch(monkeypatch):
         chat_channels.set_push_enabled(db, "wechat", False)
     sent.clear()
     chat_channels.push_to_channels("早报内容")
-    assert {s[0] for s in sent} == {"feishu", "dingtalk"}
+    assert {s[0] for s in sent} == {"feishu", "dingtalk", "wecom"}
 
 
 def test_dingtalk_push_request_shape(monkeypatch):
@@ -986,3 +990,61 @@ def test_fire_push_background(monkeypatch):
     # 无事件循环直调：静默丢弃（同步测试环境天然无循环）
     wf._fire_push("非空文本但无循环")
     assert pushed == ["早报全文"]
+
+
+# —— 批 2：空 id 去重与微信状态持久化 ——————————————————————————————————
+
+
+def test_empty_message_id_not_swallowed():
+    """空 message_id 直接放行且不占位（2026-11-16 优化批 2）。"""
+    chat_channels._reset_for_tests()
+    assert chat_channels._dedup("") is True
+    assert chat_channels._dedup("") is True
+    assert chat_channels._dedup("m-1") is True
+    assert chat_channels._dedup("m-1") is False
+
+
+def test_deliver_forwards_epoch(monkeypatch):
+    """_deliver 必须把代际传给 handle_incoming（双保险不再是死代码）。"""
+    chat_channels._reset_for_tests()
+    chat_channels._MAIN_LOOP = object()
+    with chat_channels._seen_lock:
+        chat_channels._seen.clear()
+    chat_channels._epoch = 7
+    captured: dict = {}
+
+    def fake_handle(provider, text, reply, epoch=None):
+        captured.update(provider=provider, epoch=epoch)
+
+        async def _noop():
+            return None
+
+        return _noop()
+
+    class _FakeLoop:
+        pass
+
+    monkeypatch.setattr(chat_channels, "handle_incoming", fake_handle)
+    monkeypatch.setattr(
+        chat_channels.asyncio, "run_coroutine_threadsafe",
+        lambda coro, loop: coro.close())
+    chat_channels._deliver("feishu", "hi", lambda t: None, 7)
+    assert captured == {"provider": "feishu", "epoch": 7}
+
+
+def test_wechat_state_roundtrip_and_expiry(tmp_path, monkeypatch):
+    """游标/令牌落盘后可恢复；超过 24h 的令牌被视为过期（优化批 2）。"""
+    import time as _time
+
+    monkeypatch.setattr(chat_channels, "_persist_state", True)
+    monkeypatch.setattr(chat_channels, "_wechat_state_path",
+                        lambda: tmp_path / "state.json")
+    chat_channels._save_wechat_state(cursor="cur-1", tokens={"u1": "tk-1"},
+                                     token_fp="fp-1")
+    state = chat_channels._load_wechat_state()
+    assert state["cursor"] == "cur-1" and state["token_fp"] == "fp-1"
+    assert chat_channels._load_wechat_tokens() == {"u1": "tk-1"}
+    # 令牌时间戳拨老 → 过期返回空
+    state["tokens_at"] = _time.time() - chat_channels._WECHAT_TOKEN_TTL_S - 10
+    (tmp_path / "state.json").write_text(__import__("json").dumps(state), encoding="utf-8")
+    assert chat_channels._load_wechat_tokens() == {}

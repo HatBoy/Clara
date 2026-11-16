@@ -1201,9 +1201,9 @@ def test_calendar_load_summary_and_busy_intervals():
         assert (today.replace(hour=8), today.replace(hour=9, minute=30)) in busy
 
 
-def test_apply_plan_entries_scheduled_unscheduled_skip():
-    # 快录自动落库：带 start 走全套校验建排期任务；start=None 建未排期待办；
-    # task_id 非空跳过（第一版不自动改排期）
+def test_apply_plan_entries_scheduled_unscheduled_and_reschedule():
+    # 快录自动落库：带 start 建排期任务；start=None 建未排期待办；
+    # task_id 非空走改期（2026-11-16 优化批 2：此前直接跳过导致"假采纳"）
     t0 = _today_zero() + timedelta(days=2)
     with TestingSessionLocal() as db:
         seeded = create_task(db, TaskCreate(title="已存在", duration_mins=30))
@@ -1214,12 +1214,17 @@ def test_apply_plan_entries_scheduled_unscheduled_skip():
              "start": t0.replace(hour=15).isoformat(), "duration": 30},
             {"task_id": None, "title": "修车", "start": None, "duration": 90},
         ])
-        assert [t.title for t in created] == ["体检", "修车"]
-        first, second = created
-        assert first.start_time == t0.replace(hour=10) and first.duration_mins == 60
-        assert second.start_time is None and second.end_time is None
-        assert db.get(Task, seeded.id).start_time is None  # 原行未被触碰
-        assert db.execute(select(Task).where(Task.title == "改排期")).scalars().first() is None
+        # 改期条目返回的是被更新的原行（标题仍为「已存在」），不是新建行
+        assert sorted(t.title for t in created) == sorted(["体检", "修车", "已存在"])
+        assert created[-1].id == seeded.id
+        by_title = {t.title: t for t in created}
+        assert by_title["体检"].start_time == t0.replace(hour=10)
+        assert by_title["体检"].duration_mins == 60
+        assert by_title["修车"].start_time is None and by_title["修车"].end_time is None
+        # 改期条目真落库：原行时间被更新，且没有新建同名行
+        assert db.get(Task, seeded.id).start_time == t0.replace(hour=15)
+        rows = db.execute(select(Task).where(Task.title == "改排期")).scalars().all()
+        assert rows == []
 
 
 def test_apply_plan_entries_invalid_raises_atomically():
@@ -1683,3 +1688,13 @@ def test_estimate_hint_counts_similar_done(client: TestClient, seeded_db):
 def test_estimate_hint_no_hit(client: TestClient, seeded_db):
     res = client.get("/api/tasks/estimate-hint", params={"title": "完全无关的独有事项"})
     assert res.json() == {"avg_min": None, "count": 0}
+
+
+def test_apply_plan_entries_unknown_task_id_raises():
+    """改期条目指向不存在的任务 → ValueError（整批原子降级为确认卡）。"""
+    with TestingSessionLocal() as db:
+        with pytest.raises(ValueError):
+            apply_plan_entries(db, [{
+                "task_id": "no-such-task", "title": "改排期",
+                "start": _today_zero().isoformat(), "duration": 30,
+            }])

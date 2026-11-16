@@ -18,6 +18,9 @@ from services import data_ingest, ics_import, workflows
 from services.model_providers import get_active_model
 from services.settings import get_settings
 
+# 手动采集后台任务引用池（asyncio 弱引用语义，见 run 端点注释）
+_bg_tasks: set[asyncio.Task] = set()
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingest", tags=["ingest"])
@@ -46,7 +49,11 @@ async def run_ingest_now(wait: bool = False, db: Session = Depends(get_db)):
         logger.info("手动触发数据采集（等待完成）")
         summary = await workflows._run_ingest(manual=True)
         return summary
-    asyncio.create_task(workflows._run_ingest(manual=True))
+    # 强引用池（2026-11-16 优化批 2，照 routers/sync.py 先例）：asyncio 只持
+    # 弱引用，无引用的长任务可能在跑完前被 GC，表现为「手动采集偶发无后续」。
+    task = asyncio.create_task(workflows._run_ingest(manual=True))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
     logger.info("手动触发数据采集")
     return {"started": True}
 

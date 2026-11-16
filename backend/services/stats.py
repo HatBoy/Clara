@@ -1164,14 +1164,14 @@ def _fallback_report(period_label: str, summary: dict) -> str:
     )
 
 
-def generate_report(db: Session, period: str) -> StatsReport:
+def generate_report(db: Session, period: str, *, now: datetime | None = None) -> StatsReport:
     """生成周/月报并落库：周期聚合 → 复盘上下文（画像/纵向/上期结论/偏差聚类）
     → call_llm 总结 → Markdown + 结构化建议落库返回。手动（POST /api/stats/
     reports）与周日晚自动两入口共用。
 
     月报注入成长指标（月度对比）；周报注入周际对比（growth 同构）。LLM 输出
     文末的结构化建议块被解析剥离，存 payload.advice_items 供下期对照追踪。"""
-    lo, hi = period_range(period)
+    lo, hi = period_range(period, now)
     label = "本周报" if period == "week" else "本月报"
     summary = stats_summary(db, lo=lo, hi=hi)
     ctx = build_review_context(db, summary, days=(hi - lo).days, period=period)

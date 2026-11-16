@@ -104,6 +104,9 @@ _ANTHROPIC_MIN_MAX_TOKENS = 6144  # thinking 要求 max_tokens > budget，不足
 # json_mode 不兼容，这类调用直接退化直答；思考留给未指定上限的大调用
 _THINKING_MIN_MAX_TOKENS = 2048
 
+# 空正文重试的输出预算下限（见 call_llm）：思考吃光小预算时的第二次机会。
+_EMPTY_RETRY_MAX_TOKENS = 1024
+
 
 def _is_qwen_model(model: str) -> bool:
     """qwen 模型名启发式（2026-11-01 优化批 1）：前缀直判之外，名字含 qwen
@@ -129,16 +132,56 @@ def _is_glm_model(model: str) -> bool:
     return "glm" in model.lower()
 
 
+def _is_deepseek_reasoner(model: str) -> bool:
+    """DeepSeek 推理族（reasoner / r1）：默认思考且无法完全关闭，但 litellm 会把
+    reasoning_effort 透传为低思考档；小调用至少避免思考吃光 max_tokens。"""
+    name = model.lower()
+    return "deepseek" in name and ("reasoner" in name or "r1" in name)
+
+
+def _is_openai_reasoning(model: str) -> bool:
+    """OpenAI o 系列 / gpt-5 推理族（含 azure/ 中转）：默认思考，需显式压档。"""
+    prefix = model.split("/", 1)[0]
+    if prefix not in {"openai", "azure", "azure_ai"}:
+        return False
+    name = model.lower()
+    return any(tag in name for tag in ("/o1", "/o3", "/o4", "gpt-5"))
+
+
+def _is_gemini_thinking(model: str) -> bool:
+    """Gemini 2.5 系列默认动态思考（thinking_budget 非零），小调用需压到 0。"""
+    prefix = model.split("/", 1)[0]
+    if prefix not in {"gemini", "vertex_ai", "vertex_ai-language-models"}:
+        return False
+    return "2.5" in model
+
+
+def _is_xai_reasoning(model: str) -> bool:
+    """Grok 3/4 默认思考（xai/ 前缀）。"""
+    return model.split("/", 1)[0] in {"xai"} and ("grok-3" in model.lower() or "grok-4" in model.lower())
+
+
 def _no_thinking(model: str) -> dict:
     """显式关闭思考（2026-10-26 抽公共）：qwen/dashscope 族（enable_thinking）
     与 glm 族（thinking.type=disabled，2026-11-01 真机批增）的 OpenAI 兼容端点
     平台默认开思考——不传参数 ≠ 关闭；其余协议族默认不思考，返回空 dict 即可。
     供"明确不该思考"的三种调用统一走：json_mode 短路 / 用户关 thinking_mode /
-    小 max_tokens 闸。"""
+    小 max_tokens 闸。
+
+    2026-11-16 优化批 2 扩族：DeepSeek reasoner / OpenAI o 系列与 gpt-5 /
+    Gemini 2.5 / Grok 3-4 同样默认思考且与正文共享 max_tokens——此前只覆盖
+    qwen/glm，这些小调用会出现空 content/半截 JSON。做法按各家 litellm 参数：
+    - extra_body.thinking.type=disabled（DeepSeek/Gemini 的 OpenAI 兼容形态）
+    - reasoning_effort=minimal（OpenAI o/gpt-5、xai 的统一下压档）
+    provider 不认时由 model_kwargs 里的 drop_params=True 静默丢弃。"""
     if _is_qwen_model(model):
         return {"extra_body": {"enable_thinking": False}}
     if _is_glm_model(model):
         return {"extra_body": {"thinking": {"type": "disabled"}}}
+    if _is_deepseek_reasoner(model) or _is_gemini_thinking(model):
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    if _is_openai_reasoning(model) or _is_xai_reasoning(model):
+        return {"reasoning_effort": "minimal"}
     return {}
 
 
@@ -342,8 +385,17 @@ def call_llm_aux(
         return call_llm(messages, json_mode=json_mode, max_tokens=max_tokens)
     tag = _log_enter(messages, json_mode=json_mode, max_tokens=max_tokens)
     t0 = time.perf_counter()
-    out = init_llm(role="aux", json_mode=json_mode,
-                   max_tokens=max_tokens).invoke(messages).content or ""
+    try:
+        out = init_llm(role="aux", json_mode=json_mode,
+                       max_tokens=max_tokens).invoke(messages).content or ""
+    except NoActiveModelError:
+        raise
+    except Exception as exc:
+        # aux 槽故障回落主模型（2026-11-16 优化批 2）：小模型可能不支持 JSON、
+        # 上下文太小或服务不可用——此前直接上抛会让 router/classifier/反思/
+        # 采集摘要整批失效。主模型也失败时异常照旧上抛。
+        logger.warning("[llm] aux 调用失败（%s），回落主模型", type(exc).__name__)
+        return call_llm(messages, json_mode=json_mode, max_tokens=max_tokens)
     logger.info("[llm] aux 调用 %s → %d 字符（%.1fs）", tag, len(out),
                 time.perf_counter() - t0)
     return out
@@ -366,6 +418,13 @@ def call_llm(
     tag = _log_enter(messages, json_mode=json_mode, max_tokens=max_tokens)
     t0 = time.perf_counter()
     out = init_llm(json_mode=json_mode, max_tokens=max_tokens).invoke(messages).content or ""
+    # 空正文重试（2026-11-16 优化批 2）：推理模型把 max_tokens 全花在思考上时会
+    # 返回空 content。结构化/小预算调用再给一次更大的输出预算（思考参数仍按
+    # 小调用规则压掉），仍空则原样返回由调用方降级。
+    if not out.strip() and (json_mode or (max_tokens is not None and max_tokens < _THINKING_MIN_MAX_TOKENS)):
+        retry_max = max(max_tokens or 0, _EMPTY_RETRY_MAX_TOKENS)
+        logger.info("[llm] 空正文，按更大预算重试一次（max=%d）", retry_max)
+        out = init_llm(json_mode=json_mode, max_tokens=retry_max).invoke(messages).content or ""
     logger.info("[llm] 调用 %s → %d 字符（%.1fs）", tag, len(out),
                 time.perf_counter() - t0)
     return out

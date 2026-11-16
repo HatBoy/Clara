@@ -203,11 +203,15 @@ def _adjudicate(state, clean, conflict_queue, slots, question,
 
     # clean 换槽：后验 busy 从 profiler 流水 busy 重建（finder 的 busy_acc 含
     # 各条主荐自身占用——重验自己会撞自己），选定一条追加一条（同批互斥）
+    user_kept: list[str] = []
     if clean:
-        busy_v = _extend_busy_buffers(state.get("busy") or [],
+        # 恢复窗纳入重验（2026-11-16 优化批 2）：context 节点把新增缓冲/恢复窗
+        # 写进 ctx["busy"]，此前重验只读 state["busy"]，微调可绕过恢复窗。
+        base_busy = ctx.get("busy") or state.get("busy") or []
+        busy_v = _extend_busy_buffers(base_busy,
                                       ctx.get("long_chain_ends") or [],
                                       ctx.get("busy_meta"))
-        load_v = (day_busy_minutes(state.get("busy") or [])
+        load_v = (day_busy_minutes(base_busy)
                   if ctx["day_budget"] is not None else None)
         for i, e in enumerate(clean):
             key = f"a{i}"
@@ -221,6 +225,13 @@ def _adjudicate(state, clean, conflict_queue, slots, question,
                     ok, duration = valid(e, base, busy_v, load_v)
                     if ok:
                         target = base
+            if not ok and e.get("_from_user"):
+                # 用户明示钟点优先（2026-11-16 优化批 2）：午休/避让/就医上午
+                # 这些"Clara 的排期约束"不推翻用户原话；保留该条并在回复里
+                # 说明冲突（过去时间仍由 valid 的 now 闸拒绝，仅在 base 回退成功
+                # 时到得了这里）。
+                user_kept.append(str(e.get("title") or ""))
+                ok, duration = True, _eff_duration(e, philosophy)
             if not ok:
                 continue  # 主荐也过不了（同批竞态）→ 保持该条主荐原样不追加
             e["start"] = target.isoformat()
@@ -231,7 +242,7 @@ def _adjudicate(state, clean, conflict_queue, slots, question,
     # conflict 首条 suggestion 换槽（问询文案只挂首条建议；conflict 不占 busy）
     if (question is not None and question.get("kind") == "conflict"
             and conflict_queue and "c0" in chosen):
-        busy_v = _extend_busy_buffers(state.get("busy") or [],
+        busy_v = _extend_busy_buffers(ctx.get("busy") or state.get("busy") or [],
                                       ctx.get("long_chain_ends") or [],
                                       ctx.get("busy_meta"))
         ok, _ = valid(conflict_queue[0], chosen["c0"], busy_v, None)
@@ -240,6 +251,10 @@ def _adjudicate(state, clean, conflict_queue, slots, question,
 
     exp = data.get("explanation")
     explanation = exp.strip()[:200] if isinstance(exp, str) and exp.strip() else None
+    if user_kept:
+        note = ("已按你指定的时间保留（与作息/避让偏好冲突）："
+                + "、".join(user_kept[:3]))
+        explanation = f"{explanation}；{note}" if explanation else note
     final_decision["selections"] = [{"key": k, "slot": v.isoformat()}
                                     for k, v in sorted(chosen.items())]
     final_decision["explanation"] = explanation

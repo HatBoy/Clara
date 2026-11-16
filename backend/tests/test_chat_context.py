@@ -130,6 +130,52 @@ def test_pending_slice_matches_due_slice():
         assert [m.id for m in due] == [m.id for m in pending]
 
 
+def test_pending_slice_beyond_window_uses_global_cursor():
+    """消息总数超过 CHAT_MAX_WINDOW 后切片仍非空（2026-11-16 优化批 2）。
+
+    旧实现把全局 summarized_count 当本地下标：600 条、游标 550 时
+    rows 只有 500 条 → rows[550:] 恒空，压缩永久停摆。
+    """
+    from datetime import datetime, timedelta
+
+    base = datetime(2026, 1, 1)
+    with TestingSessionLocal() as db:
+        for i in range(600):  # 显式递增 created_at，避免同毫秒导致排序不确定
+            db.add(ai_data.Message(role="user", content=f"m-{i}",
+                                   created_at=base + timedelta(seconds=i)))
+        db.commit()
+        state = ai_data.get_chat_state(db)
+        state.summarized_count = 550
+        db.commit()
+    with TestingSessionLocal() as db:
+        sl = ai_data.pending_compaction_slice(db)
+        # 窗口起点 = 600-500 = 100；应取全局 [550 : 600-10) → 本地 [450 : 490)
+        assert len(sl) == 40
+        assert sl[0].content == "m-550"
+        assert sl[-1].content == "m-589"
+
+
+def test_compact_serialized_lock_nonblocking(monkeypatch):
+    """自动压缩不排队：锁被占用时直接返回 0（2026-11-16 优化批 2）。"""
+    _msgs(20)
+    _lock = graph._COMPACT_LOCK
+    _lock.acquire()
+    try:
+        with TestingSessionLocal() as db:
+            assert graph.compact_chat_history(db) == 0
+    finally:
+        _lock.release()
+
+
+def test_save_chat_summary_clamps_length():
+    """摘要落库长度钳制（优化批 2）——避免超长摘要撑爆各消费面上下文。"""
+    with TestingSessionLocal() as db:
+        ai_data.save_chat_summary(db, summary="长" * 5000, count=3)
+        row = ai_data.get_chat_state(db)
+        assert len(row.summary) == ai_data.CHAT_SUMMARY_MAX_CHARS
+        assert row.summarized_count == 3
+
+
 def test_compact_noop_below_threshold(monkeypatch):
     """未到阈值零 LLM：call_llm 替身若被调即炸（哨兵）。"""
     _msgs(15)

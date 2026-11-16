@@ -23,7 +23,7 @@ from schemas import (
     McpServerCreate,
     McpServerUpdate,
 )
-from services import data_ingest, local_folder, mcp_servers
+from services import data_ingest, integrations as _integrations, local_folder, mcp_servers
 
 
 # —— 测试基建小件 ——————————————————————————————————————————————
@@ -1525,8 +1525,9 @@ def test_probe_source_cli_picks_task_domain_and_textualizes(monkeypatch):
     _set_cli_row()
     seen = {}
 
-    def _fake_call(db, *, key, tool, arguments):
+    def _fake_call(db, *, key, tool, arguments, track_cursor=True):
         seen.update(tool=tool, arguments=arguments)
+        assert track_cursor is False  # 探测不得推进采集游标
         return {"ok": True, "items": [
             {"title": "发布会物料 v2", "body": '{"note": "Q3 物料清单：主视觉、邀请函"}'},
             {"title": "供应商报价", "body": '{"amount": 12000}'},
@@ -1547,7 +1548,7 @@ def test_probe_source_silent_downgrades(monkeypatch):
     _set_cli_row()
     monkeypatch.setattr(
         data_ingest, "call_readonly_tool",
-        lambda db, *, key, tool, arguments: {"ok": False, "items": []})
+        lambda db, *, key, tool, arguments, track_cursor=True: {"ok": False, "items": []})
     with TestingSessionLocal() as db:
         assert data_ingest.probe_source(db, "cli:not-exist", "查询") is None  # 源不存
         assert data_ingest.probe_source(db, "cli:fake", "查询") is None       # 无搜索工具
@@ -1749,3 +1750,34 @@ def test_extract_items_prefers_sched_time_over_metadata():
     assert by_title["BBB"]["time"] == "2026-11-05T15:00:00"   # dueDate 胜出
     assert by_title["AAA"]["time"] is None                     # createdTime 不算
     assert by_title["笔记"]["time"] is not None
+
+
+# —— 批 2：采集游标与上游错误类型 ——————————————————————————————————————
+
+
+def test_note_attempt_advance_cursor_false_keeps_window_anchor():
+    """只读探测成功只记健康，不推进 last_success_at（2026-11-16 优化批 2）。"""
+    from models import IngestSource
+
+    with TestingSessionLocal() as db:
+        data_ingest._note_attempt(db, "fake:src", True)
+    with TestingSessionLocal() as db:
+        anchor = db.scalar(select(IngestSource).where(IngestSource.source_key == "fake:src"))
+        first = anchor.last_success_at
+        assert first is not None
+    with TestingSessionLocal() as db:
+        data_ingest._note_attempt(db, "fake:src", True, advance_cursor=False)
+    with TestingSessionLocal() as db:
+        row = db.scalar(select(IngestSource).where(IngestSource.source_key == "fake:src"))
+        assert row.last_success_at == first  # 游标不动
+        assert row.last_ok_at is not None and row.fail_streak == 0
+
+
+def test_mark_auth_accepts_exception_object():
+    """_translate_upstream 返回的是异常对象——_mark_auth 必须先 str 化再分类，
+    否则 Composio 异常路径整体 AttributeError（2026-11-16 优化批 2）。"""
+    err = _integrations.UpstreamError("API Key 无效或已失效，请重新配置")
+    marked = data_ingest._mark_auth(err)
+    assert isinstance(marked, str) and marked.startswith("[认证] ")
+    # 非认证类异常也不炸
+    assert data_ingest._mark_auth(_integrations.UpstreamError("网络抖动")) == "网络抖动"

@@ -39,6 +39,15 @@ def test_upsert_fact_dedup_and_expiry_clamp():
         assert len(list_episodic_facts(db)) == 1
 
 
+def test_upsert_fact_missing_expires_days_defaults_ttl():
+    """LLM 漏给 expires_days 时不得永久保存（2026-11-16 优化批 2）——
+    临时状况会长期污染 QA/教练/排期上下文。"""
+    row = _fact(expires_days=None)
+    assert row.expires_at is not None
+    remaining = (row.expires_at - datetime.now()).days
+    assert 29 <= remaining <= 30
+
+
 def test_upsert_fact_rejects_empty():
     assert _fact(topic=" ", fact="x") is None
     assert _fact(topic="x", fact="") is None
@@ -84,13 +93,15 @@ def test_expire_episodic_facts_cleans():
 
 
 def test_fact_lines_expiry_suffix():
+    # 2026-11-16 优化批 2：缺省 expires_days 也给 TTL（原「永久」路径已取消），
+    # 因此所有事实行都带过期提示。
     _fact(expires_days=5)
-    perm = _fact(topic="习惯", fact="每天早上喝温水")  # 永久
+    _fact(topic="习惯", fact="每天早上喝温水")  # 默认 30 天
     with TestingSessionLocal() as db:
         rows = list_episodic_facts(db)
     lines = fact_lines(rows)
-    assert any("前有效）" in x for x in lines)
-    assert any("每天早上喝温水" in x and "前有效" not in x for x in lines)
+    assert len(lines) == 2
+    assert all("前有效）" in x for x in lines)
 
 
 def test_delete_fact_via_trigger_sync():

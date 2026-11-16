@@ -427,13 +427,15 @@ def test_chat_graph_ingest_branch_no_thread_id(monkeypatch):
     # （图已路由化：router 默认替身答 ingest，链路 = router → collect_data → refine）
     monkeypatch.setattr(graph_mod, "SessionLocal", TestingSessionLocal)
     src = _src(items=[_item(id_="i1", title="周五评审会", fingerprint="a" * 40)])
+    # 草案时间取未来日期：后验新增"不得生成过去日程"闸（2026-11-16 优化批 2）
+    future_start = (date.today() + timedelta(days=3)).isoformat() + "T10:00:00"
     llm_fake = _FakeLLM(
         map_reply=json.dumps({"source_note": "1 条候选", "candidates": [
             {"title": "周五评审会", "item_id": "i1", "when_hint": "周五 10:00",
              "evidence": None, "confidence": 0.9}]}, ensure_ascii=False),
         reduce_reply=json.dumps({
             "draft_plan": [{"task_id": None, "title": "周五评审会",
-                            "start": "2026-10-17T10:00:00", "duration": 60}],
+                            "start": future_start, "duration": 60}],
             "inbox_items": [],
             "evidence": [{"idx": 0, "source": "测试源", "source_key": "k1", "item_id": "i1",
                           "title": "周五评审会", "time": None, "fingerprint": "a" * 40}],

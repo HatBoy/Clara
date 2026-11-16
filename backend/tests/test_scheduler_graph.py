@@ -807,3 +807,30 @@ def test_profiler_explicit_user_duration_not_overridden(monkeypatch):
     monkeypatch.setattr(llm, "call_llm", fake)
     out = profiler_node(_profiler_state("安排两小时的季度汇报"))
     assert out["agent_entries"][0]["duration"] == 120  # 用户口径不被历史覆盖
+
+
+def test_raise_question_merges_multiple_trigger_entries(monkeypatch):
+    """一轮多触发不再丢条目（2026-11-16 优化批 2）：两条 fuzzy 都进问询
+    entries，kind 保留首个。"""
+    fake = _LLMCapture({PLANNER_PROMPT: json.dumps({
+        "entries": [
+            {"title": "洗牙", "origin": "fuzzy", "duration": 60},
+            {"title": "体检", "origin": "fuzzy", "duration": 30},
+        ],
+        "reply": "需要确认时间",
+    }, ensure_ascii=False)})
+    monkeypatch.setattr(llm, "call_llm", fake)
+    from agents.scheduler.profiler import profiler_node
+    ctx = {"busy": [], "candidates": [], "valid_ids": set(), "prio_by_id": {},
+           "scheduled": [], "settings": {}, "lunch": [690, 810],
+           "day_start_min": 480, "day_end_min": 1320, "day_budget": 480,
+           "load_summary": [], "recent_chat": [], "weather": None,
+           "similar_pool": []}
+    state = {"user_input": "这几天安排洗牙和体检", "memory_rules": [],
+             "now": datetime(2026, 10, 17, 8, 0), "philosophy_ids": [],
+             "context": ctx, "pending": None}
+    out = profiler_node(state)
+    q = out.get("question")
+    assert q is not None
+    assert [e["title"] for e in q["entries"]] == ["洗牙", "体检"]
+    assert q["kind"] == "no_time"

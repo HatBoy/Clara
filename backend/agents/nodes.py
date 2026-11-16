@@ -322,6 +322,12 @@ def center_router(state: AgentState) -> dict:
     """
     from services.llm import call_llm_aux
 
+    def _early(intent: str) -> dict:
+        """规则预路由出口（2026-11-16 优化批 2）：短路此前跳过临时状况旁路，
+        「提醒我下周三出差」这类被直判 schedule/qa 的状况陈述不进 Tier 2。"""
+        _maybe_side_facts(state.get("user_input") or "", intent)
+        return {"intent": intent}
+
     content = state["user_input"]
     pending = state.get("pending")
     if not pending:
@@ -334,7 +340,7 @@ def center_router(state: AgentState) -> dict:
                 and ("\n" in raw or len(raw) > _MINUTES_LONG_MIN)
                 and not _DELETE_VERB_RE.search(raw)):
             logger.info("[router] 规则预路由 → minutes（零 LLM）")
-            return {"intent": "minutes"}
+            return _early("minutes")
         # 危机词守卫（2026-11-05 真机批）：「项目今天下午就要交付…全乱了，帮我
         # 重新安排」动词+时间双命中被预路由 schedule → 幕僚长的危机重组（classifier
         # _CRISIS_RE）永远接不到——带危机情绪的排期句交 LLM 全量判定（ROUTER
@@ -350,7 +356,7 @@ def center_router(state: AgentState) -> dict:
                 and not _PREF_NEG_RE.search(raw)
                 and not _CRISIS_RE.search(raw)):
             logger.info("[router] 规则预路由 → schedule（零 LLM）")
-            return {"intent": "schedule"}
+            return _early("schedule")
     # 批量排期意图支路（2026-10-25 真机修复，pending 无关）：「把所有待办排期」
     # 无时间表达，上面的强动词+时间预路由罩不住 → LLM 误判 coach → 幕僚长当
     # "任务拆解但没给任务"出 clarify 追问"把具体待办发给我"（真机死循环：批量
@@ -363,7 +369,7 @@ def center_router(state: AgentState) -> dict:
     if (_bulk_intent(raw) and not _QUESTION_RE.search(raw)
             and not _DELETE_VERB_RE.search(raw)):
         logger.info("[router] 规则预路由 → schedule（批量意图，零 LLM）")
-        return {"intent": "schedule"}
+        return _early("schedule")
     # qa 预路由（2026-10-26 提速批 3）：pending 活跃轮语义复杂不走规则（问询
     # 回复短句「可以吗」可能带疑问词）；删除动词在场交 LLM 判 delete；排期
     # 排期动词形态在场交 LLM 判 schedule（2026-11-01 批 1——名词守卫见
@@ -372,7 +378,7 @@ def center_router(state: AgentState) -> dict:
             and not _DELETE_VERB_RE.search(raw)
             and not _QA_VERB_EXCLUDE_RE.search(raw)):
         logger.info("[router] 规则预路由 → qa（零 LLM）")
-        return {"intent": "qa"}
+        return _early("qa")
     if isinstance(pending, dict) and pending:
         if pending.get("origin") == "strategist":
             # 幕僚长问询消费轮（Track B 批 5）：确认/拒绝短句确定性直达 coach

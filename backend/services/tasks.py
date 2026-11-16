@@ -1172,21 +1172,44 @@ def apply_plan_entries(db: Session, entries: list[dict]) -> list[Task]:
     """chat 快录自动落库（壳 _finalize_turn 调用——节点零写库红线不破，写库
     收敛 service 层）。
 
-    逐条：task_id 非空跳过（第一版不自动改排期——系列 this/following 语义
-    不可逆，防御性兜底，正常链路不会出现）；start 缺失建未排期待办（问询
-    "加待办"的落点）；否则走 create_task 全套校验（TaskCreate：start +
-    duration → end，耗时一致性由 create_task 强制重算）。两段式保证原子性：
-    先整批校验构体（含 TaskCreate 构造——pydantic ValidationError 也是
-    ValueError 子类），任一条非法在零落库时上抛，由调用方原子降级为 draft
-    确认卡（create_task 内部逐条 commit，单循环做不到无半批）。条目形状由
-    节点防御层保证，这里的异常路径全是纵深防御。priority 可选透传
-    （2026-10-22：profiler 按用户明示/记忆画像直判 1，缺省走库默认 2）。
+    逐条：task_id 非空走改期（update_task mode=all，与前端 applyDraftItems
+    同语义——2026-11-16 优化批 2 修「对话确认改期卡假采纳」：此前直接跳过，
+    但调用方仍把 proposal 置 accepted 并回复「已安排」，任务实际没动）；
+    start 缺失建未排期待办（问询"加待办"的落点）；否则走 create_task 全套
+    校验（TaskCreate：start + duration → end，耗时一致性由 create_task 强制
+    重算）。两段式保证原子性：先整批校验构体（含 TaskCreate 构造——pydantic
+    ValidationError 也是 ValueError 子类、含 task_id 存在性校验），任一条非法
+    在零落库时上抛，由调用方原子降级为 draft 确认卡（create_task/update_task
+    内部逐条 commit，单循环做不到无半批）。条目形状由节点防御层保证，这里的
+    异常路径全是纵深防御。priority 可选透传（2026-10-22：profiler 按用户明示/
+    记忆画像直判 1，缺省走库默认 2）。
     """
     bodies: list[TaskCreate] = []
+    updates: list[tuple[str, TaskUpdate]] = []
     for e in entries:
         if not (isinstance(e, dict) and isinstance(e.get("title"), str) and e["title"].strip()):
             raise ValueError("自动落库条目缺标题")
         if e.get("task_id"):
+            tid = str(e["task_id"])
+            if _fetch_active(db, tid) is None:
+                raise ValueError(f"待改期任务不存在：{tid}")
+            raw = e.get("start")
+            if not (isinstance(raw, str) and raw):
+                raise ValueError("改期条目缺开始时间")
+            try:
+                new_start = datetime.fromisoformat(raw)
+            except ValueError as exc:
+                raise ValueError(f"改期条目时间无法解析：{raw}") from exc
+            if new_start.tzinfo is not None:
+                raise ValueError("改期条目带时区后缀")
+            duration = e.get("duration")
+            if not isinstance(duration, int) or duration <= 0:
+                raise ValueError("改期条目 duration 非法")
+            updates.append((tid, TaskUpdate(
+                start_time=new_start,
+                end_time=new_start + timedelta(minutes=duration),
+                duration_mins=duration,
+            )))
             continue
         start = None
         raw = e.get("start")
@@ -1218,7 +1241,12 @@ def apply_plan_entries(db: Session, entries: list[dict]) -> list[Task]:
             source_fingerprint=fp if isinstance(fp, str) and fp else None,
             source_evidence=ev if isinstance(ev, str) and ev else None,
         ))
-    return [create_task(db, body) for body in bodies]
+    created = [create_task(db, body) for body in bodies]
+    for tid, patch in updates:
+        updated = update_task(db, tid, patch, mode="all")
+        if updated is not None:
+            created.append(updated)
+    return created
 
 
 def purge_expired_soft_deletes(db: Session) -> int:

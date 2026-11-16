@@ -186,11 +186,22 @@ async def ask_stats(body: StatsAskIn, db: Session = Depends(get_db)):
             yield _event_bytes({"type": "done"})
             return
 
-        # 消息构建（纯读库毫秒级，留在事件循环线程；此后 db 不再触碰）
-        messages = stats_service.build_ask_messages(
-            db, body.days, body.question,
-            [t.model_dump() for t in body.history] if body.history else None,
-            mode=body.mode)
+        # 消息构建移入工作线程（2026-11-16 优化批 2）：90 天范围的
+        # stats_summary + build_review_context + 习惯/基线/事实检索是同步重
+        # 聚合（可能数秒），在事件循环线程执行会拖迟提醒/同步/其他请求。
+        # 此后 db 不再触碰（纯读快照交给线程）。
+        try:
+            messages = await asyncio.to_thread(
+                stats_service.build_ask_messages, db, body.days, body.question,
+                [t.model_dump() for t in body.history] if body.history else None,
+                mode=body.mode)
+        except Exception as exc:
+            logger.exception("统计问答上下文构建失败")
+            from services.model_providers import describe_llm_error
+            yield _event_bytes({"type": "error", "code": "agent_error",
+                                "message": describe_llm_error(exc)})
+            yield _event_bytes({"type": "done"})
+            return
 
         queue: asyncio.Queue = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -233,8 +244,9 @@ async def ask_stats(body: StatsAskIn, db: Session = Depends(get_db)):
                                             "message": "未激活任何模型"})
                     else:
                         logger.exception("统计问答异常：%s", body.question[:50])
+                        from services.model_providers import describe_llm_error
                         yield _event_bytes({"type": "error", "code": "agent_error",
-                                            "message": "回答生成失败，请稍后重试"})
+                                            "message": describe_llm_error(item.exc)})
                     break
                 yield _event_bytes(item)
         finally:

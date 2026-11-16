@@ -924,3 +924,27 @@ def test_stats_messages_roundtrip(client):
     # /clear 物理删（同步删除传播多端清空的落点）
     assert client.delete("/api/stats/messages").status_code == 204
     assert client.get("/api/stats/messages").json() == []
+
+
+def test_ask_context_build_runs_in_worker_thread(client: TestClient, monkeypatch):
+    """统计上下文构建移出事件循环（2026-11-16 优化批 2）：重聚合不得阻塞
+    提醒/同步等共用循环的任务。"""
+    import threading
+
+    from routers import stats as stats_router
+    from services import stats as stats_service
+
+    _activate_model()
+    seen: dict = {}
+    real = stats_service.build_ask_messages
+
+    def fake_build(*args, **kwargs):
+        seen["thread"] = threading.get_ident()
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(stats_service, "build_ask_messages", fake_build)
+    monkeypatch.setattr(stats_router, "call_llm_stream",
+                        lambda messages, *, on_chunk, **kw: "好")
+    events = _ask_events(client, {"days": 7, "question": "这周怎么样"})
+    assert events[-1]["type"] == "done"
+    assert seen["thread"] != threading.main_thread().ident

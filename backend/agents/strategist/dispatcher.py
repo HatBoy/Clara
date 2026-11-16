@@ -80,6 +80,9 @@ def dispatcher_node(state: StrategistState) -> dict:
             if len(memories) > 1:  # first-wins 抑制的第二条不再静默丢（优化批 1）
                 notes.append(f"还有 {len(memories) - 1} 条想确认的习惯，明晚复盘再问")
 
+    # 空清单仍出卡：cron 轮的确定性 headline 卡是 brain 解析失败（垃圾输出）
+    # 时的降级产物，由 run_preflight 的最终兜底承接（测试与降级矩阵均依赖；
+    # chat 轮的「空清单零卡」口径在下方 _headline_from 分支独有）。
     if trigger == "morning":
         out["preflight"] = {"headline": f"{now.month}月{now.day}日 晨间启航",
                             "checklist": checklist}

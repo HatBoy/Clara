@@ -86,6 +86,31 @@ def test_postvalidate_drafts_drops_window_entries():
     assert "窗内草案" in result["final_reply"]
 
 
+def test_postvalidate_drafts_rejects_past_and_over_budget():
+    """Reduce 后验补两道闸（2026-11-16 优化批 2）：不得生成过去日程；
+    同日占用加本条超过 work_minutes_per_day 时丢弃。"""
+    from agents.graph import _postvalidate_drafts
+
+    now = datetime(2026, 11, 16, 12, 0)
+    day = now.replace(hour=0)
+    result = {
+        "draft_plan": [
+            {"title": "过去草案", "start": (now - timedelta(hours=2)).isoformat(), "duration": 60},
+            {"title": "超预算草案", "start": (day + timedelta(hours=15)).isoformat(), "duration": 120},
+            {"title": "正常草案", "start": (day + timedelta(days=1, hours=9)).isoformat(), "duration": 60},
+        ],
+        "evidence": [{"idx": 0}, {"idx": 1}, {"idx": 2}],
+        "final_reply": "综述",
+    }
+    _postvalidate_drafts(result, busy=[], day_start_min=480, day_end_min=1320,
+                         lunch=None, now=now,
+                         day_load={day.date(): 480}, day_budget=480)
+    titles = [d["title"] for d in result["draft_plan"]]
+    assert titles == ["正常草案"]
+    assert "过去草案" in result["final_reply"]
+    assert "超预算草案" in result["final_reply"]
+
+
 def test_postvalidate_drafts_none_windows_unchanged():
     """avoid_windows=None（缺省）行为不变：不查偏好窗（直调用例兼容）。"""
     from agents.graph import _postvalidate_drafts

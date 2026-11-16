@@ -24,6 +24,7 @@ worker 生命周期：lark ws 无可靠 stop——invalidate() 全量重启靠�
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -467,6 +468,74 @@ _MAX_TEXT = 4000
 # 微信 context_token 会话缓存（user_id → 最新令牌）：worker 逐条刷新维护，
 # 回帖闭包与定时推送共用（24h 无对话即过期——推送尽力而为，跳过不重试）
 _wechat_ctx_tokens: dict[str, str] = {}
+# 微信运行时状态持久化（2026-11-16 优化批 2）：context_token 与 getupdates 游标
+# 只存进程内时，应用重启后定时推送静默失败、游标归零会重放最近消息。落本地
+# 数据目录文件（不参与 WebDAV 同步——游标是设备维度，串用会漏消息）。
+_WECHAT_STATE_FILE = "chat_channel_state.json"
+_WECHAT_TOKEN_TTL_S = 24 * 3600
+_state_lock = threading.Lock()
+_persist_state = True  # 测试可关（_reset_for_tests 关闭，专门用例临时开）
+
+
+def _wechat_state_path():
+    from config import get_data_dir
+
+    return get_data_dir() / _WECHAT_STATE_FILE
+
+
+def _load_wechat_state() -> dict:
+    """读运行时状态（失败一律空态：状态是增强项，不能挡住 worker 启动）。"""
+    if not _persist_state:
+        return {}
+    try:
+        data = json.loads(_wechat_state_path().read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _token_fp(token: str) -> str:
+    """登录令牌指纹（只存摘要，不落明文）：游标/令牌只在同一登录会话内有效。"""
+    return hashlib.sha1((token or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _save_wechat_state(*, cursor: str | None = None,
+                       tokens: dict[str, str] | None = None,
+                       token_fp: str | None = None) -> None:
+    """合并写入（原子替换）：只覆盖传入的段，另一段保留现值。"""
+    if not _persist_state:
+        return
+    with _state_lock:
+        cur = _load_wechat_state()
+        if cursor is not None:
+            cur["cursor"] = cursor
+        if token_fp is not None:
+            cur["token_fp"] = token_fp
+        if tokens is not None:
+            cur["tokens"] = {k: v for k, v in tokens.items() if v}
+            cur["tokens_at"] = time.time()
+        tmp = _wechat_state_path().with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(cur, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, _wechat_state_path())
+        except OSError:
+            logger.warning("[chat-channel] 微信状态落盘失败", exc_info=True)
+
+
+def _load_wechat_tokens() -> dict[str, str]:
+    """读取持久化的 context_token（丢弃 24h 前的旧令牌——协议上会话已过期）。"""
+    state = _load_wechat_state()
+    raw = state.get("tokens")
+    if not isinstance(raw, dict):
+        return {}
+    saved_at = state.get("tokens_at")
+    try:
+        age = time.time() - float(saved_at) if saved_at is not None else 0.0
+    except (TypeError, ValueError):
+        age = 0.0
+    if age > _WECHAT_TOKEN_TTL_S:
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
 # 推送目标缓存（provider → JSON 串）：worker 落库前比对，目标不变跳过写库
 _push_targets: dict[str, str] = {}
 
@@ -483,7 +552,12 @@ def _notify_config_changed() -> None:
 
 def _dedup(message_id: str) -> bool:
     """首见放行 True，重投 False；LRU cap 512（最旧的被逐出后允许再次出现——
-    超长窗口的重复只在攻击级重放下可能漏，可接受）。"""
+    超长窗口的重复只在攻击级重放下可能漏，可接受）。
+
+    空 message_id 直接放行且不占位（2026-11-16 优化批 2）：此前 "" 被记为已见，
+    之后所有空 id 消息（部分网关不返回 id）全被当重投吞掉。"""
+    if not message_id:
+        return True
     with _seen_lock:
         if message_id in _seen:
             _seen.move_to_end(message_id)
@@ -644,8 +718,10 @@ def _deliver(provider: str, text: str, reply, epoch: int) -> None:
     if _closing or epoch != _epoch or _MAIN_LOOP is None:
         return
     try:
+        # epoch 一并传入（2026-11-16 优化批 2）：投递与协程执行之间配置可能已
+        # 变更/渠道已删除，handle_incoming 内的代际复核是双保险。
         asyncio.run_coroutine_threadsafe(
-            handle_incoming(provider, text, reply), _MAIN_LOOP)
+            handle_incoming(provider, text, reply, epoch=epoch), _MAIN_LOOP)
     except RuntimeError:
         logger.warning("[chat-channel] 主循环不可用，%s 消息丢弃", provider)
 
@@ -668,13 +744,15 @@ def _feishu_extract(event) -> tuple[str, str, str] | tuple[str, None, None] | No
         return None  # 防自回环：自己发的消息不再进轮
     if not _dedup(getattr(msg, "message_id", "") or ""):
         return None
+    open_id = getattr(getattr(sender, "sender_id", None), "open_id", "")
     if getattr(msg, "message_type", "") != "text":
-        return ("hint", None, None)  # 图片/富文本等回引导
+        # 引导回复必须带回目标（2026-11-16 优化批 2）：此前返回 None，
+        # worker 以 open_id=None 调发送直接失败，用户收不到任何反馈
+        return ("hint", None, open_id) if open_id else None
     try:
         text = (json.loads(getattr(msg, "content", "") or "{}").get("text") or "")
     except (json.JSONDecodeError, AttributeError):
         return None
-    open_id = getattr(getattr(sender, "sender_id", None), "open_id", "")
     if not text.strip() or not open_id:
         return None
     return ("ok", text[:_MAX_TEXT], open_id)
@@ -823,10 +901,11 @@ def _dingtalk_extract(msg) -> tuple[str, str, str] | tuple[str, None, None] | No
     if not _dedup(getattr(msg, "message_id", "") or ""):
         return None
     mtype = (getattr(msg, "message_type", "") or "").lower()
-    if mtype and mtype != "text":
-        return ("hint", None, None)
-    text = (getattr(getattr(msg, "text", None), "content", "") or "").strip()
     webhook = getattr(msg, "session_webhook", "") or ""
+    if mtype and mtype != "text":
+        # 引导回复必须带 session_webhook（2026-11-16 优化批 2，同飞书）
+        return ("hint", None, webhook) if webhook else None
+    text = (getattr(getattr(msg, "text", None), "content", "") or "").strip()
     if not text or not webhook:
         return None
     return ("ok", text[:_MAX_TEXT], webhook)
@@ -907,7 +986,8 @@ def _wecom_extract(frame: dict) -> tuple[str, str, dict] | tuple[str, None, None
     if not _dedup(body.get("msgid", "") or ""):
         return None
     if body.get("msgtype") != "text":
-        return ("hint", None, None)
+        # 引导回复凭据 = 原帧（2026-11-16 优化批 2，同飞书/钉钉）
+        return ("hint", None, frame)
     text = ((body.get("text") or {}).get("content") or "").strip()
     if not text:
         return None
@@ -1081,7 +1161,8 @@ def _wechat_extract(msg: dict) -> tuple[str, str, str] | tuple[str, None, None] 
             text = ((item.get("text_item") or {}).get("text") or "").strip()
             break
     if not text:
-        return ("hint", None, None)
+        # 引导回复必须带回发送者（2026-11-16 优化批 2）
+        return ("hint", None, user_id)
     return ("ok", text[:_MAX_TEXT], user_id)
 
 
@@ -1121,9 +1202,18 @@ def _wechat_worker(token: str, baseurl: str, epoch: int) -> None:
     无 asyncio 无死锁面）。errcode -14 = 会话过期（协议规定，token 失效）：
     回写 conn_ok=False + 退出——重新扫码是唯一恢复路径（poll_wechat_login 落新
     token 后 _notify_config_changed 自动拉起新 worker）。网络/未知异常 sleep 3s
-    重试；游标 get_updates_buf 不透明回传，只在 ret==0 时推进。"""
-    cursor = ""
-    logger.info("[chat-channel] 微信 worker 启动（epoch=%d）", epoch)
+    重试；游标 get_updates_buf 不透明回传，只在 ret==0 时推进。
+
+    重启续接（2026-11-16 优化批 2）：游标与 context_token 落本地状态文件，
+    仅在登录令牌指纹一致时恢复（换 token 即新会话，旧游标/令牌无效）。"""
+    fp = _token_fp(token)
+    state = _load_wechat_state()
+    same_session = state.get("token_fp") == fp
+    cursor = (state.get("cursor") or "") if same_session else ""
+    if same_session:
+        _wechat_ctx_tokens.update(_load_wechat_tokens())
+    logger.info("[chat-channel] 微信 worker 启动（epoch=%d，续接=%s）",
+                epoch, bool(cursor))
     while not _closing and epoch == _epoch:
         try:
             data = _ilink_post(baseurl, token, "/ilink/bot/getupdates",
@@ -1145,7 +1235,10 @@ def _wechat_worker(token: str, baseurl: str, epoch: int) -> None:
                            ret, errcode)
             time.sleep(3)
             continue
-        cursor = data.get("get_updates_buf") or cursor
+        new_cursor = data.get("get_updates_buf") or cursor
+        if new_cursor != cursor:
+            cursor = new_cursor
+            _save_wechat_state(cursor=cursor, token_fp=fp)
         for msg in data.get("msgs") or []:
             # context_token 逐条刷新（USER 消息键 from_user_id，BOT 回显键
             # to_user_id——都是「该用户会话」的最新令牌，回帖永远取缓存值）
@@ -1154,14 +1247,18 @@ def _wechat_worker(token: str, baseurl: str, epoch: int) -> None:
             ct = msg.get("context_token") or ""
             if key and ct:
                 _wechat_ctx_tokens[key] = ct
+                _save_wechat_state(tokens=_wechat_ctx_tokens, token_fp=fp)
             try:
                 extracted = _wechat_extract(msg)
                 if extracted is None:
                     continue
                 action, text, user_id = extracted
                 if action == "hint":
-                    _wechat_send(token, baseurl, user_id,
-                                 _wechat_ctx_tokens.get(user_id, ""),
+                    ct = _wechat_ctx_tokens.get(user_id, "")
+                    if not ct:
+                        logger.info("[chat-channel] 微信 hint 跳过：%s 无会话令牌", user_id)
+                        continue
+                    _wechat_send(token, baseurl, user_id, ct,
                                  "暂只支持文字消息～请用文字和我说。")
                     continue
                 _save_push_target("wechat", {"user_id": user_id})
@@ -1357,6 +1454,14 @@ def _push_wecom(app_id: str, app_secret: str, target: dict, text: str) -> None:
 def _push_wechat(app_id: str, app_secret: str, target: dict, text: str) -> None:
     user_id = target.get("user_id") or ""
     ct = _wechat_ctx_tokens.get(user_id, "")
+    if user_id and not ct:
+        # 重启后进程内缓存为空：从状态文件恢复（仅同一登录会话的令牌有效，
+        # 2026-11-16 优化批 2）——否则用户刚对话过也会被误判「无令牌」跳过
+        state = _load_wechat_state()
+        if state.get("token_fp") == _token_fp(app_id):
+            ct = _load_wechat_tokens().get(user_id, "")
+            if ct:
+                _wechat_ctx_tokens[user_id] = ct
     if not user_id or not ct:
         # 微信限制：仅能回复、context_token 24h 内有效——推送尽力而为
         logger.info("[chat-channel] 微信推送跳过：%s", "目标未缓存" if not user_id
@@ -1385,8 +1490,11 @@ def push_to_channels(text: str) -> None:
     rows: list[tuple[str, str, str, str | None]] = []
     try:
         with SessionLocal() as db:
+            # 推送只看 push_enabled（2026-11-16 优化批 2）：与 docs/chat-comm.md
+            # 「停用监听下推送仍可独立开启」一致——此前要求 enabled 同时为真，
+            # 用户关闭监听后定时简报整体静默。
             for row in db.execute(select(ChatChannel).where(
-                    ChatChannel.enabled, ChatChannel.push_enabled)).scalars():
+                    ChatChannel.push_enabled.is_(True))).scalars():
                 rows.append((row.provider, row.app_id, row.app_secret,
                              row.push_target))
     except Exception:
@@ -1405,11 +1513,12 @@ def push_to_channels(text: str) -> None:
 def _reset_for_tests() -> None:
     """测试间清模块态（conftest autouse 调用）：epoch/去重/关闭位复位，
     _MAIN_LOOP 置 None（防上个用例注入的 fake loop 串台）。"""
-    global _epoch, _closing, _MAIN_LOOP, _wecom_prev
+    global _epoch, _closing, _MAIN_LOOP, _wecom_prev, _persist_state
     _epoch = 0
     _closing = False
     _MAIN_LOOP = None
     _wecom_prev = None
+    _persist_state = False  # 测试默认不碰真实 data 目录（专门用例临时打开）
     _wechat_logins.clear()
     _wechat_ctx_tokens.clear()
     _push_targets.clear()

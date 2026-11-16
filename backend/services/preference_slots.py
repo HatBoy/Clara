@@ -65,6 +65,18 @@ _GENERIC_OBJ_RE = re.compile(r"^(?:[，。；;！？\s]|$|(?:事|会|任务|日�
 
 _CACHE: tuple[tuple[str, ...], list[dict]] | None = None
 
+# AI 学习规则标签（ai_data 写入格式：「[分类·AI学习·置信0.55] 正文」）——
+# 置信低于阈值只作文本参考，不产硬避让窗
+_AI_CONF_RE = re.compile(r"·AI学习·置信([0-9]*\.?[0-9]+)")
+_LOW_CONF_HARDGATE_MIN = 0.8
+
+
+def _rule_confidence(m: re.Match) -> float:
+    try:
+        return float(m.group(1))
+    except (TypeError, ValueError):
+        return 1.0  # 标签解析失败按高置信处理（保守：不放松既有硬闸）
+
 
 def parse_avoid_windows(rules: list[str]) -> list[dict]:
     """memory_rules 文本列表 → 避让窗列表（模块级缓存，规则变更自动失效）。
@@ -87,6 +99,12 @@ def parse_avoid_windows(rules: list[str]) -> list[dict]:
 
     windows: list[dict] = []
     for raw in key:
+        # 低置信 AI 规则不作为硬避让窗（2026-11-16 优化批 2）：夜间反思写下的
+        # ai_reflect 规则可能只是用户顺口一句，此前与用户手写规则同级直接阻塞
+        # 排期。规则文本带「·AI学习·置信X」标签；无标签视为用户明示（保守放行）。
+        m_conf = _AI_CONF_RE.search(raw)
+        if m_conf is not None and _rule_confidence(m_conf) < _LOW_CONF_HARDGATE_MIN:
+            continue
         win: dict | None = None
         # 复杂形态先行（批 6）：「工作日上午不排会」里的「上午…不排」同时命中
         # 基础形态——若基础先行会把工作日语义降级成"每天上午"，A/B 判定须在前

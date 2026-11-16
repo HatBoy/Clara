@@ -151,6 +151,39 @@ def set_aux_model(db: Session, model_id: str) -> ModelProvider:
     return row
 
 
+def describe_llm_error(exc: Exception) -> str:
+    """LLM 异常 → 用户可读中文（2026-11-16 优化批 2 从 probe_model 抽出）：
+    探测/对话/统计问答共用一套分类，聊天错误帧不再只显示「详见后端日志」。
+    捕获链注意：litellm 各异常是兄弟关系非父子嵌套，逐个显式判定。
+    固定文案不读 str(e)（防泄露 key 片段），只有裸 APIError 回显状态码。"""
+    if isinstance(exc, litellm.AuthenticationError):
+        return "鉴权失败（401）：API Key 无效或无权限，请到设置 → 模型接入检查"
+    if isinstance(exc, litellm.NotFoundError):
+        return "模型或接口不存在（404）：检查模型标识与接口地址"
+    if isinstance(exc, litellm.RateLimitError):
+        return "触发限流（429）：稍后重试或换用其他模型"
+    if isinstance(exc, litellm.BadRequestError):
+        return "请求被拒绝（400）：检查模型标识格式（需 provider/模型名，如 deepseek/deepseek-chat）"
+    if isinstance(exc, litellm.Timeout):
+        return "响应超时：服务未及时返回"
+    if isinstance(exc, litellm.APIConnectionError):
+        if "No module named" in str(exc):
+            return ("该供应商未随 Clara 打包：请换用已内置前缀（deepseek/、openai/、ollama/ 等），"
+                    "或用 openai/ 前缀 + Base URL 接入任意 OpenAI 兼容端点")
+        return "无法连接：检查网络与接口地址"
+    if isinstance(exc, litellm.InternalServerError):
+        return "模型服务错误（500）：服务端异常或代理无法到达目标地址"
+    if isinstance(exc, litellm.APIError):
+        return f"模型服务返回 HTTP {getattr(exc, 'status_code', '')}".rstrip()
+    if type(exc).__name__ == "ContextOverflowError":
+        # 不 import llm（避免环）：按类名判定，文案给可操作建议
+        return "上下文超出模型容量：请压缩会话或换用更大上下文档位的模型"
+    if isinstance(exc, ModuleNotFoundError):
+        return ("该供应商未随 Clara 打包：请换用已内置前缀（deepseek/、openai/、ollama/ 等），"
+                "或用 openai/ 前缀 + Base URL 接入任意 OpenAI 兼容端点")
+    return f"模型调用异常：{type(exc).__name__}"
+
+
 def probe_model(model_name: str, api_key: str | None, base_url: str | None) -> ModelProviderTestOut:
     """连通性探测（纯函数无 db，永不抛出——探测失败是结果不是异常）。
 
@@ -167,42 +200,15 @@ def probe_model(model_name: str, api_key: str | None, base_url: str | None) -> M
         litellm.completion(
             model=model_name,
             messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1,
+            # 探测预算 16 而非 1（2026-11-16 优化批 2）：推理类模型在极小输出
+            # 预算下可能直接 400/空返回，被误判为不可用；16 仍几乎零成本。
+            max_tokens=16,
             timeout=_TEST_TIMEOUT_S,
             api_key=api_key or "EMPTY",
             base_url=base_url or None,  # None = LiteLLM 按 provider/ 前缀官方路由
         )
-    except litellm.AuthenticationError:
-        return ModelProviderTestOut(ok=False, error="鉴权失败（401）：API Key 无效或无权限")
-    except litellm.NotFoundError:
-        return ModelProviderTestOut(ok=False, error="模型或接口不存在（404）：检查模型标识与接口地址")
-    except litellm.RateLimitError:
-        return ModelProviderTestOut(ok=False, error="触发限流（429）：稍后重试")
-    except litellm.BadRequestError:
-        return ModelProviderTestOut(ok=False, error="请求被拒绝（400）：检查模型标识格式（需 provider/模型名，如 deepseek/deepseek-chat）")
-    except litellm.Timeout:
-        return ModelProviderTestOut(ok=False, error="响应超时：服务未在 10 秒内返回")
-    except litellm.APIConnectionError as e:
-        # 打包裁剪（2026-11-11）：被裁供应商 handler 加载的 ImportError 会被
-        # litellm 包装成本类（消息含 "No module named"）——先于连接文案特判，
-        # 指路 openai/ + Base URL 逃生通道。仅作子串检查不回显消息（固定文案
-        # 纪律不变）
-        if "No module named" in str(e):
-            return ModelProviderTestOut(ok=False, error="该供应商未随 Clara 打包：请换用已内置前缀（deepseek/、openai/、ollama/ 等），或用 openai/ 前缀 + Base URL 接入任意 OpenAI 兼容端点")
-        return ModelProviderTestOut(ok=False, error="无法连接：检查网络与接口地址")
-    except litellm.InternalServerError:
-        # litellm 把 5xx 响应（含经代理不可达——代理会返回 500）归为此类，
-        # 它继承 openai.APIError 而非 litellm.APIError，须显式排列
-        return ModelProviderTestOut(ok=False, error="模型服务错误（500）：服务端异常或代理无法到达目标地址")
-    except litellm.APIError as e:
-        return ModelProviderTestOut(ok=False, error=f"模型服务返回 HTTP {getattr(e, 'status_code', '')}".rstrip())
-    except ModuleNotFoundError:
-        # 打包裁剪纵深防御（2026-11-11）：实测被裁供应商的 import 失败多被
-        # litellm 包装成 APIConnectionError（上方特判），此分支兜住少数可能
-        # 裸抛的路径——固定文案不读 str(e)
-        return ModelProviderTestOut(ok=False, error="该供应商未随 Clara 打包：请换用已内置前缀（deepseek/、openai/、ollama/ 等），或用 openai/ 前缀 + Base URL 接入任意 OpenAI 兼容端点")
-    except Exception as e:  # 兜底：探测永不向上抛（固定文案不读 str(e)，防泄露 key 片段）
-        return ModelProviderTestOut(ok=False, error=f"探测异常：{type(e).__name__}")
+    except Exception as e:  # 探测永不向上抛（固定文案不读 str(e)，防泄露 key 片段）
+        return ModelProviderTestOut(ok=False, error=describe_llm_error(e))
     return ModelProviderTestOut(ok=True, latency_ms=round((time.perf_counter() - start) * 1000))
 
 

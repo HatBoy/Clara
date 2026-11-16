@@ -752,7 +752,7 @@ def test_run_weekly_report_builds_message_and_broadcast(monkeypatch):
     _activate_model()
     fake = SimpleNamespace(id="r1", content="【总评】本周节奏平稳。\n\n## 概述\n\n正文。")
     monkeypatch.setattr(workflows.stats_service, "generate_report",
-                        lambda db, period: fake)
+                        lambda db, period, **kw: fake)
     pushes: list[str] = []
     monkeypatch.setattr(workflows, "_fire_push", lambda text: pushes.append(text))
     q = workflows.subscribe()
@@ -776,7 +776,7 @@ def test_run_weekly_report_catchup_silent(monkeypatch):
     _activate_model()
     fake = SimpleNamespace(id="r2", content="【总评】补账轮。\n\n## 概述\n\nx")
     monkeypatch.setattr(workflows.stats_service, "generate_report",
-                        lambda db, period: fake)
+                        lambda db, period, **kw: fake)
     monkeypatch.setattr(workflows, "_catchup_silent", lambda report_min, now=None: True)
     pushes: list[str] = []
     monkeypatch.setattr(workflows, "_fire_push", lambda text: pushes.append(text))
@@ -797,7 +797,7 @@ def test_run_weekly_report_skips_without_model(monkeypatch):
     _use_test_db(monkeypatch)
     calls: list[str] = []
     monkeypatch.setattr(workflows.stats_service, "generate_report",
-                        lambda db, period: calls.append(period))
+                        lambda db, period, **kw: calls.append(period))
     asyncio.run(workflows._run_weekly_report())
     assert calls == []
     with TestingSessionLocal() as db:
@@ -1203,3 +1203,77 @@ def test_collect_priority_plan_uses_history_duration():
     # 「季度汇报冲刺」与已完成的「季度汇报」difflib ≥0.6 → 历史均值 90 覆盖默认 30
     assert by_title["季度汇报冲刺"] == 90
     assert by_title["另一件高优"] == 30  # 无同类历史照旧
+
+
+# —— 批 2：跨午夜槽位 / 周报锚定 / 夜间维护兜底 —————————————————————————
+
+
+def test_claim_ingest_cross_midnight_slot_uses_previous_anchor(monkeypatch):
+    """报点 18:00 + 3 槽（18:00/22:00/26:00）时，第 3 槽落在次日 02:00——
+    旧实现按当日重算 at 永不满足 now>=at（2026-11-16 优化批 2）。"""
+    _use_test_db(monkeypatch)
+    now = datetime.now().replace(hour=3, minute=0)
+    yesterday = now.date() - timedelta(days=1)
+    with TestingSessionLocal() as db:
+        s = get_settings(db)
+        s.ingest_enabled = True
+        s.ingest_runs_per_day = 3
+        s.ingest_brief_min = 1080
+        db.commit()
+        workflows._claim_run(db, "ingest", yesterday)
+        workflows._claim_run(db, "ingest@2", yesterday)
+    with TestingSessionLocal() as db:
+        assert workflows._claim_ingest(db, now) is True
+        row = db.scalar(select(WorkflowRun).where(
+            WorkflowRun.name == "ingest@3", WorkflowRun.run_date == yesterday))
+        assert row is not None
+
+
+def test_run_weekly_report_uses_claim_anchor(monkeypatch):
+    """周报周期锚定认领时刻，避免跨零点生成新周空报告（优化批 2）。"""
+    _use_test_db(monkeypatch)
+    _activate_model()
+    seen: dict = {}
+
+    def fake(db, period, **kw):
+        seen.update({k: v for k, v in kw.items() if k == "now"})
+        return SimpleNamespace(id="r9", content="【总评】本周平稳。")
+
+    monkeypatch.setattr(workflows.stats_service, "generate_report", fake)
+    monkeypatch.setattr(workflows, "_fire_push", lambda t: None)
+    anchor = datetime(2026, 11, 15, 23, 59)
+    asyncio.run(workflows._run_weekly_report(anchor))
+    assert seen["now"] == anchor
+
+
+def test_claim_nightly_maintenance_after_deadline(monkeypatch):
+    """夜间整理长期不空闲时，报点+3h 后独立认领维护兜底（优化批 2）。"""
+    _use_test_db(monkeypatch)
+    now = datetime.now().replace(hour=23, minute=30)
+    with TestingSessionLocal() as db:
+        s = get_settings(db)
+        s.nightly_enabled = True
+        s.nightly_start_min = 1200
+        db.commit()
+        assert workflows._claim_nightly_maintenance(db, now) is True
+        assert workflows._claim_nightly_maintenance(db, now) is False  # 幂等
+
+
+def test_run_nightly_continues_after_preplan_failure(monkeypatch):
+    """预排异常不再连坐清理链（优化批 2）。"""
+    _use_test_db(monkeypatch)
+    with TestingSessionLocal() as db:
+        s = get_settings(db)
+        s.ai_enabled = False  # 跳过反思/综述段，聚焦阶段隔离
+        db.commit()
+
+    def boom(db, now):
+        raise RuntimeError("preplan boom")
+
+    calls: list[int] = []
+    monkeypatch.setattr(workflows, "_collect_priority_plan", boom)
+    monkeypatch.setattr(workflows, "_run_maintenance",
+                        lambda db, now: calls.append(1) or 0)
+    monkeypatch.setattr(workflows, "broadcast", lambda payload: None)
+    asyncio.run(workflows._run_nightly())
+    assert calls == [1]

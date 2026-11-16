@@ -279,10 +279,32 @@ def profiler_node(state: SchedulerState) -> dict:
     displace_done = False             # 本轮走了 displace 消费（llm_reply 前置判据）
 
     def raise_question(kind: str, entries: list[dict], **extra) -> None:
-        """单轮多触发合并为一条问询（kind 记首个）——一次只问一件事。"""
+        """单轮多触发合并为一条问询（kind 记首个）——一次只问一件事。
+
+        后续触发不再静默丢弃条目（2026-11-16 优化批 2）：此前 first-wins，
+        同一轮同时出现 similar+conflict / 多条 fuzzy 时后面的条目既不入
+        applied/draft 也不在问询里，用户完全看不到。现按 task_id/title 去重
+        追加 entries，kind 保留首个，extra 键用 setdefault 不覆盖首条建议。"""
         nonlocal question
         if question is None:
-            question = {"kind": kind, "entries": entries, **extra}
+            question = {"kind": kind, "entries": list(entries), **extra}
+            return
+        seen = {(str(e.get("task_id") or ""), str(e.get("title") or ""))
+                for e in question.get("entries") or [] if isinstance(e, dict)}
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            k = (str(e.get("task_id") or ""), str(e.get("title") or ""))
+            if k in seen:
+                continue
+            seen.add(k)
+            question.setdefault("entries", []).append(e)
+        if kind != question["kind"]:
+            kinds = question.setdefault("extra_kinds", [])
+            if kind not in kinds:
+                kinds.append(kind)
+        for key, value in extra.items():
+            question.setdefault(key, value)
 
     def route_user_entry(entry: dict, *, insist: bool = False) -> None:
         """origin=user 候选的三问分流：过去→past、撞 busy→conflict（入队待

@@ -32,6 +32,8 @@ _MIN_FTS_CHARS = 3
 _FUNCTION_CHARS = set("的了呢吧是在我有和与就也都还很吗怎什么办嗯哦啊这那要能可")
 # 写入侧的 expires_days 钳制域（LLM 标注 1-90 天外收敛）
 _MAX_EXPIRES_DAYS = 90
+# 缺省 TTL（天）：LLM 未标注有效期时的兜底，防临时事实永久驻留
+_DEFAULT_EXPIRES_DAYS = 30
 
 
 def upsert_fact(db: Session, *, topic: str, fact: str, source: str = "chat",
@@ -43,15 +45,15 @@ def upsert_fact(db: Session, *, topic: str, fact: str, source: str = "chat",
     fact = (fact or "").strip()[:200]
     if not topic or not fact:
         return None
-    expires_at = None
-    if expires_days is not None:
-        try:
-            days = int(expires_days)
-        except (TypeError, ValueError):
-            days = None
-        if days is not None:
-            expires_at = datetime.now() + timedelta(
-                days=max(1, min(days, _MAX_EXPIRES_DAYS)))
+    # 缺省 TTL（2026-11-16 优化批 2）：LLM 漏给 expires_days 时此前的语义是
+    # 永久保存——「这周感冒」这类临时状况会长期注入 QA/教练/排期上下文形成
+    # 记忆污染。默认 30 天；显式给值仍钳 [1, 90]。
+    try:
+        days = int(expires_days) if expires_days is not None else _DEFAULT_EXPIRES_DAYS
+    except (TypeError, ValueError):
+        days = _DEFAULT_EXPIRES_DAYS
+    expires_at = datetime.now() + timedelta(
+        days=max(1, min(days, _MAX_EXPIRES_DAYS)))
     existing = db.scalar(select(EpisodicFact).where(
         EpisodicFact.topic == topic, EpisodicFact.fact == fact))
     if existing is not None:  # 印证：刷新过期钟（再次提到 = 仍然有效）

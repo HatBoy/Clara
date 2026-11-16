@@ -40,6 +40,7 @@ run_ingest(db, day) / run_preflight(db, day)：工作流独立入口，签名冻
 import json
 import logging
 import re
+import threading
 from datetime import date, datetime, timedelta
 
 from langgraph.graph import END, START, StateGraph
@@ -507,7 +508,10 @@ def _reduce_phase(candidates: list[dict], existing_titles: list[str],
 def _postvalidate_drafts(result: dict, *, busy: list[tuple[datetime, datetime]],
                          day_start_min: int, day_end_min: int,
                          lunch: tuple[int, int] | None,
-                         avoid_windows: list[dict] | None = None) -> None:
+                         avoid_windows: list[dict] | None = None,
+                         now: datetime | None = None,
+                         day_load: dict[date, int] | None = None,
+                         day_budget: int | None = None) -> None:
     """采集草案后验（两入口同体，2026-11-01 优化批 1）：run_ingest 原有的
     busy 撞期后验升级为全闸后验，chat refine 补齐同款——MERGE 让 LLM 自排
     start，合法性在此兜底：撞既有日历 / 落在可排时段之外 / 进午休，任一命中
@@ -532,13 +536,18 @@ def _postvalidate_drafts(result: dict, *, busy: list[tuple[datetime, datetime]],
             kept.append(d)
             continue
         start = datetime.fromisoformat(d["start"])
+        # 过去时间与日预算（2026-11-16 优化批 2）：LLM 可能生成已过去的时刻，
+        # 或同日堆入超过 work_minutes_per_day 的草案——此前两闸缺位。
+        if now is not None and start < now:
+            dropped.append(d["title"])
+            continue
         if any(nodes._overlaps(start, start + timedelta(minutes=d["duration"]),
                                b0, b1) for b0, b1 in busy):
             dropped.append(d["title"])
             continue
         if not _gates_ok(start, d["duration"], busy, day_start_min=day_start_min,
                          cap_min=day_end_min, lunch=lunch,
-                         day_load=None, day_budget=None,
+                         day_load=day_load, day_budget=day_budget,
                          avoid_windows=avoid_windows):
             dropped.append(d["title"])
             continue
@@ -569,7 +578,7 @@ def run_ingest(db: Session, day: date) -> dict:
     from services import data_ingest
     from services.ai_data import dedup_context, list_memory_rules
     from services.settings import get_settings
-    from services.tasks import busy_intervals, calendar_load_summary
+    from services.tasks import busy_intervals, calendar_load_summary, day_busy_minutes
     from services.weather import forecast_for_city
 
     raw = data_ingest.fetch_recent(db, hours=72)  # ① 原始数据（直调 service，不经 @tool）
@@ -616,11 +625,17 @@ def run_ingest(db: Session, day: date) -> dict:
     # avoid_windows（批 4）：rules 即注入同款文本，解析与硬闸单源共享缓存
     from services.preference_slots import parse_avoid_windows
 
-    _postvalidate_drafts(result, busy=busy_intervals(db),
+    _busy = busy_intervals(db)
+    _postvalidate_drafts(result, busy=_busy,
                          day_start_min=s.calendar_start_min,
                          day_end_min=s.calendar_end_min,
                          lunch=(s.lunch_start_min, s.lunch_end_min) if s.lunch_enabled else None,
-                         avoid_windows=parse_avoid_windows(rules))
+                         avoid_windows=parse_avoid_windows(rules),
+                         # 过去时间闸只对"当天及以后"的采集轮生效：生产恒
+                         # day=today；历史日期回补（测试/补账）不按此刻拒。
+                         now=(datetime.now() if day >= date.today() else None),
+                         day_load=day_busy_minutes(_busy),
+                         day_budget=s.work_minutes_per_day)
     return result
 
 
@@ -635,19 +650,32 @@ def _birthday_inbox_items(db: Session, day: date) -> list[dict]:
     7 天已出的 kind=inbox 卡里有同名条目不再重出——晨跑连出 7 天卡会刷屏；
     proposals 拉回 Python 比对，量小）。纯规则零 LLM。"""
     from models import Proposal
-    from services.tasks import list_tasks
+    from services.tasks import expand_occurrences, list_tasks
     from sqlalchemy import select
 
     lo = datetime(day.year, day.month, day.day)
+    hi = lo + timedelta(days=_BIRTHDAY_LOOKAHEAD_DAYS + 1)
     hits = []
-    for t in list_tasks(db, start=lo, end=lo + timedelta(days=_BIRTHDAY_LOOKAHEAD_DAYS + 1)):
-        if not _BIRTHDAY_RE.search(t.title or "") or not t.start_time:
+    seen_occ: set[tuple[str, date]] = set()
+    for t in list_tasks(db, start=lo, end=hi):
+        if not _BIRTHDAY_RE.search(t.title or ""):
             continue
-        hits.append({
-            "title": f"为「{t.title[:22]}」准备礼物",
-            "duration": 30,
-            "notes": f"{t.start_time:%m-%d} {t.title}，提前选购与包装",
-        })
+        # 重复系列展开实例（2026-11-16 优化批 2）：年度生日/纪念日的主行
+        # start_time 可能落在窗口外，只看主行会漏掉窗口内的实例。
+        if getattr(t, "recurrence_rule", None):
+            occs = expand_occurrences(t, lo, hi)
+        else:
+            occs = [t.start_time] if t.start_time and lo <= t.start_time < hi else []
+        for occ in occs:
+            k = (t.title, occ.date())
+            if k in seen_occ:
+                continue
+            seen_occ.add(k)
+            hits.append({
+                "title": f"为「{t.title[:22]}」准备礼物",
+                "duration": 30,
+                "notes": f"{occ:%m-%d} {t.title}，提前选购与包装",
+            })
     if not hits:
         return []
     recent = db.scalars(select(Proposal).where(
@@ -682,7 +710,14 @@ def run_preflight(db: Session, day: date) -> dict:
     from services.tasks import list_tasks
 
     lo = datetime(day.year, day.month, day.day)  # day 0 点 → +1 天，一次窗口查询
-    tasks = list(list_tasks(db, start=lo, end=lo + timedelta(days=1)))
+    hi = lo + timedelta(days=1)
+    # 重复系列只在"当天确有实例"时才算今天有安排（2026-11-16 优化批 2）：
+    # 窗口查询恒返回全部系列主行，直接判非空会让静好分支永久失效（空简报）。
+    from services.tasks import expand_occurrences
+
+    tasks = [t for t in list_tasks(db, start=lo, end=hi)
+             if not getattr(t, "recurrence_rule", None)
+             or expand_occurrences(t, lo, hi)]
     is_eve = day > date.today()
     # 生日/纪念日前瞻（批 5）：晨间形态才扫（夜综述聚焦明日复盘，礼物提醒
     # 放早上更贴习惯）；出卡不并简报卡——kind=inbox 独立收件箱清单卡，采纳后
@@ -765,9 +800,12 @@ def run_meeting_prep(db: Session, day: date) -> dict:
     from sqlalchemy import select as _sel
 
     hist: dict[str, dict] = {}
+    # 按时间倒序取近 20 张（2026-11-16 优化批 2）：原查询无 order_by，
+    # 「取最近一次已决」可能拿到最早的卡，重推清单参考到过期偏离。
     for p in db.scalars(_sel(Proposal).where(
             Proposal.kind == "prep",
-            Proposal.created_at >= datetime.now() - timedelta(days=30)).limit(20)):
+            Proposal.created_at >= datetime.now() - timedelta(days=30))
+            .order_by(Proposal.created_at.desc()).limit(20)):
         if not p.outcome:
             continue
         for m in (p.payload or {}).get("meetings") or []:
@@ -907,6 +945,12 @@ def _compact_chunks(msgs: list) -> list[list[dict]]:
     return chunks
 
 
+# 压缩串行锁（2026-11-16 优化批 2）：自动压缩是轮末 fire-and-forget，上一轮
+# 未结束时下一轮又调度会让两个任务读同一切片、各自推进游标（摘要重复/乱序、
+# ChatState 单行互相覆盖）。自动路径非阻塞抢锁，抢不到即交给下一轮。
+_COMPACT_LOCK = threading.Lock()
+
+
 def compact_chat_history(db: Session, *, force: bool = False) -> int:
     """对话滚动上下文压缩（2026-10-20 增；2026-10-26 重写为切块循环 + force）：
     旧摘要 + 片段并给 CHAT_SUMMARY_PROMPT → 落新摘要与游标。返回本轮并入摘要
@@ -928,28 +972,35 @@ def compact_chat_history(db: Session, *, force: bool = False) -> int:
     )
     from services.llm import call_llm
 
-    fragment = pending_compaction_slice(db) if force else compaction_due(db)
-    if not fragment:
+    # 自动路径不排队（抢不到说明已有压缩在跑，交给下一轮）；手动 /compact 阻塞
+    acquired = _COMPACT_LOCK.acquire() if force else _COMPACT_LOCK.acquire(blocking=False)
+    if not acquired:
         return 0
-    merged = 0
-    for chunk in _compact_chunks(fragment):
-        prev = get_chat_state(db).summary
-        try:
-            out = call_llm(
-                [{"role": "system", "content": CHAT_SUMMARY_PROMPT},
-                 {"role": "user", "content": json.dumps(
-                     {"prev_summary": prev, "messages": chunk}, ensure_ascii=False)}],
-                # 900 容纳 ≤500 字摘要扩容（2026-10-26，中文≈1.5 token/字余量）
-                max_tokens=900)
-        except Exception as exc:  # 超窗/超时/断连等一切调用失败：块级中断
-            raise CompactPartialError(merged) from exc
-        summary = (out or "").strip()
-        if not summary:  # 空输出不落库不推游标（下次窗口不变自然重试）
-            raise CompactPartialError(merged)
-        save_chat_summary(db, summary=summary,
-                          count=get_chat_state(db).summarized_count + len(chunk))
-        merged += len(chunk)
-    return merged
+    try:
+        fragment = pending_compaction_slice(db) if force else compaction_due(db)
+        if not fragment:
+            return 0
+        merged = 0
+        for chunk in _compact_chunks(fragment):
+            prev = get_chat_state(db).summary
+            try:
+                out = call_llm(
+                    [{"role": "system", "content": CHAT_SUMMARY_PROMPT},
+                     {"role": "user", "content": json.dumps(
+                         {"prev_summary": prev, "messages": chunk}, ensure_ascii=False)}],
+                    # 900 容纳 ≤500 字摘要扩容（2026-10-26，中文≈1.5 token/字余量）
+                    max_tokens=900)
+            except Exception as exc:  # 超窗/超时/断连等一切调用失败：块级中断
+                raise CompactPartialError(merged) from exc
+            summary = (out or "").strip()
+            if not summary:  # 空输出不落库不推游标（下次窗口不变自然重试）
+                raise CompactPartialError(merged)
+            save_chat_summary(db, summary=summary,
+                              count=get_chat_state(db).summarized_count + len(chunk))
+            merged += len(chunk)
+        return merged
+    finally:
+        _COMPACT_LOCK.release()
 
 
 # —— chat 采集分支节点（ingest 意图到达；壳 routers/ai_coach.py 经 build_graph().invoke 驱动） ———
@@ -977,7 +1028,7 @@ def refine(state: AgentState) -> dict:
     事件，零壳改动）。"""
     from services.preference_slots import parse_avoid_windows
     from services.settings import get_settings
-    from services.tasks import busy_intervals, calendar_load_summary
+    from services.tasks import busy_intervals, calendar_load_summary, day_busy_minutes
     from services.weather import forecast_for_city
 
     nodes._status_emitter()("正在汇总提炼建议…")  # 过程反馈（提速批 2）
@@ -993,12 +1044,15 @@ def refine(state: AgentState) -> dict:
                                weather=forecast_for_city(s.weather_city),
                                chat_summary=get_chat_state(db).summary or None,
                                db=db)
-        _postvalidate_drafts(result, busy=busy_intervals(db),
+        _busy = busy_intervals(db)
+        _postvalidate_drafts(result, busy=_busy,
                              day_start_min=s.calendar_start_min,
                              day_end_min=s.calendar_end_min,
                              lunch=(s.lunch_start_min, s.lunch_end_min) if s.lunch_enabled else None,
                              avoid_windows=parse_avoid_windows(
-                                 state.get("memory_rules") or []))
+                                 state.get("memory_rules") or []),
+                             now=datetime.now(), day_load=day_busy_minutes(_busy),
+                             day_budget=s.work_minutes_per_day)
         return result
 
 

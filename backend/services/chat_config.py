@@ -194,12 +194,15 @@ def apply_setting(db: Session, *, key: str, value) -> dict:
     row = get_settings(db)
     old = getattr(row, key)
     try:
-        update_settings(db, SettingsUpdate(**{key: value}))
+        updated = update_settings(db, SettingsUpdate(**{key: value}))
     except ValueError as e:
         return {"ok": False, "reply": f"没改成：{e}", "journal": None}
-    logger.info("[settings] 对话改设置 %s: %r → %r", key, old, value)
-    return {"ok": True, "reply": f"已生效：{_setting_reply_text(key, old, value)}",
-            "journal": {"type": "setting", "key": key, "old": old, "new": value}}
+    # 回执报"实际生效值"而非请求值（2026-11-16 优化批 2）：午休越界会被
+    # clamp 或自动关闭 lunch_enabled，按入参回报会与真实状态不一致。
+    actual = getattr(updated, key, value)
+    logger.info("[settings] 对话改设置 %s: %r → %r（实际 %r）", key, old, value, actual)
+    return {"ok": True, "reply": f"已生效：{_setting_reply_text(key, old, actual)}",
+            "journal": {"type": "setting", "key": key, "old": old, "new": actual}}
 
 
 def _setting_reply_text(key: str, old, new) -> str:

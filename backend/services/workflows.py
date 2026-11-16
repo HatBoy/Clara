@@ -61,6 +61,9 @@ MORNING_CATCHUP_WINDOW_MIN = 180
 CATCHUP_SILENCE_TOL_MIN = 10
 # 采集多槽顺延偏移（分钟，基于 ingest_brief_min；2026-10-23 频率档位）：2 次→+5h；
 # 3 次→+4h/+8h；4 次→+3h/+6h/+9h——末槽 ≈ 首次+9h（默认 09:00 末槽 18:00，先于夜间报点）
+# 夜间维护兜底：报点后这么久仍未跑夜间整理 → 独立跑维护（2026-11-16 优化批 2）
+_NIGHTLY_MAINTENANCE_DEADLINE_MIN = 180
+
 _INGEST_SLOT_OFFSETS: dict[int, tuple[int, ...]] = {
     1: (),
     2: (300,),
@@ -191,6 +194,13 @@ def _claim_run(db: Session, name: str, day: date) -> bool:
     return result.rowcount == 1
 
 
+def _has_run(db: Session, name: str, day: date) -> bool:
+    """当日是否已认领过该工作流（幂等读；不写行）。"""
+    return db.scalar(
+        select(WorkflowRun.id).where(WorkflowRun.name == name, WorkflowRun.run_date == day)
+    ) is not None
+
+
 def _clock_min(value: int) -> int:
     """报点分钟防御收敛（2026-11-16 优化批 1）：1440 会让 time(24, 0) 抛错并
     拖垮整个 tick 的后续 claim；上限取 30 分钟粒度的最后一档 1410（23:30）。"""
@@ -227,15 +237,21 @@ def _claim_ingest(db: Session, now: datetime) -> bool:
         return False
     offsets = _INGEST_SLOT_OFFSETS.get(settings.ingest_runs_per_day, ())
     minute = _clock_min(settings.ingest_brief_min)
-    for slot, offset in enumerate((0, *offsets)):
-        at = datetime.combine(
-            now.date(), time(minute // 60, minute % 60)
-        ) + timedelta(minutes=offset)
-        if now < at:
-            continue
-        name = "ingest" if slot == 0 else f"ingest@{slot + 1}"
-        if _claim_run(db, name, now.date()):
-            return True
+    # 跨午夜槽位（2026-11-16 优化批 2）：报点较晚 + 偏移可能落到次日（如
+    # 18:00 + 4 槽 → 27:00）。旧实现用"当日"重算 at，跨日槽永不满足 now>=at。
+    # 现按绝对时间线枚举昨日与今日两个调度日，槽位归属其真实调度日。
+    for anchor in (now.date() - timedelta(days=1), now.date()):
+        for slot, offset in enumerate((0, *offsets)):
+            at = datetime.combine(
+                anchor, time(minute // 60, minute % 60)
+            ) + timedelta(minutes=offset)
+            if anchor != now.date() and at.date() == anchor:
+                continue  # 昨日未跨午夜的槽不属于今日补账对象（避免误补整天）
+            if now < at:
+                continue
+            name = "ingest" if slot == 0 else f"ingest@{slot + 1}"
+            if _claim_run(db, name, anchor):
+                return True
     return False
 
 
@@ -253,6 +269,23 @@ def _claim_nightly(db: Session, now: datetime) -> bool:
     if not (in_boot_grace or _is_idle(db, now)):
         return False
     return _claim_run(db, "nightly", now.date())
+
+
+def _claim_nightly_maintenance(db: Session, now: datetime) -> bool:
+    """夜间维护兜底（2026-11-16 优化批 2）：用户长期晚间活跃时 _claim_nightly
+    永不满足空闲条件，过期建议/事实/事件清理与信任降频会一直饿死。报点后
+    _NIGHTLY_MAINTENANCE_DEADLINE_MIN 分钟仍未跑过夜间整理 → 独立认领一次
+    "nightly_maint" 只跑维护（零 LLM 零广播，不打扰用户）。"""
+    settings = get_settings(db)
+    if not settings.nightly_enabled:
+        return False
+    started = now.hour * 60 + now.minute
+    start_min = min(settings.nightly_start_min, 1410)
+    if started < start_min + _NIGHTLY_MAINTENANCE_DEADLINE_MIN:
+        return False
+    if _has_run(db, "nightly", now.date()):
+        return False  # 正常夜间整理已跑，维护已在其中完成
+    return _claim_run(db, "nightly_maint", now.date())
 
 
 def _claim_prep(db: Session, now: datetime) -> bool:
@@ -678,7 +711,7 @@ def _report_headline(content: str) -> str:
     return first[:60] or "本周 AI 周报已生成"
 
 
-async def _run_weekly_report() -> None:
+async def _run_weekly_report(anchor: datetime | None = None) -> None:
     """周报自动生成（2026-11-07 统计 120 分档）：generate_report("week") →
     StatsReport 留档 + 面板消息全文（morning 先例）+ weekly_report 广播 + 渠道
     推送全文（4000 字截断在 push_to_channels 入口）。不建建议卡——周报是
@@ -698,7 +731,10 @@ async def _run_weekly_report() -> None:
                 return
             report_min = settings.nightly_start_min  # 补账静默判定的报点
             # LLM + 全量聚合在 stats_service.generate_report（同步秒级）——铁律 to_thread
-            report = await asyncio.to_thread(stats_service.generate_report, db, "week")
+            # 周期锚定认领时刻（2026-11-16 优化批 2）：周日 23:59 认领、LLM
+            # 跨零点跑完时，旧实现 period_range 会锚到新的一周（空报告）。
+            report = await asyncio.to_thread(
+                stats_service.generate_report, db, "week", now=anchor or datetime.now())
             report_id, content = report.id, report.content
             headline = _report_headline(content)
             append_message(db, role="assistant", content=content)
@@ -1034,6 +1070,39 @@ def _collect_priority_plan(db: Session, now: datetime) -> dict | None:
     return {"draft_plan": items}
 
 
+def _run_maintenance(db: Session, now: datetime) -> int:
+    """夜间维护（纯规则层零 LLM）：过期建议清理 + 采集台账清理 + 信任降频。
+    返回过期建议条数。夜间整理与维护兜底（_run_nightly_maintenance）共用。"""
+    # 数据源页审阅队列（from_ingest 采集卡）留 7 天慢慢整理，其余维持隔夜
+    # 过期；采纳率统计双侧剔除 expired，分母口径不受影响
+    expired = expire_stale_proposals(db, before=now - timedelta(days=1), ingest=False)
+    expired += expire_stale_proposals(db, before=now - timedelta(days=7), ingest=True)
+    # M2-①/③ 留存清理与信任降频（局部导入防循环）
+    from services.data_ingest import apply_trust_policy, purge_stale_items
+
+    purge_stale_items(db)
+    trust = apply_trust_policy(db)
+    if trust["paused"]:
+        logger.info("信任降频：%s 采纳率过低，暂停采集至明日 09:00", "、".join(trust["paused"]))
+    return expired
+
+
+async def _run_nightly_maintenance() -> None:
+    """维护兜底执行体（2026-11-16 优化批 2）：用户整晚活跃导致夜间整理一直
+    不空闲时不至于饿死清理链。零 LLM 零广播，失败只记日志。"""
+    try:
+        now = datetime.now()
+        await asyncio.to_thread(_run_maintenance_sync, now)
+        logger.info("夜间维护兜底完成（用户未空闲）")
+    except Exception:
+        logger.exception("夜间维护兜底异常")
+
+
+def _run_maintenance_sync(now: datetime) -> int:
+    with SessionLocal() as db:
+        return _run_maintenance(db, now)
+
+
 async def _run_nightly() -> None:
     """夜间重要整理：①优先级预排草案（激活模型时含 AI 微调，未激活纯规则保底
     ——不依赖 ai_enabled）②ai_enabled 时 to_thread 跑习惯学习 + 前夜综述
@@ -1051,17 +1120,26 @@ async def _run_nightly() -> None:
             silent = _catchup_silent(settings.nightly_start_min, now)
             # 预排可能含 LLM 微调（激活模型时）——to_thread 防阻塞事件循环
             # （agent tick 与 SSE 共用循环）；db 传参先例同下方 reflect_fn
-            payload = await asyncio.to_thread(_collect_priority_plan, db, now)
+            # 阶段隔离（2026-11-16 优化批 2）：预排异常不再连坐反思/综述/清理
+            try:
+                payload = await asyncio.to_thread(_collect_priority_plan, db, now)
+            except Exception:
+                logger.exception("夜间预排异常（后续阶段继续）")
+                payload = None
             if payload is not None:
-                pieces = len(payload["draft_plan"])
-                proposal = create_proposal(db, kind="schedule", payload=payload)
-                proposal_id = proposal.id
-                append_message(
-                    db,
-                    role="assistant",
-                    content=f"🌙 已按优先级挑出 {pieces} 件未排期待办并预排了时间，点卡片确认后写入日历。",
-                    proposal_id=proposal.id,
-                )
+                try:
+                    pieces = len(payload["draft_plan"])
+                    proposal = create_proposal(db, kind="schedule", payload=payload)
+                    proposal_id = proposal.id
+                    append_message(
+                        db,
+                        role="assistant",
+                        content=f"🌙 已按优先级挑出 {pieces} 件未排期待办并预排了时间，点卡片确认后写入日历。",
+                        proposal_id=proposal.id,
+                    )
+                except Exception:
+                    logger.exception("夜间预排卡落库异常（后续阶段继续）")
+                    pieces = 0
             if settings.ai_enabled:
                 reflect_fn = _load_agent("agents.reflection", "run_reflection")
                 if reflect_fn is not None:
@@ -1096,17 +1174,7 @@ async def _run_nightly() -> None:
                             logger.info("run_preflight 未实现（手写区），前夜综述跳过")
                         except Exception:
                             logger.exception("前夜综述异常（夜间主流程继续）")
-            # 数据源页审阅队列（from_ingest 采集卡）留 7 天慢慢整理，其余维持隔夜
-            # 过期；采纳率统计双侧剔除 expired，分母口径不受影响
-            expired = expire_stale_proposals(db, before=now - timedelta(days=1), ingest=False)
-            expired += expire_stale_proposals(db, before=now - timedelta(days=7), ingest=True)
-            # M2-①/③ 留存清理与信任降频（纯规则层零 LLM，局部导入防循环同上）
-            from services.data_ingest import apply_trust_policy, purge_stale_items
-
-            purge_stale_items(db)
-            trust = apply_trust_policy(db)
-            if trust["paused"]:
-                logger.info("信任降频：%s 采纳率过低，暂停采集至明日 09:00", "、".join(trust["paused"]))
+            expired = _run_maintenance(db, now)
         if silent:
             logger.info("夜间重要整理完成（补账轮静默）：预排 %d 件，过期建议 %d 条", pieces, expired)
         else:
@@ -1234,6 +1302,7 @@ async def agent_loop() -> None:
                 prep = _claim_prep(db, now)
                 hardtask = _claim_hardtask(db, now)
                 weekly = _claim_weekly_report(db, now)
+                nightly_maint = _claim_nightly_maintenance(db, now)
                 minutes_invite = _claim_minutes_invite(db, now)
                 briefs = _claim_custom_briefs(db, now)
                 autobackup = _claim_autobackup(db, now)
@@ -1250,7 +1319,9 @@ async def agent_loop() -> None:
             if minutes_invite:
                 asyncio.create_task(_run_minutes_invite())
             if weekly:
-                asyncio.create_task(_run_weekly_report())
+                asyncio.create_task(_run_weekly_report(now))
+            if nightly_maint:
+                asyncio.create_task(_run_nightly_maintenance())
             for brief_id in briefs:
                 asyncio.create_task(_run_custom_brief(brief_id))
             if _claim_heartbeat(now):

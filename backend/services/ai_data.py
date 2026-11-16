@@ -39,6 +39,9 @@ CHAT_MAX_WINDOW = 500
 # 字符量触发阈值（2026-10-26 增）：未摘要积压字符超此值也触发压缩——条数阈值
 # 管短消息高频对话，字符阈值管长消息低频对话（摘要新鲜度跟信息量走，非条数）
 CHAT_COMPRESS_CHARS = 6000
+# 摘要落库长度上限（2026-11-16 优化批 2）：提示词要求 ≤500 字但不保证遵守，
+# 超长摘要会被注入 router/qa/教练等所有消费面撑上下文；留 4 倍余量。
+CHAT_SUMMARY_MAX_CHARS = 2000
 # 压缩切块参数（2026-10-26 增，防单次压缩调用塞爆小档位模型）：单条消息超长
 # 截断 + 单块字符上限贪心组块，块间逐次 LLM 滚动合并（详见 graph.compact_chat_history）
 CHAT_COMPACT_MSG_CHARS = 4000
@@ -768,10 +771,16 @@ def pending_compaction_slice(db: Session) -> list[Message]:
     """未摘要切片 [summarized_count : n-K]（保留窗 K 条继续作原文）——compaction_due
     阈值判定与 /compact 强制压缩共用同一切片口径；无待摘要消息返回空表。窗口硬
     上限 CHAT_MAX_WINDOW 之外的消息不参与（起点不早于 n - 上限）。"""
+    # 全局游标必须换算成本地下标（2026-11-16 优化批 2）：list_messages 只返回
+    # 最近 CHAT_MAX_WINDOW 条，而 summarized_count 是全局行号——总数超过窗口后
+    # 直接当本地下标用会让切片恒空（压缩永久停摆）或错段。
+    total = db.scalar(select(func.count()).select_from(Message)) or 0
+    window_start = max(total - CHAT_MAX_WINDOW, 0)
     rows = list_messages(db, limit=CHAT_MAX_WINDOW)
-    n = len(rows)
-    lo = max(get_chat_state(db).summarized_count, n - CHAT_MAX_WINDOW)
-    return rows[lo:max(n - CHAT_RECENT_K, 0)]
+    summarized = get_chat_state(db).summarized_count
+    lo = max(summarized - window_start, 0)
+    hi = max(total - CHAT_RECENT_K - window_start, 0)
+    return rows[lo:hi]
 
 
 def compaction_due(db: Session) -> list[Message] | None:
@@ -808,9 +817,12 @@ def compaction_due(db: Session) -> list[Message] | None:
 
 
 def save_chat_summary(db: Session, *, summary: str, count: int) -> None:
-    """写入滚动摘要并推进压缩游标（compact_chat_history 专用）。"""
+    """写入滚动摘要并推进压缩游标（compact_chat_history 专用）。
+
+    摘要长度在此钳制（2026-11-16 优化批 2）：提示词要求 ≤500 字但不保证模型
+    遵守，超长摘要会被注入 router/qa/教练等所有消费面撑爆上下文。"""
     row = get_chat_state(db)
-    row.summary = summary
+    row.summary = (summary or "")[:CHAT_SUMMARY_MAX_CHARS]
     row.summarized_count = count
     db.commit()
 
