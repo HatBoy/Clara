@@ -1,6 +1,7 @@
 // 首启入职访谈（2026-11-17 批 1）：三步确定性向导，不依赖模型即可完成。
 // 答案落 app_settings + 记忆规则；「稍后」只关本次会话，「跳过引导」写完成标记。
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { InputHTMLAttributes } from "react";
 import { ArrowLeft, ArrowRight, Check, X } from "lucide-react";
 import { completeOnboarding, toFrontendSettings, type ApiSettings } from "../lib/api";
 import type { Settings } from "../lib/settings";
@@ -29,6 +30,32 @@ function fmtHour(h: number): string {
   const hh = Math.floor(h);
   const mm = Math.round((h - hh) * 60);
   return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+/** 数字输入（二轮批 1）：本地字符串暂存——清空不立即变 0（Number("") === 0），
+ * 有效输入即提交数值，失焦回显已提交值 */
+function NumInput({
+  value,
+  onCommit,
+  ...rest
+}: {
+  value: number;
+  onCommit: (n: number) => void;
+} & Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange">) {
+  const [text, setText] = useState(String(value));
+  useEffect(() => setText(String(value)), [value]); // 外部回写同步（提交后已是同值，无感）
+  return (
+    <input
+      {...rest}
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        const n = Number(e.target.value);
+        if (e.target.value !== "" && Number.isFinite(n)) onCommit(n);
+      }}
+      onBlur={() => setText(String(value))}
+    />
+  );
 }
 
 export default function OnboardingWizard({
@@ -133,18 +160,18 @@ export default function OnboardingWizard({
             <div className="onb-form">
               <label className="onb-row">
                 <span>每天开始工作</span>
-                <input type="number" min={0} max={23} step={0.5} value={dayStart}
-                       onChange={(e) => setDayStart(Number(e.target.value))} />
+                <NumInput type="number" min={0} max={23} step={0.5} value={dayStart}
+                          onCommit={setDayStart} />
               </label>
               <label className="onb-row">
                 <span>每天结束工作</span>
-                <input type="number" min={1} max={24} step={0.5} value={dayEnd}
-                       onChange={(e) => setDayEnd(Number(e.target.value))} />
+                <NumInput type="number" min={1} max={24} step={0.5} value={dayEnd}
+                          onCommit={setDayEnd} />
               </label>
               <label className="onb-row">
                 <span>每日有效工时（小时）</span>
-                <input type="number" min={1} max={12} step={0.5} value={workHours}
-                       onChange={(e) => setWorkHours(Number(e.target.value))} />
+                <NumInput type="number" min={1} max={12} step={0.5} value={workHours}
+                          onCommit={setWorkHours} />
               </label>
               <label className="onb-row">
                 <span>有午休时段</span>
@@ -155,10 +182,10 @@ export default function OnboardingWizard({
                 <div className="onb-row">
                   <span>午休 {fmtHour(lunchStart)} - {fmtHour(lunchEnd)}</span>
                   <span className="onb-inline">
-                    <input type="number" min={0} max={23} step={0.5} value={lunchStart}
-                           onChange={(e) => setLunchStart(Number(e.target.value))} />
-                    <input type="number" min={1} max={24} step={0.5} value={lunchEnd}
-                           onChange={(e) => setLunchEnd(Number(e.target.value))} />
+                    <NumInput type="number" min={0} max={23} step={0.5} value={lunchStart}
+                              onCommit={setLunchStart} />
+                    <NumInput type="number" min={1} max={24} step={0.5} value={lunchEnd}
+                              onCommit={setLunchEnd} />
                   </span>
                 </div>
               )}

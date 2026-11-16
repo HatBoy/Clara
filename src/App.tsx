@@ -158,6 +158,10 @@ function App() {
   const [loadedFromDay, setLoadedFromDay] = useState(
     () => epochDayOf(new Date()) - INITIAL_LOOKBACK_DAYS,
   );
+  // 窗口左边界引用（二轮批 1）：挂载一次的监听 effect（toast 动作等）闭包里的
+  // reloadTasks 读 ref——旧闭包陈旧为首帧初始值，历史扩展后触发的重拉窗口偏窄
+  const loadedFromDayRef = useRef(loadedFromDay);
+  loadedFromDayRef.current = loadedFromDay;
   // 项目列表（Sidebar 受控；任务 project 字段以 name 引用项目）
   const [projects, setProjects] = useState<Project[]>([]);
   // 项目页当前查看的项目名（activeView === "project" 时有效）
@@ -604,10 +608,10 @@ function App() {
   // effect 挂载一次，闭包里的 projectNameById 若取组件 state 会陈旧为首帧空映射，把任务
   // 归属抹成无项目）：unscheduled 全量 + 已加载窗口起点的已排期批，upsert 浅替换整行
   // （乐观删掉的行也会被后端行复活）。两处消费：widget 推来的 reload 载荷（Clone &
-  // Override 编辑/删除牵连派生变化）、本窗写请求失败自愈。挂载监听路径的 loadedFromDay
-  // 闭包陈旧为首帧初始值——纠偏至少覆盖初始窗口，足够。自愈请求失败静默（后端不在时
-  // 无数据可纠，下次写失败再试）
+  // Override 编辑/删除牵连派生变化）、本窗写请求失败自愈。窗口起点读 ref（挂载一次的
+  // 监听闭包不陈旧）。自愈请求失败静默（后端不在时无数据可纠，下次写失败再试）
   const reloadTasks = () => {
+    const fromDay = loadedFromDayRef.current;
     fetchProjects()
       .then((apiProjects) => {
         const nameById = new Map(apiProjects.map((p) => [p.id, p.name]));
@@ -615,7 +619,7 @@ function App() {
         setProjects(apiProjects.map(toFrontendProject));
         return Promise.all([
           fetchTasks({ unscheduled: true }),
-          fetchTasks({ start: dayStartOf(loadedFromDay) }),
+          fetchTasks({ start: dayStartOf(fromDay) }),
         ]).then((batches) => batches.flat().map((t) => toFrontendTask(t, nameById)));
       })
       .then((fresh) => {
@@ -626,7 +630,7 @@ function App() {
         setTasks((prev) => {
           const kept = prev.filter((t) => {
             if (freshIds.has(t.id)) return false; // 由 fresh 版本替换
-            return isScheduled(t) && t.dateOffset < loadedFromDay;
+            return isScheduled(t) && t.dateOffset < fromDay;
           });
           return [...kept, ...fresh];
         });
@@ -668,7 +672,13 @@ function App() {
       })
       .catch((e) => {
         console.error("撤销失败", e);
-        setUndoHint(null);
+        // 失败可见（二轮批 1：旧版静默收条，用户不知为何没撤销）：条上直显
+        // 后端 detail（如「项目名已存在」），按钮仍可重试
+        const detail = (e as { detail?: string })?.detail;
+        setUndoHint({
+          label: detail ? `撤销失败：${detail}` : "撤销失败，请稍后重试",
+        });
+        undoTimerRef.current = window.setTimeout(() => setUndoHint(null), 6000);
         reloadTasks();
       });
   };
@@ -876,8 +886,14 @@ function App() {
           : { ...src, ...patch };
       notifyPeer("main", { kind: "upsert", tasks: [merged] });
     }
+    // 纯 done 勾选不刷新撤销条（二轮批 1 回归批 1 原设计）：后端同口径不建撤销
+    // 条目——刷条会把上一条旧操作的撤销入口当新操作误弹（收件箱 4 秒局部撤销
+    // 是勾选反转的唯一入口）
+    const doneOnly = Object.keys(patch).length === 1 && "done" in patch;
     updateTask(taskId, toTaskPatch(patch))
-      .then(() => refreshUndo())
+      .then(() => {
+        if (!doneOnly) refreshUndo();
+      })
       .catch((e) => recoverFromWriteError("任务编辑写回后端失败", e));
   };
 

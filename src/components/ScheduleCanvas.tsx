@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, DragEvent as ReactDragEvent, ReactNode } from "react";
 import {
   CalendarSync,
@@ -426,16 +426,20 @@ function ScheduleCanvas({
 
   // —— 虚拟块（2026-11-17 批 2）：会议前后缓冲 + 出行前置 ——
   // 纯渲染不落库：不进收件箱/统计/提醒，不参与拖拽冲突计数；单块可隐藏（localStorage）
-  const [, setBufferHiddenTick] = useState(0);
-  const bufferHidden = (key: string): boolean => {
+  const [bufferHiddenTick, setBufferHiddenTick] = useState(0);
+  // 隐藏集单次解析缓存（二轮批 1）：旧版每次判定都 JSON.parse，拖拽期间逐帧
+  // 重复解析；tick 只在 hideBuffer 写入后递增触发重算
+  const hiddenBufferKeys = useMemo<Set<string>>(() => {
     try {
       const raw = window.localStorage.getItem(BUFFER_HIDE_KEY);
       const arr = raw ? (JSON.parse(raw) as string[]) : [];
-      return Array.isArray(arr) && arr.includes(key);
+      return new Set(Array.isArray(arr) ? arr : []);
     } catch {
-      return false;
+      return new Set();
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bufferHiddenTick]);
+  const bufferHidden = (key: string): boolean => hiddenBufferKeys.has(key);
   const hideBuffer = (key: string) => {
     try {
       const raw = window.localStorage.getItem(BUFFER_HIDE_KEY);
@@ -465,14 +469,16 @@ function ScheduleCanvas({
         const prevEnd = prev ? prev.end ?? prev.start + 1 : 0;
         const gapBefore = prev ? m.start - prevEnd : Infinity;
         if (prev && gapBefore > 0 && gapBefore < BUFFER_PRE_MIN / 60) {
-          const key = `${m.id}:${offset}:pre`;
+          // 隐藏 key 用绝对日期（二轮批 1）：旧版相对今天偏移跨天即失效（今天隐藏
+          // 明天同实例又出现）且死键堆积；旧格式键无人再命中自然淘汰
+          const key = `${m.id}:${dateKeyOfOffset(offset)}:pre`;
           if (!bufferHidden(key)) {
             blocks.push({ key, kind: "pre", start: Math.max(prevEnd, m.start - BUFFER_PRE_MIN / 60), end: m.start, title: "会前缓冲" });
           }
         }
         const gapAfter = next ? next.start - mEnd : Infinity;
         if (next && gapAfter > 0 && gapAfter < BUFFER_POST_MIN / 60) {
-          const key = `${m.id}:${offset}:post`;
+          const key = `${m.id}:${dateKeyOfOffset(offset)}:post`;
           if (!bufferHidden(key)) {
             blocks.push({ key, kind: "post", start: mEnd, end: Math.min(next.start, mEnd + BUFFER_POST_MIN / 60), title: "会后缓冲" });
           }

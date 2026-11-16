@@ -260,9 +260,11 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
     }
   };
 
-  // 任务数据导出（2026-11-17 批 4）：CSV 表格 / .ics 日历，后端落盘
+  // 任务数据导出（2026-11-17 批 4）：CSV 表格 / .ics 日历，后端落盘。
+  // 日期标签取本地日（toISOString 是 UTC，东八区 0-8 点会差一天）
   const doDataExport = async (fmt: "csv" | "ics") => {
-    const tag = new Date().toISOString().slice(0, 10);
+    const now = new Date();
+    const tag = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     const path = await saveTaskExportPath(`clara-tasks-${tag}.${fmt}`, fmt);
     if (!path) return;
     setDataExport({ kind: "busy", fmt });

@@ -402,13 +402,14 @@ export default function ReportsPanel({
     }
   };
 
-  /** 整页截图导出 PNG：先出保存对话框（取消即止），再截图投递后端落盘 */
+  /** 整页截图导出 PNG：先出保存对话框（取消即止），再截图投递后端落盘。
+   * 日期标签取本地日（toISOString 是 UTC，东八区 0-8 点会差一天） */
   const doExportImage = async () => {
     const el = bodyInnerRef.current;
     if (!el || capturing) return;
-    const path = await saveStatsImagePath(
-      `clara-统计报告-近${days}天-${new Date().toISOString().slice(0, 10)}.png`,
-    );
+    const now = new Date();
+    const tag = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const path = await saveStatsImagePath(`clara-统计报告-近${days}天-${tag}.png`);
     if (!path) return;
     setCapturing(true);
     try {

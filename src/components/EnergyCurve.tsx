@@ -82,6 +82,23 @@ export default function EnergyCurve({
 
   const hasScore = points.some((p) => p.score !== null);
   const segs = segments(points);
+  // 峰谷 chips 随星期 tab 联动（二轮批 1）：选定星期时从该日有分点就地取峰/谷
+  // （tie-break 取样本多者，与后端口径一致）；「全部」= 后端全量口径不变
+  const scored = points.filter(
+    (p): p is { hour: number; score: number; sample: number } => p.score !== null,
+  );
+  const scopedPeak =
+    weekday !== null && scored.length
+      ? scored.reduce((a, b) =>
+          b.score > a.score || (b.score === a.score && b.sample > a.sample) ? b : a)
+      : null;
+  const scopedLow =
+    weekday !== null && scored.length
+      ? scored.reduce((a, b) =>
+          b.score < a.score || (b.score === a.score && b.sample > a.sample) ? b : a)
+      : null;
+  const chipPeak = weekday === null ? data?.peak ?? null : scopedPeak;
+  const chipLow = weekday === null ? data?.low ?? null : scopedLow;
 
   return (
     <section className="report-card energy-card">
@@ -106,16 +123,16 @@ export default function EnergyCurve({
             </div>
           ) : (
             <div className="energy-chips">
-              {data.peak && (
+              {chipPeak && (
                 <span className="energy-chip up">
-                  高峰 {String(data.peak.hour).padStart(2, "0")}:00 · 完成倾向{" "}
-                  {data.peak.score}%
+                  高峰 {String(chipPeak.hour).padStart(2, "0")}:00 · 完成倾向{" "}
+                  {chipPeak.score}%
                 </span>
               )}
-              {data.low && data.peak && data.low.hour !== data.peak.hour && (
+              {chipLow && chipPeak && chipLow.hour !== chipPeak.hour && (
                 <span className="energy-chip down">
-                  低谷 {String(data.low.hour).padStart(2, "0")}:00 · 完成倾向{" "}
-                  {data.low.score}%
+                  低谷 {String(chipLow.hour).padStart(2, "0")}:00 · 完成倾向{" "}
+                  {chipLow.score}%
                 </span>
               )}
             </div>
