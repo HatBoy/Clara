@@ -277,6 +277,45 @@ def clear_snapshot() -> None:
         logger.info("同步快照已清空（基线重置）")
 
 
+# —— 合法清空豁免（2026-11-16 真机二轮：守卫 b 误伤 /clear）————————————————
+# /clear 类合法操作会把整表删空（messages / stats_messages 聊天攒过百条后必超
+# 守卫 b 阈值被拦，且「重置基线」指引在该场景是错的——union 会把清空的消息
+# 全拉回来）。clear 入口打表级豁免标记（落盘 cleared.json 防重启丢失），引擎
+# 对豁免表跳过守卫 b 一次并消耗标记，删除正常传播到云端。
+
+def _cleared_marker_path() -> Path:
+    return get_data_dir() / "sync_cleared.json"
+
+
+def note_table_cleared(table: str) -> None:
+    """打合法清空标记（clear 入口调用）。幂等。"""
+    marks: set = set()
+    p = _cleared_marker_path()
+    if p.is_file():
+        try:
+            marks = set(json.loads(p.read_text(encoding="utf-8")))
+        except (ValueError, OSError):
+            marks = set()
+    marks.add(table)
+    p.write_text(json.dumps(sorted(marks), ensure_ascii=False), encoding="utf-8")
+
+
+def _load_cleared_tables() -> set:
+    """读豁免标记（run_sync 每轮开头；同步成功才消耗——失败轮保留重试）。"""
+    p = _cleared_marker_path()
+    if not p.is_file():
+        return set()
+    try:
+        return set(json.loads(p.read_text(encoding="utf-8")))
+    except (ValueError, OSError):
+        return set()
+
+
+def _consume_cleared_marker() -> None:
+    """消耗豁免标记（run_sync 全链成功尾部调用）。"""
+    _cleared_marker_path().unlink(missing_ok=True)
+
+
 # —— 三路合并（纯函数，直测友好）————————————————————————————————————————
 
 
@@ -528,10 +567,15 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
     remote_tables = (manifest or {}).get("tables") or {}
     # 拉到的远端 manifest 原始形态（纯拉取轮的探测记忆基准，见尾部注释）
     remote_hashes_at_fetch = {t: v.get("sha1") for t, v in remote_tables.items()}
+    cleared_tables = _load_cleared_tables()  # 合法清空豁免（/clear 类，见 note_table_cleared）
     if base_exists:
-        # 表级守卫：Base 有的表 manifest 缺（远端文件被手动删）→ 远端异常中止
+        # 表级守卫：Base 有的表 manifest 缺（远端文件被手动删）→ 远端异常中止。
+        # **Base 快照为空的表不算缺失**（真机二轮实测）：运行中新增的空表在
+        # manifest 收录前会先落空 Base 快照——若拦，推送代码永远没机会执行、
+        # manifest 永远不收录，死锁；真被删的旧表 Base 非空照拦
         missing = [t for t in SYNC_TABLES
-                   if t not in remote_tables and _base_path(t).is_file()]
+                   if t not in remote_tables and _base_path(t).is_file()
+                   and len(_load_base(t) or []) > 0]
         if missing:
             raise SyncAbort(f"远端缺失表文件：{missing[:3]}（可能被手动删除）。"
                             "如确认远端已重置，请先「重置同步基线」")
@@ -575,8 +619,11 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
             result = _merge_table(name, local, base, remote)
             merged, del_remote, del_local = result["merged"], result["del_remote"], result["del_local"]
 
-            # 守卫 b（推方向）：将删远端大量行且远端自身未变 → 疑本地删库重建
-            if base_exists and base is not None and remote_hash == base_hash:
+            # 守卫 b（推方向）：将删远端大量行且远端自身未变 → 疑本地删库重建。
+            # 合法清空豁免（/clear 类整表删空是正常操作，拦截+「重置基线」指引
+            # 在此场景反而会把清空的数据 union 拉回来——真机二轮实测误伤）
+            if base_exists and base is not None and remote_hash == base_hash \
+                    and name not in cleared_tables:
                 if len(del_remote) > max(DELETE_GUARD_MIN, len(remote) // 2):
                     raise SyncAbort(
                         f"本地 {name} 表比上次同步少了 {len(del_remote)} 行（常见于删库重建/恢复备份），"
@@ -598,10 +645,14 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
             if ins or upd or del_local:
                 stats["tables_changed"] += 1
             actual_hash = _hash_rows(actual)
-            if actual_hash == remote_hash:
-                # 纯拉取轮：合并结果与远端一致（本地只是应用了远端变更）——
-                # 不回推同内容（2026-11-16 真机批：对端改→我拉的轮次曾全量
-                # 回推 22 表 + manifest，请求翻倍直接撞坚果云限频）
+            if actual_hash == remote_hash and name in remote_tables:
+                # 纯拉取轮：远端 manifest 已收录该表且合并结果与远端一致（本地
+                # 只是应用了远端变更）——不回推同内容（2026-11-16 真机批：对端
+                # 改→我拉的轮次曾全量回推 22 表 + manifest，请求翻倍撞限频）。
+                # 「name in remote_tables」前提不可省：**运行中新增的空表**内容
+                # 与远端（无文件=空）一致，若跳过则 manifest 永不收录该表，而
+                # Base 已落快照 → 下轮表级守卫误拦「远端缺失表文件」（真机二
+                # 轮实测抓到）——新表必须推一次让对端知晓
                 snapshots[name] = actual
                 pushed_tables[name] = {"sha1": actual_hash, "rows": len(actual),
                                        "updated_at": datetime.now().isoformat(timespec="seconds")}
@@ -643,6 +694,7 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
         _last_seen_hashes = {t: v.get("sha1") for t, v in pushed_tables.items()}
     else:
         _last_seen_hashes = remote_hashes_at_fetch
+    _consume_cleared_marker()  # 全链成功才消耗豁免（失败轮保留重试）
     return stats
 
 

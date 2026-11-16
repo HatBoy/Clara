@@ -455,3 +455,70 @@ def test_sync_now_busy_and_lock_release():
     # 不再出现「未启用」
     out = se.sync_now()
     assert "未启用" not in out.get("error", "")
+
+
+def test_new_empty_table_must_push_into_manifest():
+    """运行中新增的空表（真机二轮实测 bug）：远端 manifest 未收录时，即使内容
+    与远端（无文件=空）一致也必须推送一次——否则 manifest 永不收录该表，而
+    Base 已落快照 → 下轮表级守卫误拦「远端缺失表文件」。"""
+    with TestingSessionLocal() as db:
+        _add_task(db, "x")
+        dav = FakeDav()
+        # 第一轮：远端只放部分表（模拟对端旧版本 manifest——无 stats_messages）
+        se.run_sync(db, dav, CFG)
+        assert "stats_messages" in dav.tables  # 空新表被推（修复点）
+        assert "stats_messages" in dav.manifest["tables"]  # manifest 收录
+        # 第二轮：不再被表级守卫拦截，正常通过
+        out = se.run_sync(db, dav, CFG)
+        assert "error" not in out
+
+
+def test_guard_not_triggered_by_empty_new_table_snapshot():
+    """守卫不拦空 Base 快照（真机二轮死锁场景）：Base 已落新表空快照 + 远端
+    manifest 未收录 → 同步必须通过并把空表推上云收录，而非误拦。"""
+    with TestingSessionLocal() as db:
+        _add_task(db, "x")
+        dav = FakeDav()
+        se.run_sync(db, dav, CFG)
+        # 人为制造畸形态：删远端某空表的 manifest 记录与文件（Base 空快照仍在）
+        empty_table = next(t for t in se.SYNC_TABLES
+                           if t not in ("tasks", "projects") and len(se._load_base(t) or []) == 0)
+        m = dict(dav.manifest)
+        m["tables"] = {k: v for k, v in m["tables"].items() if k != empty_table}
+        dav.manifest = m
+        dav.tables.pop(empty_table, None)
+        # 不拦：同步通过（若 Base 非空才拦——已有用例覆盖）
+        out = se.run_sync(db, dav, CFG)
+        assert "error" not in out
+        assert empty_table in dav.manifest["tables"]  # 重新收录自愈
+
+
+def test_clear_exemption_bypasses_guard_b():
+    """合法清空豁免（真机二轮实测误伤）：>100 行 messages 被整表 /clear →
+    无豁免时守卫 b 拦截；note_table_cleared 后放行且删除传播远端。"""
+    from models import Message
+
+    with TestingSessionLocal() as db:
+        for i in range(120):
+            db.add(Message(role="user", content=f"消息{i}"))
+        db.commit()
+        dav = FakeDav()
+        se.run_sync(db, dav, CFG)  # 建基线
+        # 模拟 /clear：整表删 + 打豁免标记
+        db.query(Message).delete()
+        db.commit()
+        se.note_table_cleared("messages")
+        out = se.run_sync(db, dav, CFG)  # 不拦
+        assert "error" not in out
+        remote = dav.tables["messages"]["rows"]
+        assert remote == []  # 删除已传播云端
+        # 豁免标记已消耗；无标记时同场景仍拦（回归守卫本体）
+        for i in range(120):
+            db.add(Message(role="user", content=f"消息{i}"))
+        db.commit()
+        se.run_sync(db, dav, CFG)
+        db.query(Message).delete()
+        db.commit()
+        with pytest.raises(se.SyncAbort, match="少了"):
+            se.run_sync(db, dav, CFG)
+        se._consume_cleared_marker()  # 清理残留标记

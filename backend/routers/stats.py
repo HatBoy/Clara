@@ -272,9 +272,12 @@ def append_stats_message(body: StatsMessageIn, db: Session = Depends(get_db)):
 
 @router.delete("/messages", status_code=204)
 def clear_stats_messages(db: Session = Depends(get_db)):
-    """/clear：物理删全表（删除传播多端清空）。"""
+    """/clear：物理删全表（删除传播多端清空；攒过百条后整表删空会撞守卫 b——
+    打合法清空豁免标记，见 sync_engine.note_table_cleared）。"""
     from sqlalchemy import delete
 
     from models import StatsMessage
+    from services.sync_engine import note_table_cleared
     db.execute(delete(StatsMessage))
     db.commit()
+    note_table_cleared("stats_messages")

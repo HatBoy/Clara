@@ -818,13 +818,19 @@ def save_chat_summary(db: Session, *, summary: str, count: int) -> None:
 def clear_chat_session(db: Session) -> None:
     """清空对话会话（/clear 命令，2026-10-21）：删全部消息 + 重置滚动摘要与压缩
     游标（ChatState docstring 预留的语义）——上下文注入（近期原文 + 摘要）从零
-    起步。建议行（proposals）不清：它们是待办建议不是对话内容。"""
+    起步。建议行（proposals）不清：它们是待办建议不是对话内容。
+
+    同步豁免（2026-11-16 真机二轮）：消息攒过百条后整表删空会撞守卫 b 的
+    「大量删除防传播」拦截——打合法清空标记让删除正常传播多端清空。"""
+    from services.sync_engine import note_table_cleared
+
     db.query(Message).delete()
     state = db.get(ChatState, 1)
     if state is not None:
         state.summary = None
         state.summarized_count = 0
     db.commit()
+    note_table_cleared("messages")
 
 
 # 问询归属子图判定域（Track B 批 2）：payload.kind → origin 派生用，
