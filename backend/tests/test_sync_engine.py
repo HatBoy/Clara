@@ -126,11 +126,36 @@ def test_merge_both_changed_lww():
     assert out["merged"] == [newer]
 
 
-def test_merge_tie_local_wins():
-    out = se._merge_table("tasks", local=[_row("a", TS1)], base=[_row("a", TS1)],
-                          remote=[{"id": "a", "title": "远端", "updated_at": TS1}])
-    # 平局（ts 相等）本地优先
-    assert out["merged"] == [_row("a", TS1)]
+def test_merge_tie_converges_deterministically():
+    """平局按 device_id 字典序（2026-11-16 优化批 3）：双端视角选出同一条物理行，
+    不再"本地优先"导致 ping-pong。"""
+    local_row = _row("a", TS1)
+    remote_row = {"id": "a", "title": "远端", "updated_at": TS1}
+    out1 = se._merge_table("tasks", local=[local_row], base=[_row("a", TS1)],
+                           remote=[remote_row],
+                           local_device="dev-a", remote_device="dev-b")
+    out2 = se._merge_table("tasks", local=[remote_row], base=[_row("a", TS1)],
+                           remote=[local_row],
+                           local_device="dev-b", remote_device="dev-a")
+    assert out1["merged"] == out2["merged"] == [local_row]  # dev-a 胜
+
+
+def test_merge_remote_modify_beats_local_delete():
+    """对端删 + 本地后改 → 改者胜（此前删除一律获胜，编辑静默丢失）。"""
+    modified = _row("a", TS3)
+    out = se._merge_table("tasks", local=[modified], base=[_row("a", TS1)], remote=[])
+    assert out["merged"] == [modified]
+    # 本地删 + 对端后改 → 对端改者胜
+    remote_modified = _row("a", TS3)
+    out2 = se._merge_table("tasks", local=[], base=[_row("a", TS1)],
+                           remote=[remote_modified])
+    assert out2["merged"] == [remote_modified]
+
+
+def test_merge_delete_wins_when_unmodified():
+    """未改过的一侧删除仍然获胜（保持原删除传播语义）。"""
+    out = se._merge_table("tasks", local=[_row("a", TS1)], base=[_row("a", TS1)], remote=[])
+    assert out["merged"] == []
 
 
 def test_merge_ts_missing_falls_back_to_created():
@@ -405,6 +430,49 @@ def test_natural_key_collision_lww_fallback():
         assert "blue" in colors
 
 
+def test_natural_key_collision_local_win_not_deleted():
+    """自然键撞车 + 本地较新：LWW 保留本地行后，末尾删除集不得把它当"本地删"
+    （2026-11-16 优化批 3——旧实现会让本地行消失、下一轮把远端也删掉）。"""
+    with TestingSessionLocal() as db:
+        db.add(Project(name="工作", color="red"))
+        db.commit()
+        dav = FakeDav()
+        se.run_sync(db, dav, CFG)  # 推上去建立 Base
+        # 本地改（新）→ 触发器刷新 updated_at
+        local = se.table_rows(db, "projects")[0]
+        db.execute(Project.__table__.update().where(
+            Project.id == local["id"]).values(color="purple"))
+        db.commit()
+        # 远端换成同名不同 id、时间更旧的行（模拟对端删重建）
+        old = "2020-01-01T00:00:00"
+        dav.tables["projects"] = {"table": "projects", "rows": [
+            {"id": "remote-uuid", "name": "工作", "color": "blue",
+             "created_at": old, "updated_at": old}]}
+        m = dict(dav.manifest)
+        m["tables"] = {**m["tables"], "projects": {**m["tables"]["projects"], "sha1": "stale"}}
+        dav.manifest = m
+        se.run_sync(db, dav, CFG)
+        rows = se.table_rows(db, "projects")
+        assert len(rows) == 1 and rows[0]["color"] == "purple"
+
+
+def test_guard_c_protects_small_table_clear():
+    """小表（1 行）被远端清空 + 本地未动 → 守卫 c 拦截（优化批 3：取消 >100 下限）。"""
+    with TestingSessionLocal() as db:
+        db.add(Project(name="唯一项目", color="red"))
+        db.commit()
+        dav = FakeDav()
+        se.run_sync(db, dav, CFG)
+        # 远端被外部写成空数组（文件仍在）
+        dav.tables["projects"] = {"table": "projects", "rows": []}
+        m = dict(dav.manifest)
+        m["tables"] = {**m["tables"], "projects": {**m["tables"]["projects"], "sha1": "stale"}}
+        dav.manifest = m
+        with pytest.raises(se.SyncAbort):
+            se.run_sync(db, dav, CFG)
+        assert [r["name"] for r in se.table_rows(db, "projects")] == ["唯一项目"]
+
+
 def test_dirty_tables_intersect_sync_tables():
     """防死循环回归：sync_settings（状态回显）进脏表集合会被过滤。"""
     se.mark_tables_dirty(["sync_settings", "tasks"])
@@ -522,3 +590,119 @@ def test_clear_exemption_bypasses_guard_b():
         with pytest.raises(se.SyncAbort, match="少了"):
             se.run_sync(db, dav, CFG)
         se._consume_cleared_marker()  # 清理残留标记
+
+
+def test_manifest_self_heals_after_previous_push_failure(monkeypatch):
+    """表文件推成功但 manifest 推失败后，下一轮即便纯拉取也要补推 manifest
+    （2026-11-16 优化批 3：否则其他设备永远跳过新表数据）。"""
+    with TestingSessionLocal() as db:
+        _add_task(db, "本地新增")
+        dav = FakeDav()
+
+        real_push_manifest = dav.push_manifest
+
+        def flaky(manifest, *, if_none_match=False):
+            raise WebDavError("503 模拟限频")
+
+        dav.push_manifest = flaky
+        with pytest.raises(WebDavError):
+            se.run_sync(db, dav, CFG)  # 表已推、manifest 未推
+
+        dav.push_manifest = real_push_manifest
+        se.run_sync(db, dav, CFG)  # 下一轮：远端 manifest 缺失表记录
+        hashes = dav.manifest_hashes()
+        assert "tasks" in hashes  # manifest 被补推收录
+        assert any(r["title"] == "本地新增"
+                   for r in dav.tables["tasks"]["rows"])
+
+
+def test_sync_write_committed_before_network_push(monkeypatch):
+    """写库事务在推送前已提交（优化批 3：网络推送不再包在长写事务里）。"""
+    with TestingSessionLocal() as db:
+        _add_task(db, "本地新增")
+        dav = FakeDav()
+        order: list[str] = []
+        real_commit = db.commit
+
+        def commit_spy():
+            order.append("commit")
+            return real_commit()
+
+        real_push = dav.push_table
+
+        def push_spy(name, payload):
+            order.append("push")
+            return real_push(name, payload)
+
+        db.commit = commit_spy
+        dav.push_table = push_spy
+        se.run_sync(db, dav, CFG)
+        assert order and order[0] == "commit" and "push" in order
+        assert order.index("commit") < order.index("push")
+
+
+def _enable_sync(url="https://dav.x", enabled=True):
+    from services.sync_config import get_sync_config
+
+    with TestingSessionLocal() as db:
+        cfg = get_sync_config(db)
+        cfg.webdav_url = url
+        cfg.webdav_enabled = enabled
+        db.commit()
+
+
+def test_dirty_tables_consumed_after_successful_sync(monkeypatch):
+    """脏表一轮成功后清空（优化批 3）：否则每 3s 一轮全表扫描 + 广播。"""
+    _enable_sync()
+    with TestingSessionLocal() as db:
+        _add_task(db, "x")
+    dav = FakeDav()
+    monkeypatch.setattr(se, "_client_from_config", lambda cfg: dav)
+    se.mark_tables_dirty(["tasks"])
+    out = se._sync_once()
+    assert "error" not in out
+    assert se.take_dirty_tables() == set()
+
+
+def test_dirty_tables_restored_after_failed_sync(monkeypatch):
+    """同步失败 → 脏表恢复，下轮重试不丢变更。"""
+    _enable_sync()
+    with TestingSessionLocal() as db:
+        _add_task(db, "x")
+
+    class _Broken(FakeDav):
+        def fetch_manifest(self):
+            raise WebDavError("网络炸了")
+
+    monkeypatch.setattr(se, "_client_from_config", lambda cfg: _Broken())
+    se.mark_tables_dirty(["tasks"])
+    out = se._sync_once()
+    assert "error" in out
+    assert "tasks" in se.take_dirty_tables()
+
+
+def test_unexpected_exception_sets_last_sync_error(monkeypatch):
+    """非 WebDav/守卫类异常也要落 last_sync_error（优化批 3）。"""
+    _enable_sync()
+    with TestingSessionLocal() as db:
+        _add_task(db, "x")
+
+    def boom(db, client, cfg):
+        raise KeyError("坏远端行")
+
+    monkeypatch.setattr(se, "_client_from_config", lambda cfg: FakeDav())
+    monkeypatch.setattr(se, "run_sync", boom)
+    out = se._sync_once()
+    assert "KeyError" in out["error"]
+    from services.sync_config import get_sync_config
+
+    with TestingSessionLocal() as db:
+        cfg = get_sync_config(db)
+        assert cfg.last_sync_ok is False and "KeyError" in (cfg.last_sync_error or "")
+
+
+def test_workflow_runs_excluded_from_sync():
+    """workflow_runs 是设备本地执行账本，跨设备同步会抑制另一台的自动备份槽。"""
+    assert "workflow_runs" not in se.SYNC_TABLES
+    assert "sync_settings" not in se.SYNC_TABLES
+    assert "tasks" in se.SYNC_TABLES

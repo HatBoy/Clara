@@ -38,6 +38,7 @@ export function SetInput({
   onChange,
   maxLength = 50,
   type = "text",
+  onDraft,
 }: {
   value: string;
   placeholder?: string;
@@ -46,6 +47,9 @@ export function SetInput({
   maxLength?: number;
   /** 输入类型（默认 text；密码行传 password，2026-11-14 同步备份） */
   type?: "text" | "password";
+  /** 每次击键上报草稿（2026-11-16 优化批 3）：供「测试连接」等按钮读到
+   *  未失焦保存的最新输入，消除 blur 提交与点击的竞态 */
+  onDraft?: (v: string) => void;
 }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]); // 外部回填（首载/别处变更）同步草稿
@@ -60,7 +64,10 @@ export function SetInput({
       value={draft}
       placeholder={placeholder}
       maxLength={maxLength}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        onDraft?.(e.target.value);
+      }}
       onBlur={commit}
       onKeyDown={(e) => {
         if (e.key === "Enter") e.currentTarget.blur(); // Enter 即提交

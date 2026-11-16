@@ -105,6 +105,36 @@ def test_config_credential_change_clears_last_test(client):
     assert res.json()["last_test_ms"] is None
 
 
+def test_config_server_change_resets_sync_baseline(client, monkeypatch, tmp_path):
+    """换 URL/账号必须清同步基线并清同步状态（2026-11-16 优化批 3）：
+    否则新服务器缺的行被判「对端删除」，小表直接丢数据。"""
+    from services import sync_engine
+
+    monkeypatch.setattr(sync_engine, "get_data_dir", lambda: tmp_path)
+    client.patch("/api/sync", json={"webdav_url": "https://dav-a.example.com"})
+    (tmp_path / "sync_snapshot").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "sync_snapshot" / "meta.json").write_text("{}", encoding="utf-8")
+    assert sync_engine.has_base()
+
+    # 换服务器
+    res = client.patch("/api/sync", json={"webdav_url": "https://dav-b.example.com"})
+    assert res.status_code == 200
+    assert not sync_engine.has_base()
+    assert res.json()["last_sync_ok"] is None
+
+
+def test_config_password_only_keeps_baseline(client, monkeypatch, tmp_path):
+    """仅密码变更（同服务器同账号）不清基线。"""
+    from services import sync_engine
+
+    monkeypatch.setattr(sync_engine, "get_data_dir", lambda: tmp_path)
+    client.patch("/api/sync", json={"webdav_url": "https://dav-a.example.com"})
+    (tmp_path / "sync_snapshot").mkdir(exist_ok=True)
+    (tmp_path / "sync_snapshot" / "meta.json").write_text("{}", encoding="utf-8")
+    client.patch("/api/sync", json={"webdav_password": "new-pass"})
+    assert sync_engine.has_base()
+
+
 def test_config_enable_requires_url(client):
     res = client.patch("/api/sync", json={"webdav_enabled": True})
     assert res.status_code == 422
@@ -304,10 +334,12 @@ def test_prune_keeps_week_and_spares_others(tmp_path, monkeypatch):
     safe.write_bytes(b"safe")
     foreign = tmp_path / "我的备份.zip"
     foreign.write_bytes(b"mine")
-    # 旧文件 mtime 也拨回 8 天前（双保险——文件名已是主判据）
+    # 旧文件 mtime 也拨回 8 天前（双保险——文件名已是主判据）；安全副本与用户
+    # 文件的 mtime 同样拨老，回归"不匹配文件名回退 mtime 删除"的旧缺陷
     stale = datetime.now() - timedelta(days=8)
     import os
-    os.utime(old, (stale.timestamp(), stale.timestamp()))
+    for f in (old, safe, foreign):
+        os.utime(f, (stale.timestamp(), stale.timestamp()))
 
     removed = backup_svc.prune_auto_backups(str(tmp_path))
     assert removed == 1
@@ -344,3 +376,68 @@ def test_claim_autobackup_three_slots(monkeypatch):
         assert workflows._claim_autobackup(db, datetime(2026, 11, 14, 21, 0)) is False
         # 次日 08:00 重新认领
         assert workflows._claim_autobackup(db, datetime(2026, 11, 15, 8, 0)) is True
+
+
+# —— 批 3：危险操作与同步互斥 / 清空标记版本 ——————————————————————————
+
+
+def test_dangerous_endpoints_409_while_syncing(client):
+    """同步进行中，重置基线/恢复/合并导入一律 409（2026-11-16 优化批 3）。"""
+    from services import sync_engine
+
+    assert sync_engine._sync_lock.acquire(blocking=False)
+    try:
+        assert client.post("/api/sync/reset-base").status_code == 409
+        assert client.post("/api/sync/restore",
+                           json={"path": "不存在.zip"}).status_code == 409
+        assert client.post("/api/sync/merge-apply",
+                           json={"path": "不存在.zip", "strategy": "overwrite"}).status_code == 409
+    finally:
+        sync_engine._sync_lock.release()
+
+
+def test_cleared_marker_is_versioned(monkeypatch, tmp_path):
+    """同步轮只消耗本轮开始前的标记版本；期间新写入的标记保留（优化批 3）。"""
+    from services import sync_engine
+
+    monkeypatch.setattr(sync_engine, "get_data_dir", lambda: tmp_path)
+    sync_engine.note_table_cleared("messages")
+    state = sync_engine._read_cleared_marker()
+    v1 = state["version"]
+    assert state["tables"] == ["messages"]
+    # 模拟同步期间用户又 /clear 一次 → 版本 +1
+    sync_engine.note_table_cleared("stats_messages")
+    sync_engine._consume_cleared_marker(v1)  # 旧版本号：不消耗
+    assert "stats_messages" in sync_engine._load_cleared_tables()
+    # 本轮开始读到的是最新版本 → 消耗
+    sync_engine._consume_cleared_marker(sync_engine._read_cleared_marker()["version"])
+    assert sync_engine._load_cleared_tables() == set()
+
+
+def test_create_backup_atomic_and_no_temp_leftovers(tmp_path, monkeypatch):
+    """备份先写 .tmp 再原子替换，成功后不留临时文件（优化批 3）。"""
+    from services import backup as backup_svc
+
+    monkeypatch.setattr(backup_svc, "get_data_dir", lambda: tmp_path)
+    dest = tmp_path / "b.zip"
+    backup_svc.create_backup(str(dest))
+    assert dest.is_file()
+    assert not list(tmp_path.glob("backup-tmp-*"))
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_create_backup_failure_leaves_no_half_zip(tmp_path, monkeypatch):
+    """失败时目标 zip 不出现（不会留下名字合法的半截文件）。"""
+    from services import backup as backup_svc
+
+    monkeypatch.setattr(backup_svc, "get_data_dir", lambda: tmp_path)
+
+    def boom(path):
+        raise OSError("磁盘满")
+
+    monkeypatch.setattr(backup_svc, "_snapshot_db_to", boom)
+    dest = tmp_path / "b.zip"
+    with pytest.raises(OSError):
+        backup_svc.create_backup(str(dest))
+    assert not dest.exists()
+    assert not list(tmp_path.glob("*.tmp"))

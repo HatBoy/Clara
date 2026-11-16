@@ -98,6 +98,16 @@ def update_sync_config(db: Session, patch) -> SyncSettings:
         data["last_test_at"] = None
         data["last_test_ok"] = None
         data["last_test_ms"] = None
+    # 服务端身份变更（URL 或账号）→ 必须清同步基线（2026-11-16 优化批 3）：
+    # 旧 Base 属于另一套数据，换库后"新服务器缺少的行"会被判成对端删除，
+    # 小表直接丢数据、大表整轮 FK 失败。密码变更（同服务器同账号）不清。
+    server_changed = any(
+        key in data and data[key] != getattr(row, key)
+        for key in ("webdav_url", "webdav_username"))
+    if server_changed:
+        data["last_sync_at"] = None
+        data["last_sync_ok"] = None
+        data["last_sync_error"] = None
 
     # —— 落库（last_* 回显态不设 NOT NULL，白名单外键进不来：schema 层已拦）——
     turning_on = (data.get("webdav_enabled") is True and not row.webdav_enabled)
@@ -108,11 +118,17 @@ def update_sync_config(db: Session, patch) -> SyncSettings:
     logger.info("更新同步备份配置：本次字段 %s", sorted(data))
 
     # —— 开启即调度首同步（局部导入防环：sync_engine 顶层不依赖本模块状态）——
-    if turning_on:
+    if turning_on or server_changed:
         from services import sync_engine
 
+        if server_changed:
+            # 换服务器/账号：清快照与探测记忆 → 下轮按冷启动 union 合并（不删数据）
+            sync_engine.clear_snapshot()
+            sync_engine.forget_remote_memory()
+            logger.info("WebDAV 服务端已变更，同步基线已重置（下轮为首次合并）")
         sync_engine.schedule_now()
-        logger.info("WebDAV 同步已开启，首同步已调度")
+        if turning_on:
+            logger.info("WebDAV 同步已开启，首同步已调度")
     return row
 
 

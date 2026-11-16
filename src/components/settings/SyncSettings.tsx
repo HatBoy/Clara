@@ -91,6 +91,8 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
   const [version, setVersion] = useState<string | null>(null);
   const pollTimer = useRef<number | null>(null);
   const mounted = useRef(true);
+  // 输入草稿（未失焦保存的最新值）：测试连接/立即同步读它，消除 blur 竞态
+  const draftRef = useRef<{ url?: string; username?: string; password?: string }>({});
 
   const reload = useCallback(async () => {
     try {
@@ -130,7 +132,14 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
 
   // 手动同步轮询：syncing 变 false → 完成态（结果看 last_sync_*）
   const pollRunDone = useCallback((rounds = 0) => {
-    if (!mounted.current || rounds > RUN_POLL_MAX) return;
+    if (!mounted.current) return;
+    if (rounds > RUN_POLL_MAX) {
+      // 超时置失败态并恢复按钮（2026-11-16 优化批 3）：此前直接 return，
+      // run 永久停在 polling → 按钮永久 disabled、底部永久「同步中…」
+      setRun({ kind: "done", ok: false, text: "同步超时，请稍后刷新状态" });
+      reload();
+      return;
+    }
     pollTimer.current = window.setTimeout(async () => {
       try {
         const c = await fetchSyncConfig();
@@ -172,11 +181,12 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
     setRun({ kind: "idle" }); // 动作互斥：新动作清掉上一动作的残留态（防压制）
     setTest({ kind: "busy" });
     try {
-      // 带草稿三件（未保存的输入即时可测；后端回落库内值）
+      // 带草稿三件（未保存的输入即时可测；后端回落库内值）。优先 ref 草稿
+      // （2026-11-16 优化批 3：直接点测试时 blur 触发的 save 尚未回填 cfg）
       const res = await testWebdav({
-        url: cfg.webdav_url ?? undefined,
-        username: cfg.webdav_username ?? undefined,
-        password: cfg.webdav_password ?? undefined,
+        url: draftRef.current.url ?? cfg.webdav_url ?? undefined,
+        username: draftRef.current.username ?? cfg.webdav_username ?? undefined,
+        password: draftRef.current.password ?? cfg.webdav_password ?? undefined,
       });
       if (!mounted.current) return;
       setTest({ kind: "done", ok: res.ok, ms: res.ms, message: res.message });
@@ -399,6 +409,10 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                 快捷键与窗口布局等本机偏好（分辨率相关）不在其列。云端目录可随时
                 手动压成 zip，经下方「导入导出」恢复——设备丢失时的灾备路径
               </span>
+              <span className="settings-row-desc sync-error">
+                云端表文件为明文 JSON，包含模型 API Key 与聊天记录，请使用可信的
+                HTTPS 服务；本机定时任务执行记录不参与同步。
+              </span>
             </div>
             <div className="settings-row-control">
               <SetToggle
@@ -420,6 +434,9 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                 placeholder="https://…"
                 maxLength={300}
                 onChange={(v) => save({ webdav_url: v || null })}
+                onDraft={(v) => {
+                  draftRef.current.url = v;
+                }}
               />
             </div>
           </div>
@@ -436,6 +453,9 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                 placeholder="用户名"
                 maxLength={100}
                 onChange={(v) => save({ webdav_username: v || null })}
+                onDraft={(v) => {
+                  draftRef.current.username = v;
+                }}
               />
               <SetInput
                 type="password"
@@ -443,6 +463,9 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                 placeholder="密码"
                 maxLength={200}
                 onChange={(v) => save({ webdav_password: v || null })}
+                onDraft={(v) => {
+                  draftRef.current.password = v;
+                }}
               />
             </div>
           </div>
@@ -475,6 +498,8 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
               <button
                 type="button"
                 className="settings-action-btn"
+                // 同步进行中禁止重置/恢复/合并（后端 409 兜底，前端先拦）
+                disabled={cfg.syncing || run.kind === "polling"}
                 onClick={() => setResetConfirm(true)}
               >
                 重置基线
@@ -518,7 +543,8 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
               <button
                 type="button"
                 className="settings-action-btn"
-                disabled={backup.kind === "busy" || backup.kind === "confirm"}
+                disabled={backup.kind === "busy" || backup.kind === "confirm"
+                  || cfg.syncing}
                 onClick={async () => {
                   const path = await pickBackupZip();
                   if (path) setBackup({ kind: "confirm", path });
@@ -542,7 +568,8 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
               <button
                 type="button"
                 className="settings-action-btn"
-                disabled={merge.kind === "analyzing" || merge.kind === "applying"}
+                disabled={merge.kind === "analyzing" || merge.kind === "applying"
+                  || cfg.syncing}
                 onClick={doAnalyze}
               >
                 {merge.kind === "analyzing" ? "分析中…" : merge.kind === "applying" ? "导入中…" : "选择文件"}

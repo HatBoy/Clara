@@ -24,7 +24,7 @@ import shutil
 import sqlite3
 import tempfile
 import zipfile
-from datetime import datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 from sqlalchemy import text
@@ -87,7 +87,10 @@ def load_zip_tables(path: str) -> dict[str, list[dict]]:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
         else:
             raise ValueError("这不是 Clara 的备份包")
-    tables.pop("sync_settings", None)
+    from services.sync_engine import SYNC_EXCLUDED_TABLES
+
+    for name in SYNC_EXCLUDED_TABLES:  # 设备本地配置/执行账本：导入时忽略
+        tables.pop(name, None)
     return tables
 
 
@@ -112,10 +115,59 @@ def _dump_sqlite_tables(db_path: Path) -> dict[str, list[dict]]:
                 continue  # 旧版本备份表更少：缺表跳过
             cols = [c for c in meta[name].columns.keys() if c in actual]
             rows = conn.execute(f"SELECT {','.join(cols)} FROM {name}").fetchall()
-            out[name] = [dict(r) for r in rows]
+            out[name] = [_normalize_dump_row(meta[name], dict(r)) for r in rows]
         return out
     finally:
         conn.close()
+
+
+def _normalize_dump_row(table, row: dict) -> dict:
+    """裸 sqlite3 读出的行 → 与 table_rows 同口径（2026-11-16 优化批 3）。
+
+    此前 DateTime 读出 "YYYY-MM-DD HH:MM:SS.ffffff"、JSON 列读出原始字符串，
+    而 table_rows 给的是 isoformat（T 分隔）与 Python 对象 → analyze_merge 几乎
+    每行都判"不同"（冲突数虚高、无冲突直通永远不生效）；apply 时 JSON 字符串
+    再被 SQLAlchemy 二次 json.dumps（落库成双重编码字符串）。"""
+    from sqlalchemy import JSON as SAJSON
+    from sqlalchemy import Boolean, Date as SADate, DateTime as SADateTime, Time as SATime
+
+    out: dict = {}
+    for key, value in row.items():
+        col = table.columns.get(key)
+        if value is None or col is None:
+            out[key] = value
+            continue
+        t = col.type
+        if isinstance(t, (SADateTime, SADate, SATime)):
+            try:
+                out[key] = _iso_norm(value, t)
+            except ValueError:
+                out[key] = value
+        elif isinstance(t, SAJSON):
+            if isinstance(value, str):
+                try:
+                    out[key] = json.loads(value)
+                except ValueError:
+                    out[key] = value
+            else:
+                out[key] = value
+        elif isinstance(t, Boolean):
+            out[key] = bool(value)
+        else:
+            out[key] = value
+    return out
+
+
+def _iso_norm(value, col_type) -> str:
+    from sqlalchemy import Date as SADate, DateTime as SADateTime, Time as SATime
+
+    if isinstance(col_type, SADateTime):
+        return datetime.fromisoformat(str(value)).isoformat()
+    if isinstance(col_type, SADate):
+        return date.fromisoformat(str(value)).isoformat()
+    if isinstance(col_type, SATime):
+        return time.fromisoformat(str(value)).isoformat()
+    return str(value)
 
 
 def analyze_merge(db: Session, path: str) -> dict:

@@ -29,9 +29,12 @@ clara-autobackup-*.zip，同目录 pre-restore-*.db 安全副本绝不能被波�
 
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
+import tempfile
+import threading
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -39,6 +42,10 @@ from pathlib import Path
 from config import DATABASE_PATH, IS_PACKAGED, get_data_dir
 
 logger = logging.getLogger(__name__)
+
+# 备份互斥（2026-11-16 优化批 3）：手动导出与自动备份并发会互相踩踏临时文件/
+# 目标 zip，这里串行化（桌面单用户，阻塞几秒可接受）
+_backup_lock = threading.Lock()
 
 # zip 成员白名单（manifest + 库 + 快照）——prepare_restore 校验全部成员都在
 # 此列，防 "../" 路径穿越与夹带任意文件
@@ -89,26 +96,35 @@ def create_backup(dest: str, version: str | None = None) -> dict:
         raise ValueError(f"目标目录不存在：{out.parent}")
 
     data_dir = get_data_dir()
-    tmp_db = data_dir / "backup_tmp.db"
-    if tmp_db.exists():
-        tmp_db.unlink()
-    _snapshot_db_to(tmp_db)
-
-    files: list[str] = ["manifest.json", "clara.db"]
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-        manifest = {
-            "app": "clara",
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-            "packaged": IS_PACKAGED,
-            "version": version,
-        }
-        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False))
-        zf.write(tmp_db, "clara.db")
-        snapshot = data_dir / "config_snapshot.json"
-        if snapshot.is_file():
-            zf.write(snapshot, "config_snapshot.json")
-            files.append("config_snapshot.json")
-    tmp_db.unlink()
+    # 每次备份独立临时库 + 先写 .tmp 再原子替换（2026-11-16 优化批 3）：
+    # 固定 backup_tmp.db 会让手动导出与自动备份互相踩踏（Windows unlink
+    # PermissionError / 半截库被压进 zip）；非原子落 zip 失败会留下名字合法
+    # 的半截文件被 last_auto_backup_at 当成功。
+    with _backup_lock:
+        fd, tmp_name = tempfile.mkstemp(prefix="backup-tmp-", suffix=".db", dir=data_dir)
+        os.close(fd)
+        tmp_db = Path(tmp_name)
+        tmp_zip = out.with_name(out.name + ".tmp")
+        try:
+            _snapshot_db_to(tmp_db)
+            files: list[str] = ["manifest.json", "clara.db"]
+            with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+                manifest = {
+                    "app": "clara",
+                    "created_at": datetime.now().isoformat(timespec="seconds"),
+                    "packaged": IS_PACKAGED,
+                    "version": version,
+                }
+                zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False))
+                zf.write(tmp_db, "clara.db")
+                snapshot = data_dir / "config_snapshot.json"
+                if snapshot.is_file():
+                    zf.write(snapshot, "config_snapshot.json")
+                    files.append("config_snapshot.json")
+            os.replace(tmp_zip, out)
+        finally:
+            tmp_db.unlink(missing_ok=True)
+            tmp_zip.unlink(missing_ok=True)
     size = out.stat().st_size
     logger.info("备份已导出：%s（%.1f MB，%d 个成员）", out, size / 1048576, len(files))
     return {"ok": True, "size_bytes": size, "files": files}
@@ -193,9 +209,15 @@ def _materialize_sync_zip(zf: zipfile.ZipFile, staging: Path,
     解 tasks.parent_id 自引用）→ 行内键按目标表列集过滤（旧版数据列少不炸
     NOT NULL）。"""
     from database import Base
-    from services.sync_engine import SYNC_TABLES, _revive_row
+    from services.sync_engine import SYNC_EXCLUDED_TABLES, SYNC_TABLES, _revive_row
 
-    allowed = {"manifest.json"} | {f"tables/{t}.json" for t in SYNC_TABLES}
+    # 白名单放行云端自带的「使用说明.txt」（2026-11-16 优化批 3）：云端 README
+    # 指导用户把整个 clara-sync 目录压缩为 zip——旧白名单会把说明文件当未知成员
+    # 拒绝，灾备恢复路径在真机上不可用。排除表（旧目录残留的 workflow_runs 等）
+    # 同样放行但物化时跳过。
+    allowed = ({"manifest.json", "使用说明.txt"}
+               | {f"tables/{t}.json" for t in SYNC_TABLES}
+               | {f"tables/{t}.json" for t in SYNC_EXCLUDED_TABLES})
     illegal = set(norm) - allowed
     if illegal:
         raise ValueError(f"同步备份包含未知成员，拒绝恢复：{sorted(illegal)[:3]}")
@@ -225,9 +247,21 @@ def _materialize_sync_zip(zf: zipfile.ZipFile, staging: Path,
             for row in rows:
                 values = _revive_row(table, row)
                 values.setdefault(pk, row.get(pk))
-                # datetime 值转 isoformat 文本（sqlite3 直插不接受对象）
-                flat = {c: (v.isoformat() if hasattr(v, "isoformat") else v)
-                        for c, v in values.items()}
+                # sqlite3 直插不接受对象：datetime 转 isoformat 文本、JSON 列
+                # 转回 JSON 文本（_revive_row 会先 loads，不回 dumps 会
+                # ProgrammingError——优化批 3）
+                from sqlalchemy import JSON as SAJSON
+
+                flat = {}
+                for c, v in values.items():
+                    if v is None:
+                        flat[c] = None
+                    elif hasattr(v, "isoformat"):
+                        flat[c] = v.isoformat()
+                    elif isinstance(table.columns[c].type, SAJSON):
+                        flat[c] = json.dumps(v, ensure_ascii=False)
+                    else:
+                        flat[c] = v
                 tmp.execute(sql, flat)
         tmp.commit()
         # 完整性探测
@@ -282,10 +316,14 @@ def prune_auto_backups(dest_dir: str | None = None, keep_days: int = 7) -> int:
     for f in directory.iterdir():
         if not f.is_file():
             continue
+        # 严格匹配才处理（2026-11-16 优化批 3）：此前不匹配的文件回退 mtime
+        # 照样 unlink——pre-restore-*.db 安全副本与用户自放文件超过 7 天会被
+        # 真实删除（与上方红线承诺相反）。
         m = _AUTO_BACKUP_TS.match(f.name)
+        if not m:
+            continue
         try:
-            ts = (datetime.strptime(f"{m.group(1)}{m.group(2)}", "%Y%m%d%H%M%S")
-                  if m else datetime.fromtimestamp(f.stat().st_mtime))
+            ts = datetime.strptime(f"{m.group(1)}{m.group(2)}", "%Y%m%d%H%M%S")
         except ValueError:
             continue
         if ts < cutoff:

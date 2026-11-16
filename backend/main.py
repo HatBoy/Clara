@@ -106,10 +106,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Clara Local Engine", lifespan=lifespan)
 
-# 允许本地 React 前端跨域访问（Tauri dev 模式在 1420 端口）
+# 只放行 Clara 自己的 WebView 来源（2026-11-16 优化批 3）：此前 allow_origins=["*"]
+# + 无鉴权的本地服务意味着本机任意网页/进程都能读到全部数据与 WebDAV 凭据。
+# 打包版 Tauri 来源为 tauri://localhost 或 https://tauri.localhost；dev 为 1420。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境可限制为 tauri://localhost
+    allow_origins=[
+        "tauri://localhost",
+        "http://tauri.localhost",
+        "https://tauri.localhost",
+        "http://localhost:1420",
+        "http://127.0.0.1:1420",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

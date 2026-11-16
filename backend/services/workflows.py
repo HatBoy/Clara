@@ -358,8 +358,10 @@ async def _run_autobackup() -> None:
     from services.backup import auto_backup, prune_auto_backups
 
     try:
-        auto_backup()
-        prune_auto_backups()
+        # 线程隔离（2026-11-16 优化批 3）：sqlite backup + DEFLATE 压缩可达
+        # 数十秒，此前直接在事件循环上执行会让 API/SSE/提醒全部卡住
+        await asyncio.to_thread(auto_backup)
+        await asyncio.to_thread(prune_auto_backups)
     except Exception:
         logger.exception("自动备份失败")
 

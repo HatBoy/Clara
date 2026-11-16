@@ -30,6 +30,7 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
 from datetime import date, datetime, time as dt_time
 from pathlib import Path
 
@@ -47,8 +48,13 @@ logger = logging.getLogger(__name__)
 
 # —— 同步范围（22 张全部既有表；sync_settings 排除——WebDAV 凭证绝不上 WebDAV
 #    服务器、备份目录属设备本地配置；FTS5 虚表不在 Base.metadata 天然排除）——
+# 排除表（2026-11-16 优化批 3）：
+# - sync_settings：同步自身状态（last_sync_*），同步它会触发无限空转
+# - workflow_runs：设备本地执行账本（"今日已跑"认领）——跨设备同步会让先同步
+#   到的设备抑制另一台的自动备份/简报槽位
+SYNC_EXCLUDED_TABLES = {"sync_settings", "workflow_runs"}
 SYNC_TABLES: list[str] = [
-    t.name for t in Base.metadata.sorted_tables if t.name != "sync_settings"
+    t.name for t in Base.metadata.sorted_tables if t.name not in SYNC_EXCLUDED_TABLES
 ]
 # 自然键唯一约束（models.py 实际定义）：INSERT 撞约束时按这些列定位本地行走 LWW。
 # 单行表（app_settings/integration_settings/chat_state，id 恒 1）同键整行 LWW
@@ -266,6 +272,13 @@ def _save_base_meta(device_id: str) -> None:
     os.replace(tmp, d / "meta.json")
 
 
+def forget_remote_memory() -> None:
+    """清远端探测记忆（换服务器/账号时：旧服务器的 manifest hash 会误判
+    "有变化/无变化"，2026-11-16 优化批 3）。"""
+    global _last_seen_hashes
+    _last_seen_hashes = None
+
+
 def clear_snapshot() -> None:
     """清空快照（重置基线 / 覆盖恢复后调用——数据回到过去，Base 失效，下轮退化
     冷启动语义；守卫拦截后的用户出路）。"""
@@ -287,51 +300,88 @@ def _cleared_marker_path() -> Path:
     return get_data_dir() / "sync_cleared.json"
 
 
-def note_table_cleared(table: str) -> None:
-    """打合法清空标记（clear 入口调用）。幂等。"""
-    marks: set = set()
+_cleared_lock = threading.Lock()
+
+
+def _read_cleared_marker() -> dict:
+    """读豁免标记 → {"version": int, "tables": [...]}（旧格式纯数组兼容）。"""
     p = _cleared_marker_path()
-    if p.is_file():
+    if not p.is_file():
+        return {"version": 0, "tables": []}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {"version": 0, "tables": []}
+    if isinstance(data, list):  # 旧格式（无版本号）
+        return {"version": 0, "tables": [t for t in data if isinstance(t, str)]}
+    if not isinstance(data, dict):
+        return {"version": 0, "tables": []}
+    tables = data.get("tables")
+    return {"version": int(data.get("version") or 0),
+            "tables": [t for t in (tables or []) if isinstance(t, str)]}
+
+
+def note_table_cleared(table: str) -> None:
+    """打合法清空标记（clear 入口调用）。幂等。
+
+    版本号递增（2026-11-16 优化批 3）：同步轮只在"本轮开始时读到的版本"仍是
+    当前版本时才消耗标记——同步期间用户再次 /clear 写的新标记不会被误删。
+    同时标脏并唤醒同步（Core 批量删除不走 after_flush，此前清空要等 300s 或
+    退出冲刷才传播）。"""
+    with _cleared_lock:
+        state = _read_cleared_marker()
+        tables = set(state["tables"])
+        tables.add(table)
+        p = _cleared_marker_path()
+        tmp = p.with_suffix(".tmp")
         try:
-            marks = set(json.loads(p.read_text(encoding="utf-8")))
-        except (ValueError, OSError):
-            marks = set()
-    marks.add(table)
-    p.write_text(json.dumps(sorted(marks), ensure_ascii=False), encoding="utf-8")
+            tmp.write_text(json.dumps({"version": state["version"] + 1,
+                                       "tables": sorted(tables)}, ensure_ascii=False),
+                           encoding="utf-8")
+            os.replace(tmp, p)
+        except OSError:
+            logger.warning("清空豁免标记落盘失败", exc_info=True)
+    mark_tables_dirty([table])
+    schedule_now()
 
 
 def _load_cleared_tables() -> set:
     """读豁免标记（run_sync 每轮开头；同步成功才消耗——失败轮保留重试）。"""
-    p = _cleared_marker_path()
-    if not p.is_file():
-        return set()
-    try:
-        return set(json.loads(p.read_text(encoding="utf-8")))
-    except (ValueError, OSError):
-        return set()
+    return set(_read_cleared_marker()["tables"])
 
 
-def _consume_cleared_marker() -> None:
-    """消耗豁免标记（run_sync 全链成功尾部调用）。"""
-    _cleared_marker_path().unlink(missing_ok=True)
+def _consume_cleared_marker(version: int | None = None) -> None:
+    """消耗豁免标记（run_sync 全链成功尾部调用）。version 不匹配 = 本轮期间
+    有新清空标记写入 → 保留给下一轮。"""
+    with _cleared_lock:
+        state = _read_cleared_marker()
+        if version is not None and state["version"] != version:
+            return
+        _cleared_marker_path().unlink(missing_ok=True)
 
 
 # —— 三路合并（纯函数，直测友好）————————————————————————————————————————
 
 
 def _merge_table(name: str, local: list[dict], base: list[dict] | None,
-                 remote: list[dict] | None) -> dict:
+                 remote: list[dict] | None,
+                 local_device: str = "", remote_device: str = "") -> dict:
     """行级三路合并。返回 {merged, del_remote, del_local}（del_* 为相对 R/L 的
     删除主键集，供守卫判定；merged 为最终行集）。
 
-    真值表（键=主键；ts 判据 _row_ts，平局本地优先；单行表同键自然整行 LWW）：
+    真值表（键=主键；ts 判据 _row_ts；单行表同键自然整行 LWW）：
       L-  S-  R+ → 取 R（对端新增）
       L+  S-  R- → 取 L（本地新增）
-      L-  S+  R+ → 删（本地删除传播到远端）
-      L+  S+  R- → 删（对端删除落地本地）
+      L-  S+  R+ → 若 R 比 Base 新（对端改过）取 R，否则删（本地删除传播）
+      L+  S+  R- → 若 L 比 Base 新（本地改过）取 L，否则删（对端删除落地）
       其余（双方都有）→ ts 新者
+    2026-11-16 优化批 3：删除 vs 修改不再"删除一律获胜"（此前对端删 + 本地
+    后改的编辑静默丢失）——用 Base 行做"是否改过"判据，改过者胜。
     base=None（冷启动）：union + 同键取新（Case A/B/C 的统一公式——L 空则纯
     Pull、R 空则纯 Force Push、双有则并集）。
+
+    平局收敛（优化批 3）：ts 完全相等时按 device_id 字典序/行内容 hash 做确定性
+    选择——此前"本地优先"会让双端各留己方版本、互相推送 ping-pong 永不收敛。
     """
     _, pk = _table_meta(name)
     l_map = {r[pk]: r for r in local}
@@ -346,7 +396,16 @@ def _merge_table(name: str, local: list[dict], base: list[dict] | None,
             return remote_row
         if rt is None:
             return local_row
-        return local_row if lt >= rt else remote_row  # 平局本地优先
+        if lt != rt:
+            return local_row if lt > rt else remote_row
+        # 平局：与"谁是本地"无关的确定性规则（两端算出同一物理行）
+        if local_device and remote_device and local_device != remote_device:
+            return local_row if local_device < remote_device else remote_row
+        return local_row if _hash_rows([local_row]) <= _hash_rows([remote_row]) else remote_row
+
+    def modified_since(row: dict, base_row: dict) -> bool:
+        rt, bt = _row_ts(row), _row_ts(base_row)
+        return rt is not None and bt is not None and rt > bt
 
     for key in set(l_map) | set(r_map):
         l_row, r_row = l_map.get(key), r_map.get(key)
@@ -365,11 +424,15 @@ def _merge_table(name: str, local: list[dict], base: list[dict] | None,
         elif l_row is not None:
             if s_row is None:
                 merged[key] = l_row            # 本地新增
-            # else：S 有 L 有 R 无 → 对端删 → 本地删（不进 merged）
+            elif modified_since(l_row, s_row):
+                merged[key] = l_row            # 对端删但本地后改过：改者胜
+            # else：对端删且本地未动 → 本地删（不进 merged）
         elif r_row is not None:
             if s_row is None:
                 merged[key] = r_row            # 对端新增
-            # else：S 有 R 有 L 无 → 本地删 → 远端删（不进 merged）
+            elif modified_since(r_row, s_row):
+                merged[key] = r_row            # 本地删但对端后改过：改者胜
+            # else：本地删且对端未动 → 远端删（不进 merged）
         # 双无：不可能（键来自 L∪R）
 
     ordered = sorted(merged.values(), key=lambda r: str(r.get(pk, "")))  # 规范序
@@ -384,6 +447,7 @@ def _merge_table(name: str, local: list[dict], base: list[dict] | None,
 def _revive_value(col, value):
     """单值 → 可写值：datetime 族字符串按列类型转回对象（SQLite DateTime 方言
     只认对象）；非空布尔列的 None 归 False（config_backup._revive 同款防御）。"""
+    from sqlalchemy import JSON as SAJSON
     from sqlalchemy import Boolean
 
     if value is None:
@@ -394,6 +458,13 @@ def _revive_value(col, value):
         return date.fromisoformat(str(value))
     if isinstance(col.type, Time):
         return dt_time.fromisoformat(str(value))
+    if isinstance(col.type, SAJSON) and isinstance(value, str):
+        # JSON 列拿到字符串先解析（2026-11-16 优化批 3）：直接交给 SQLAlchemy
+        # 会再 json.dumps 一次，落库成双重编码字符串
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
     return value
 
 
@@ -411,7 +482,7 @@ def _revive_row(table, row: dict) -> dict:
 
 
 def _write_local(db: Session, name: str, merged: list[dict],
-                 local_map: dict) -> tuple[list[dict], int, int]:
+                 local_map: dict, deletable: set[str] | None = None) -> tuple[list[dict], int, int]:
     """把合并行集写进本地（单事务由调用方统一 commit；本函数只 execute）。
     返回 (实际落库行集, 插入数, 更新数)。
 
@@ -427,7 +498,9 @@ def _write_local(db: Session, name: str, merged: list[dict],
     inserted = updated = 0
 
     merged_map = {r[pk]: r for r in merged}
-    for key, row in merged_map.items():
+    # 迭代副本（2026-11-16 优化批 3）：撞自然键时会重定向 merged_map 的键，
+    # 边迭代边改会 RuntimeError
+    for key, row in list(merged_map.items()):
         local_row = local_map.get(key)
         if local_row is None:
             values = _revive_row(table, row)
@@ -439,13 +512,19 @@ def _write_local(db: Session, name: str, merged: list[dict],
                 # 自然键 add-add 撞车（UUID 主键不撞 pk）：定位本地行走 LWW
                 hit = _find_by_natural_key(db, name, row)
                 if hit is None:
+                    # 未落库的行绝不能进 actual（优化批 3）：推送它会让远端持有
+                    # 本地不存在的行，下一轮判"本地删除"并把远端也删掉。
                     logger.warning("同步插入撞约束且无法按自然键定位（%s/%s），跳过",
                                    name, key)
-                    actual.append(row)  # 本地没进去但保留在推送集（下轮再收敛）
+                    merged_map.pop(key, None)
                     continue
                 local_row = hit
                 local_map[hit[pk]] = hit
+                # 键重定向：merged_map 同步改键，否则末尾 doomed 会把刚处理
+                # 的本地行当"本地删除"删掉（数据彻底丢失级，优化批 3）
+                merged_map.pop(key, None)
                 key = hit[pk]
+                merged_map[key] = row
         if local_row is not None:
             if _rows_equal(row, local_row, cols):
                 actual.append(local_row)  # 内容相同：不写，推送本地形态
@@ -462,8 +541,10 @@ def _write_local(db: Session, name: str, merged: list[dict],
             updated += 1
             actual.append(row)
 
-    # 删除（本地有而 merged 无）
-    doomed = set(local_map) - set(merged_map)
+    # 删除（本地有而 merged 无）。deletable 限定删除范围（优化批 3）：规划与
+    # 写库之间的新写入不在规划键集内，绝不能被"本地删除传播"误删
+    scope = set(local_map) if deletable is None else (set(local_map) & set(deletable))
+    doomed = scope - set(merged_map)
     if doomed:
         db.execute(delete(table).where(getattr(table.c, pk).in_(doomed)))
     return actual, inserted, updated
@@ -504,6 +585,23 @@ def schedule_now() -> None:
 
 def is_syncing() -> bool:
     return _sync_lock.locked()
+
+
+class SyncBusy(Exception):
+    """同步进行中，危险操作（重置基线/恢复/合并导入）被拒。"""
+
+
+@contextmanager
+def exclusive():
+    """危险操作与同步互斥（2026-11-16 优化批 3）：reset-base / merge-apply /
+    restore 在同步进行时直接拒绝，避免 rmtree 与 _save_base 并发、或合并写库
+    撞长事务。拿不到锁抛 SyncBusy（router 翻 409）。"""
+    if not _sync_lock.acquire(blocking=False):
+        raise SyncBusy("同步进行中，请稍后再试")
+    try:
+        yield
+    finally:
+        _sync_lock.release()
 
 
 def _client_from_config(cfg) -> WebDavClient:
@@ -567,7 +665,9 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
     remote_tables = (manifest or {}).get("tables") or {}
     # 拉到的远端 manifest 原始形态（纯拉取轮的探测记忆基准，见尾部注释）
     remote_hashes_at_fetch = {t: v.get("sha1") for t, v in remote_tables.items()}
-    cleared_tables = _load_cleared_tables()  # 合法清空豁免（/clear 类，见 note_table_cleared）
+    cleared_state = _read_cleared_marker()  # 合法清空豁免（/clear 类）
+    cleared_tables = set(cleared_state["tables"])
+    cleared_version = cleared_state["version"]
     if base_exists:
         # 表级守卫：Base 有的表 manifest 缺（远端文件被手动删）→ 远端异常中止。
         # **Base 快照为空的表不算缺失**（真机二轮实测）：运行中新增的空表在
@@ -584,94 +684,135 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
              "bytes_pushed": 0, "bytes_pulled": 0}
     pushed_tables: dict[str, dict] = {}
     snapshots: dict[str, list[dict]] = {}  # 与推送同源的 Base 落盘内容
-    any_pushed = False  # 是否发生过表文件推送（False 且非首推 → manifest 也省）
+    any_pushed = False  # 是否发生过表文件推送（False 且 manifest 未变 → 也不推）
+    plans: list[dict] = []  # 阶段 1 产物：每表合并决策（写库/推送都消费它）
+
+    # —— 阶段 1：只读规划（全部网络 GET 在此，不持写事务）———————————————
+    for name in SYNC_TABLES:  # sorted_tables 序：父表在前
+        table, pk = _table_meta(name)
+        base = _load_base(name) if base_exists else None
+        base_hash = _hash_rows(base) if base is not None else None
+        remote_hash_hint = remote_tables.get(name, {}).get("sha1")
+
+        local = table_rows(db, name)
+        local_hash = _hash_rows(local)
+
+        # 增量跳过：双未变（远端 manifest.hash == Base.hash 且本地未变）
+        if base_exists and base is not None and remote_hash_hint == base_hash \
+                and local_hash == base_hash:
+            pushed_tables[name] = {"sha1": base_hash, "rows": len(local)}
+            continue
+
+        remote_missing = False
+        if base_exists and base is not None and remote_hash_hint == base_hash:
+            remote, remote_hash = base, base_hash  # 远端未变：省 GET，R=Base
+        else:
+            data = client.fetch_table(name)
+            remote_missing = data is None
+            remote = (data or {}).get("rows", [])
+            remote_hash = _hash_rows(remote)
+            stats["bytes_pulled"] += len(json.dumps(remote, ensure_ascii=False))
+
+        # 表级守卫 a：Base 有记录但远端文件 404（manifest 撒谎/文件被删）
+        if base_exists and remote_missing and base:
+            raise SyncAbort(f"远端表文件缺失：{name}（manifest 有记录但拉取 404）")
+
+        result = _merge_table(name, local, base, remote,
+                              local_device=cfg.device_id or "",
+                              remote_device=(manifest or {}).get("device_id") or "")
+        merged, del_remote, del_local = result["merged"], result["del_remote"], result["del_local"]
+
+        # 守卫 b（推方向）：将删远端大量行且远端自身未变 → 疑本地删库重建。
+        # 合法清空豁免（/clear 类整表删空是正常操作，拦截+「重置基线」指引
+        # 在此场景反而会把清空的数据 union 拉回来——真机二轮实测误伤）
+        if base_exists and base is not None and remote_hash == base_hash \
+                and name not in cleared_tables:
+            if len(del_remote) > max(DELETE_GUARD_MIN, len(remote) // 2):
+                raise SyncAbort(
+                    f"本地 {name} 表比上次同步少了 {len(del_remote)} 行（常见于删库重建/恢复备份），"
+                    "已中止以防连带清空云端。点「重置基线」后重新同步 = 云端数据与当前本地"
+                    "数据合并保留（双方都不丢）；若想用本地完全替换云端，请先清空 WebDAV "
+                    "上的 clara-sync 目录再重置基线")
+        # 守卫 c（本地清空式）：将删本地全部行且本地未变 → 竞态残留/远端被清。
+        # 2026-11-16 优化批 3：取消 >100 行下限——小表（model_providers /
+        # app_settings / chat_state / projects）被远端写成空数组时同样需要
+        # 保护（此前整表删除无任何提示）。
+        if base_exists and base is not None and local_hash == base_hash \
+                and len(local) > 0 and del_local \
+                and len(del_local) == len(local) \
+                and name not in cleared_tables:
+            raise SyncAbort(
+                f"远端 {name} 表已被清空而本地未动过，疑似云端数据异常，已中止同步"
+                "防止本地被连带清空。如云端确已清空，请点「重置同步基线」后重新同步")
+
+        plans.append({
+            "name": name, "pk": pk, "merged": merged,
+            "del_local": del_local, "remote_hash": remote_hash,
+            # 只允许删除规划时已存在的本地键（优化批 3）：规划与写库之间用户
+            # 新写的行不得被"本地删除传播"误删
+            "planned_keys": {r[pk] for r in local},
+        })
+
+    # 只读阶段结束：结束隐式读事务（否则写事务会从第一次 SELECT 起一直持有
+    # 写锁——阶段 1 的网络等待会变成整库锁等待）
+    db.rollback()
+
+    # —— 阶段 2：单事务写本地（零网络 IO，短事务）———————————————
     try:
         db.execute(text("PRAGMA defer_foreign_keys=ON"))
-        for name in SYNC_TABLES:  # sorted_tables 序：父表在前
-            table, pk = _table_meta(name)
-            base = _load_base(name) if base_exists else None
-            base_hash = _hash_rows(base) if base is not None else None
-            remote_hash_hint = remote_tables.get(name, {}).get("sha1")
-
-            local = table_rows(db, name)
-            local_hash = _hash_rows(local)
-
-            # 增量跳过：双未变（远端 manifest.hash == Base.hash 且本地未变）
-            if base_exists and base is not None and remote_hash_hint == base_hash \
-                    and local_hash == base_hash:
-                pushed_tables[name] = {"sha1": base_hash, "rows": len(local)}
-                continue
-
-            remote_missing = False
-            if base_exists and base is not None and remote_hash_hint == base_hash:
-                remote, remote_hash = base, base_hash  # 远端未变：省 GET，R=Base
-            else:
-                data = client.fetch_table(name)
-                remote_missing = data is None
-                remote = (data or {}).get("rows", [])
-                remote_hash = _hash_rows(remote)
-                stats["bytes_pulled"] += len(json.dumps(remote, ensure_ascii=False))
-
-            # 表级守卫 a：Base 有记录但远端文件 404（manifest 撒谎/文件被删）
-            if base_exists and remote_missing and base:
-                raise SyncAbort(f"远端表文件缺失：{name}（manifest 有记录但拉取 404）")
-
-            result = _merge_table(name, local, base, remote)
-            merged, del_remote, del_local = result["merged"], result["del_remote"], result["del_local"]
-
-            # 守卫 b（推方向）：将删远端大量行且远端自身未变 → 疑本地删库重建。
-            # 合法清空豁免（/clear 类整表删空是正常操作，拦截+「重置基线」指引
-            # 在此场景反而会把清空的数据 union 拉回来——真机二轮实测误伤）
-            if base_exists and base is not None and remote_hash == base_hash \
-                    and name not in cleared_tables:
-                if len(del_remote) > max(DELETE_GUARD_MIN, len(remote) // 2):
-                    raise SyncAbort(
-                        f"本地 {name} 表比上次同步少了 {len(del_remote)} 行（常见于删库重建/恢复备份），"
-                        "已中止以防连带清空云端。点「重置基线」后重新同步 = 云端数据与当前本地"
-                        "数据合并保留（双方都不丢）；若想用本地完全替换云端，请先清空 WebDAV "
-                        "上的 clara-sync 目录再重置基线")
-            # 守卫 c（本地清空式）：将删本地全部行且本地未变 → 竞态残留/远端被清
-            if base_exists and base is not None and local_hash == base_hash \
-                    and len(local) > DELETE_GUARD_MIN and del_local \
-                    and len(del_local) == len(local):
-                raise SyncAbort(
-                    f"远端 {name} 表已被清空而本地未动过，疑似云端数据异常，已中止同步"
-                    "防止本地被连带清空。如云端确已清空，请点「重置同步基线」后重新同步")
-
-            actual, ins, upd = _write_local(db, name, merged,
-                                            {r[pk]: r for r in local})
+        for p in plans:
+            name, pk = p["name"], p["pk"]
+            fresh = {r[pk]: r for r in table_rows(db, name)}
+            actual, ins, upd = _write_local(db, name, p["merged"], fresh,
+                                            deletable=p["planned_keys"])
+            p["actual"] = actual
             stats["inserted"] += ins
             stats["updated"] += upd
-            if ins or upd or del_local:
+            if ins or upd or p["del_local"]:
                 stats["tables_changed"] += 1
-            actual_hash = _hash_rows(actual)
-            if actual_hash == remote_hash and name in remote_tables:
-                # 纯拉取轮：远端 manifest 已收录该表且合并结果与远端一致（本地
-                # 只是应用了远端变更）——不回推同内容（2026-11-16 真机批：对端
-                # 改→我拉的轮次曾全量回推 22 表 + manifest，请求翻倍撞限频）。
-                # 「name in remote_tables」前提不可省：**运行中新增的空表**内容
-                # 与远端（无文件=空）一致，若跳过则 manifest 永不收录该表，而
-                # Base 已落快照 → 下轮表级守卫误拦「远端缺失表文件」（真机二
-                # 轮实测抓到）——新表必须推一次让对端知晓
-                snapshots[name] = actual
-                pushed_tables[name] = {"sha1": actual_hash, "rows": len(actual),
-                                       "updated_at": datetime.now().isoformat(timespec="seconds")}
-                continue
-            payload = {"table": name, "rows": actual}
-            client.push_table(name, payload)
-            any_pushed = True
-            stats["bytes_pushed"] += len(json.dumps(payload, ensure_ascii=False))
-            snapshots[name] = actual  # Base 与推送字节级同源（hash 恒一致）
-            pushed_tables[name] = {"sha1": actual_hash, "rows": len(actual),
-                                   "updated_at": datetime.now().isoformat(timespec="seconds")}
         db.commit()
     except Exception:
         db.rollback()
         raise
 
+    # —— 阶段 3：推送（网络；本地已提交——推送失败不回滚用户数据）—————————
+    for p in plans:
+        name, actual = p["name"], p["actual"]
+        actual_hash = _hash_rows(actual)
+        if actual_hash == p["remote_hash"] and name in remote_tables:
+            # 纯拉取轮：远端 manifest 已收录该表且合并结果与远端一致（本地
+            # 只是应用了远端变更）——不回推同内容（2026-11-16 真机批：对端
+            # 改→我拉的轮次曾全量回推 22 表 + manifest，请求翻倍撞限频）。
+            # 「name in remote_tables」前提不可省：**运行中新增的空表**内容
+            # 与远端（无文件=空）一致，若跳过则 manifest 永不收录该表，而
+            # Base 已落快照 → 下轮表级守卫误拦「远端缺失表文件」（真机二
+            # 轮实测抓到）——新表必须推一次让对端知晓
+            snapshots[name] = actual
+            pushed_tables[name] = {"sha1": actual_hash, "rows": len(actual),
+                                   "updated_at": datetime.now().isoformat(timespec="seconds")}
+            continue
+        payload = {"table": name, "rows": actual}
+        client.push_table(name, payload)
+        any_pushed = True
+        stats["bytes_pushed"] += len(json.dumps(payload, ensure_ascii=False))
+        snapshots[name] = actual  # Base 与推送字节级同源（hash 恒一致）
+        pushed_tables[name] = {"sha1": actual_hash, "rows": len(actual),
+                               "updated_at": datetime.now().isoformat(timespec="seconds")}
+
     # 提交点：最后推 manifest（滞后于表文件；首推的探测 manifest 已在前面落地）。
-    # 纯拉取轮全表未推 → manifest 内容无变化也不推（updated_at 不值得一个请求）
-    if any_pushed or manifest is None:
+    # 纯拉取轮全表未推 → manifest 内容无变化也不推（updated_at 不值得一个请求）。
+    # 自愈（2026-11-16 优化批 3）：上一轮表文件 PUT 成功但 manifest PUT 失败
+    # （503/超时/退出冲刷）后，后续轮 pure-pull 会让 any_pushed 恒 False → manifest
+    # 永不重推，其他设备永远跳过新数据。只要本轮期望表集/hash 与远端 manifest
+    # 不一致就补推（正常一致时零额外请求）。
+    known_remote = {t: remote_tables.get(t) or {} for t in SYNC_TABLES}
+    manifest_diverges = (
+        set(known_remote) != set(pushed_tables)
+        or any(known_remote[t].get("sha1") != pushed_tables[t].get("sha1")
+               for t in pushed_tables)
+    )
+    pushed_manifest = any_pushed or manifest is None or manifest_diverges
+    if pushed_manifest:
         manifest_out = {
             "app": "clara-sync", "format": 1, "device_id": cfg.device_id,
             "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -690,11 +831,11 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
     # manifest（若记实际内容 hash，而远端 manifest 停在旧值（如对端写过后被
     # 判纯拉取），探测会每轮误判「有变化」白跑同步——2026-11-16 真机批踩坑）
     global _last_seen_hashes
-    if any_pushed or manifest is None:
+    if pushed_manifest:
         _last_seen_hashes = {t: v.get("sha1") for t, v in pushed_tables.items()}
     else:
         _last_seen_hashes = remote_hashes_at_fetch
-    _consume_cleared_marker()  # 全链成功才消耗豁免（失败轮保留重试）
+    _consume_cleared_marker(cleared_version)  # 全链成功才消耗（版本不符则保留下轮）
     return stats
 
 
@@ -706,6 +847,10 @@ def _sync_once(manual: bool = False) -> dict:
     限频失败（429/503）附 rate_limited=True 供 sync_loop 快速进入长退避。"""
     if not _sync_lock.acquire(blocking=False):
         return {"busy": True}
+    # 取走脏表（2026-11-16 优化批 3）：此前只 peek 不清空——任何一次业务写后
+    # 脏集合永久非空，sync_loop 每 3 秒跑一轮全表扫描 + manifest GET + SSE 广播，
+    # 持续消耗 WebDAV 额度并让前端反复重拉。同步期间的新写会重新入集合。
+    dirty = take_dirty_tables()
     try:
         with database.SessionLocal() as db:
             cfg = get_sync_config(db)
@@ -724,6 +869,7 @@ def _sync_once(manual: bool = False) -> dict:
                 _broadcast_sync(True, None, result.get("tables_changed", 0))
                 return result
             except (WebDavError, SyncAbort, OSError) as e:
+                mark_tables_dirty(dirty)  # 失败恢复标脏：下轮重试不丢这次变更
                 cfg.last_sync_at = datetime.now()
                 cfg.last_sync_ok = False
                 cfg.last_sync_error = str(e)[:400]
@@ -738,6 +884,24 @@ def _sync_once(manual: bool = False) -> dict:
                 if rate_limited:
                     out["rate_limited"] = True
                 return out
+            except Exception as e:
+                # 非预期异常（IntegrityError / 坏远端行 / KeyError 等）也必须
+                # 落 last_sync_error（优化批 3）：此前直接逸出，_sync_once 的
+                # 调用方读到的还是上一轮状态，用户看到「已同步」但实际失败。
+                mark_tables_dirty(dirty)
+                logger.exception("同步非预期异常")
+                try:
+                    db.rollback()
+                    with database.SessionLocal() as db2:
+                        cfg2 = get_sync_config(db2)
+                        cfg2.last_sync_at = datetime.now()
+                        cfg2.last_sync_ok = False
+                        cfg2.last_sync_error = f"同步异常：{type(e).__name__}（详见后端日志）"
+                        db2.commit()
+                except Exception:
+                    logger.debug("同步失败状态回写失败", exc_info=True)
+                _broadcast_sync(False, f"同步异常：{type(e).__name__}", 0)
+                return {"error": f"同步异常：{type(e).__name__}"}
     finally:
         _sync_lock.release()
 
@@ -786,8 +950,11 @@ async def sync_loop() -> None:
     _main_loop = asyncio.get_running_loop()
     await asyncio.sleep(START_DELAY_S)
     register_dirty_hook()
-    last_attempt = 0.0  # monotonic（完整同步）
-    last_probe = 0.0    # monotonic（轻探测）
+    # 启动即满足一次周期（优化批 3）：time.monotonic() 在 Windows 是开机时长，
+    # 初值 0 时开机不足 300s 启动的应用首次同步会被拖到开机满 300s。显式回退
+    # 一个周期 → 首 tick 立即做一轮全量（远端有变化即收敛）。
+    last_attempt = time.monotonic() - PERIODIC_S
+    last_probe = time.monotonic()
     fail_streak = 0
     logger.info("同步循环已启动（防抖 %ds / 探测 %ds / 周期 %ds / 退避上限 %ds）",
                 DEBOUNCE_S, PROBE_S, PERIODIC_S, MAX_PERIOD_S)
@@ -800,8 +967,10 @@ async def sync_loop() -> None:
             dirty = peek_dirty_tables()
             since_last = now - last_attempt
             if not ((dirty or woke) and since_last >= DEBOUNCE_S) and since_last < period:
-                # 未到完整同步条件：30s 轻探测远端（对端新数据 ~30s 可见）
-                if now - last_probe >= PROBE_S:
+                # 未到完整同步条件：30s 轻探测远端（对端新数据 ~30s 可见）。
+                # 退避期（fail_streak>0）不探测（优化批 3）：探测基准在失败轮
+                # 不更新，会每 30s 判「有变化」重复触发整轮失败。
+                if fail_streak == 0 and now - last_probe >= PROBE_S:
                     last_probe = now
                     changed = await asyncio.to_thread(_probe_remote_changed)
                     if not changed:

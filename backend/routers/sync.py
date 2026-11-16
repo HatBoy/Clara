@@ -99,8 +99,12 @@ async def run_now():
 @router.post("/reset-base")
 def reset_base():
     """重置同步基线：清空本地快照（守卫拦截后 / 远端换库后的重对齐出口；
-    下轮同步按冷启动语义重新对齐）。"""
-    sync_engine.clear_snapshot()
+    下轮同步按冷启动语义重新对齐）。与同步互斥（优化批 3）。"""
+    try:
+        with sync_engine.exclusive():
+            sync_engine.clear_snapshot()
+    except sync_engine.SyncBusy as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return {"ok": True}
 
 
@@ -118,9 +122,12 @@ def prepare_restore(body: RestoreRequest):
     """恢复第一阶段：校验 + staging 落盘 + 安全副本，返回要求重启。
     双格式：备份格式 zip 与同步格式 zip（手压 WebDAV 目录）均可。"""
     try:
-        return backup_service.prepare_restore(body.path)
+        with sync_engine.exclusive():
+            return backup_service.prepare_restore(body.path)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
+    except sync_engine.SyncBusy as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.post("/merge-analyze", response_model=MergeAnalyzeOut)
@@ -136,6 +143,9 @@ def merge_analyze(body: MergeAnalyzeIn, db: Session = Depends(get_db)):
 def merge_apply(body: MergeApplyIn, db: Session = Depends(get_db)):
     """合并导入第二阶段：按策略写当前库（单事务；不需重启；不删除本地行）。"""
     try:
-        return sync_merge.apply_merge(db, body.path, body.strategy)
+        with sync_engine.exclusive():
+            return sync_merge.apply_merge(db, body.path, body.strategy)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
+    except sync_engine.SyncBusy as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e

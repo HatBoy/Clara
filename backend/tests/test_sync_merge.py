@@ -136,3 +136,33 @@ def test_apply_backup_format_zip(tmp_path):
         out = sync_merge.apply_merge(db, str(z), "overwrite")
         assert out["inserted"] >= 1
         assert "备份行" in _titles(db)
+
+
+def test_dump_normalizes_datetime_and_json(tmp_path):
+    """备份包 dump 与 table_rows 同口径（2026-11-16 优化批 3）：DateTime 为
+    isoformat（T 分隔）、JSON 列为 Python 对象——否则 analyze 全表判"不同"。"""
+    import sqlite3
+
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT, "
+                 "start_time DATETIME, cancelled_dates JSON)")
+    conn.execute("INSERT INTO tasks VALUES ('t1', 'x', "
+                 "'2026-11-20 09:00:00.000000', '[\"2026-11-21\"]')")
+    conn.commit()
+    conn.close()
+
+    rows = sync_merge._dump_sqlite_tables(db_path)["tasks"]
+    assert rows[0]["start_time"] == "2026-11-20T09:00:00"
+    assert rows[0]["cancelled_dates"] == ["2026-11-21"]
+
+
+def test_apply_sync_zip_json_not_double_encoded(tmp_path):
+    """同步格式 zip 的 JSON 列落库后仍是对象（优化批 3）。"""
+    z = _sync_zip(tmp_path, {"tasks": [{
+        **_task_row("j1", "JSON 行"), "cancelled_dates": ["2026-11-21"]}]})
+    with TestingSessionLocal() as db:
+        out = sync_merge.apply_merge(db, str(z), "overwrite")
+        assert out["inserted"] >= 1
+        row = db.execute(Task.__table__.select().where(Task.id == "j1")).mappings().first()
+        assert row["cancelled_dates"] == ["2026-11-21"]
