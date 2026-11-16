@@ -494,13 +494,6 @@ def update_task(
             raise ValueError("单次例外不支持修改重复规则")
     if not data and done_flag is None and subtask_items is None:
         return task  # 空 patch 短路：不发 UPDATE、不误抬 updated_at
-    # 撤销快照（2026-11-17 批 1）：在首次改动前捕获任务+子行；成功后由各返回点
-    # 调 undo.finish，异常路径不记录（下次 begin 覆盖线程内胎记）
-    from services import undo
-
-    undo_entry = undo.begin("task.update", f"修改「{(task.title or '')[:12]}」")
-    undo.capture_task(undo_entry, db, task_id)
-    _snapshot_ids = {r["id"] for r in undo_entry["tasks"]}
     # Optional 入参会放行显式 null，但 title/priority 是 NOT NULL 列——拦为 422（否则 IntegrityError 500）
     for key, label in (("title", "标题"), ("priority", "优先级")):
         if data.get(key) is None and key in data:
@@ -511,6 +504,17 @@ def update_task(
         project = db.get(Project, data["project_id"])
         if project is None or project.is_deleted:
             raise ValueError("所属项目不存在")  # FK 真约束下脏 id 会打 IntegrityError 500
+    # 撤销快照（2026-11-17 批 1）：校验通过后再 begin——422 不在线程局部留孤儿
+    # entry（二轮批 1）；纯 done 勾选不进全局撤销栈（原设计：收件箱 4 秒局部撤销
+    # 是唯一入口，双入口会打架——先撤局部再撤全局会把任务"重新完成"）
+    from services import undo
+
+    if data or subtask_items is not None:
+        undo_entry = undo.begin("task.update", f"修改「{(task.title or '')[:12]}」")
+        undo.capture_task(undo_entry, db, task_id)
+        _snapshot_ids = {r["id"] for r in undo_entry["tasks"]}
+    else:
+        undo_entry, _snapshot_ids = None, set()
     if mode == "this":  # 场景 A：虚拟实例实体化为单次例外，主记录不动
         exception = _materialize_exception(db, task, date, data)
         if exception.id not in _snapshot_ids:

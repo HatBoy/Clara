@@ -65,11 +65,6 @@ def update_project(db: Session, project_id: str, patch: ProjectUpdate) -> Projec
     data = patch.model_dump(exclude_unset=True)
     if not data:
         return project  # 空 patch 短路：不发 UPDATE、不误抬 updated_at
-    # 撤销快照（2026-11-17 批 1）
-    from services import undo
-
-    undo_entry = undo.begin("project.update", f"修改项目「{(project.name or '')[:12]}」")
-    undo.capture_project(undo_entry, db, project_id)
     for key, label in _NOT_NULL_FIELDS.items():
         if key in data and data[key] is None:
             raise ValueError(f"{label}不允许置空")
@@ -83,6 +78,11 @@ def update_project(db: Session, project_id: str, patch: ProjectUpdate) -> Projec
         )
         if dup is not None:
             raise ConflictError(f"项目名已存在: {data['name']}")
+    # 撤销快照（2026-11-17 批 1）：校验通过后再 begin——422/409 不留孤儿 entry
+    from services import undo
+
+    undo_entry = undo.begin("project.update", f"修改项目「{(project.name or '')[:12]}」")
+    undo.capture_project(undo_entry, db, project_id)
     for key, value in data.items():
         setattr(project, key, value)
     db.commit()

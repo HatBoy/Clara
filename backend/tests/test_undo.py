@@ -150,3 +150,41 @@ def test_undo_does_not_record_itself(client: TestClient):
     client.patch(f"/api/tasks/{task['id']}", json={"title": "二次"})
     _undo(client)
     assert client.get("/api/undo").json()["available"] is False
+
+
+def test_undo_does_not_swallow_followup_entry(client: TestClient):
+    # 旧版进程级 _suppressed 开关会吞掉撤销窗口内并发/后续写操作的撤销条目
+    # （操作成功却不可撤销，2026-11-17 二轮批 1 移除）：撤销后紧接的新操作必须可撤销。
+    task = _create_task(client, title="连续")
+    client.patch(f"/api/tasks/{task['id']}", json={"title": "第一次改"})
+    _undo(client)
+    client.patch(f"/api/tasks/{task['id']}", json={"title": "第二次改"})
+    assert client.get("/api/undo").json()["available"] is True
+    _undo(client)
+    # 恢复到第二次改之前 = "连续"（"第一次改"已被首个撤销回滚，历史不叠加）
+    assert client.get(f"/api/tasks/{task['id']}").json()["title"] == "连续"
+
+
+def test_done_only_patch_not_in_global_undo(client: TestClient):
+    # 纯 done 勾选不进全局撤销栈（批 1 原设计）：收件箱 4 秒局部撤销是唯一入口，
+    # 双入口会打架——先撤局部再撤全局会把任务"重新完成"。
+    task = _create_task(client, title="勾选任务")
+    assert client.patch(f"/api/tasks/{task['id']}", json={"done": True}).status_code == 200
+    assert client.get(f"/api/tasks/{task['id']}").json()["done_at"] is not None
+    assert client.get("/api/undo").json()["available"] is False
+
+
+def test_undo_project_delete_survives_same_name_recreate(client: TestClient):
+    # 恢复撞活体同名（删除后新建了同名项目）：改名墓碑形恢复，撤销不再 500，
+    # 任务归属仍回写到位
+    proj = client.post("/api/projects", json={"name": "撞名项目", "color": "red"}).json()
+    task = _create_task(client, title="归属", project_id=proj["id"])
+    client.delete(f"/api/projects/{proj['id']}")
+    same = client.post("/api/projects", json={"name": "撞名项目", "color": "blue"}).json()
+    _undo(client)
+    names = [p["name"] for p in client.get("/api/projects").json()]
+    assert "撞名项目" in names and sum(n == "撞名项目" for n in names) == 1  # 同名不并存
+    assert any(n.startswith("撞名项目#undo#") for n in names)  # 恢复行改名
+    assert client.get(f"/api/tasks/{task['id']}").json()["project_id"] == proj["id"]
+    listed = {p["id"]: p["name"] for p in client.get("/api/projects").json()}
+    assert listed[same["id"]] == "撞名项目"  # 后建的同名项目原样保留

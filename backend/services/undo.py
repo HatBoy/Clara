@@ -4,7 +4,9 @@
 - **不建表、不参与同步**：撤销是短时（数秒）的交互补救，不是数据资产；
   进程重启后栈为空，GET /api/undo 返回 available=false（不报错）。
 - **只暴露栈顶**：队列留 20 条仅为并发/连续操作兜底，产品上只撤销最近一次。
-- **撤销自身 suppress**：apply_last 期间的写库不再产生新条目，避免“撤销再撤销”。
+- **撤销自身不自我记录**：apply_last 直写库（Core 语句），不经 begin/finish，
+  天然不产生新条目；并发请求的条目照常入栈（2026-11-17 二轮批 1：旧版进程级
+  _suppressed 开关会吞掉撤销窗口内并发写请求的条目——操作成功却不可撤销）。
 - 快照用 Core SELECT 取整行（含主行、重复系列子行、subtasks、reminders），
   恢复用 merge（物理删的行以原 id 重插）；本次新建的行按 id 反向删除。
 """
@@ -26,7 +28,6 @@ _MAX_ENTRIES = 20
 _stack: deque[dict] = deque(maxlen=_MAX_ENTRIES)
 _lock = threading.Lock()
 _local = threading.local()
-_suppressed = False
 
 
 def _new_entry(kind: str, label: str) -> dict:
@@ -50,12 +51,13 @@ def abort(entry: dict) -> None:
         _local.entry = None
 
 
-def finish(entry: dict) -> None:
-    """操作成功落库后调用：压入撤销栈（suppress 期间不记）。"""
+def finish(entry: dict | None) -> None:
+    """操作成功落库后调用：压入撤销栈。entry=None（该操作不进撤销——如纯 done
+    勾选）直接跳过。"""
+    if entry is None:
+        return
     if getattr(_local, "entry", None) is entry:
         _local.entry = None
-    if _suppressed:
-        return
     if not (entry["tasks"] or entry["projects"]):
         return
     with _lock:
@@ -137,21 +139,17 @@ def state() -> dict:
 
 
 def reset_for_tests() -> None:
-    global _suppressed
     with _lock:
         _stack.clear()
     _local.entry = None
-    _suppressed = False
 
 
 def apply_last(db: Session) -> str | None:
     """撤销最近一次操作；返回被撤销操作的文案，空栈返回 None。"""
-    global _suppressed
     with _lock:
         if not _stack:
             return None
         entry = _stack.pop()
-    _suppressed = True
     try:
         # 1) 恢复快照行（父行先于子行：重复系列的 parent_id 外键）
         for row in sorted(entry["tasks"],
@@ -180,7 +178,19 @@ def apply_last(db: Session) -> str | None:
                 db.execute(Reminder.__table__.insert().values(**row))
         # 4) 项目恢复 + 归属回写
         for row in entry["projects"]:
-            db.merge(Project(**row))
+            restored = Project(**row)
+            clash = db.scalar(
+                select(Project.id).where(
+                    Project.name == row["name"],
+                    Project.is_deleted.is_(False),
+                    Project.id != row["id"],
+                )
+            )
+            if clash is not None:
+                # 恢复撞活体同名（删除后新建了同名项目）：改名墓碑形恢复
+                # （delete_project 同惯例），恒 ≤20 防唯一约束——撤销不再重名失败
+                restored.name = (row["name"][:7] + "#undo#" + row["id"][:8])[:20]
+            db.merge(restored)
         for task_id, project_id in entry["task_projects"].items():
             db.execute(sa_update(Task).where(Task.id == task_id)
                        .values(project_id=project_id))
@@ -192,8 +202,6 @@ def apply_last(db: Session) -> str | None:
     except Exception:
         db.rollback()
         raise
-    finally:
-        _suppressed = False
 
     from services import sync_engine
 
