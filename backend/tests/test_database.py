@@ -369,3 +369,37 @@ def test_ensure_episodic_fts_rebuilds_preexisting_rows():
     assert hits and "感冒" in hits[0].fact
 
     _ensure_episodic_fts(eng)  # 幂等：一致后零动作不炸
+
+
+def test_sweep_json_null_text():
+    """JSON 列历史文本 'null' → SQL NULL 一次性清扫（2026-11-17 真机双机对账
+    实证：修复前的同步应用/合并导入/配置恢复三条 Core 写路径都把显式 None
+    dumps 成 'null' 文本——逻辑读回无损，但 IS NULL 失明、双端物理分叉）。"""
+    from sqlalchemy.orm import sessionmaker
+
+    from database import Base, _sweep_json_null_text
+    from models import Task
+
+    eng = create_engine("sqlite://")  # 独立内存库，不碰 conftest 共享库
+    Base.metadata.create_all(eng)
+    s = sessionmaker(bind=eng)()
+    dirty = Task(title="历史脏行")
+    quoted = Task(title="合法字符串行")
+    s.add_all([dirty, quoted])
+    s.commit()
+    dirty_id, quoted_id = dirty.id, quoted.id  # close 前取（过期实例 detached）
+    s.execute(text("UPDATE tasks SET cancelled_dates = 'null' WHERE id = :i"),
+              {"i": dirty_id})
+    s.execute(text("UPDATE tasks SET cancelled_dates = '\"null\"' WHERE id = :i"),
+              {"i": quoted_id})  # JSON 字符串 "null"——序列化产物，非 None 伪影
+    s.commit()
+    s.close()
+
+    _sweep_json_null_text(eng)
+
+    with eng.connect() as c:
+        assert c.execute(text("SELECT typeof(cancelled_dates) FROM tasks WHERE id = :i"),
+                         {"i": dirty_id}).scalar() == "null"      # 归位 SQL NULL
+        assert c.execute(text("SELECT cancelled_dates FROM tasks WHERE id = :i"),
+                         {"i": quoted_id}).scalar() == '"null"'   # 不误伤字符串值
+    _sweep_json_null_text(eng)  # 幂等：二轮零变化不炸

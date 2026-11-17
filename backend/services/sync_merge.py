@@ -242,7 +242,7 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
     会静默覆盖本地新改动。现与 sync_engine._write_local 同款：撞键视同本地
     已有行，过 strategy 与 LWW 再写。"""
     from services.sync_engine import (
-        _find_by_natural_key, _revive_row, _row_ts, _rows_equal, _table_meta,
+        _find_by_natural_key, _row_ts, _rows_equal, _table_meta, _writable_row,
         mark_tables_dirty, schedule_now, table_rows,
     )
 
@@ -264,7 +264,7 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
                 local_row = local.get(key)
                 collided = False
                 if local_row is None:
-                    values = _revive_row(table, row)
+                    values = _writable_row(table, row)
                     if "updated_at" in cols:
                         values["updated_at"] = now  # 盖当前时刻：视为本地最新修改
                     try:
@@ -288,7 +288,7 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
                         skipped += 1  # 本地较新：备份让位（LWW）
                         continue
                 # overwrite：备份内容落本地（自然键撞车场景落在本地 pk 上）
-                values = _revive_row(table, row)
+                values = _writable_row(table, row)
                 values[pk] = key
                 if "updated_at" in cols:
                     values["updated_at"] = now

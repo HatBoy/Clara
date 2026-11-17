@@ -628,6 +628,40 @@ def _assert_sync_tables_updated_at(eng) -> None:
             SYNC_TABLES.remove(name)  # 就地改 list：from-import 持同一引用
 
 
+def _sweep_json_null_text(eng) -> None:
+    """JSON 列文本 'null' → SQL NULL 一次性清扫（2026-11-17 真机双机对账实证）。
+
+    SQLAlchemy 2.0 对 JSON 列的**显式 None 绑定**会 json.dumps 成文本 'null'
+    （省略键才是真 NULL）——同步应用（_write_local）/合并导入/配置恢复三条
+    Core 写路径在 2026-11-17 修复（_writable_row / restore_config null()）前
+    写入的行，JSON 空列是 4 字符文本 'null'：ORM 读回仍是 None（逻辑无损），
+    但物理形态与对端分叉、raw SQL 的 IS NULL 对其失明。文本 'null' 不可能
+    来自合法用户数据（Python 字符串 'null' 序列化为带引号的 '"null"'），
+    清扫无歧义、幂等（第二轮起 0 行）。"""
+    import logging
+
+    from sqlalchemy import JSON as SAJSON
+    from sqlalchemy import inspect, text as sa_text
+
+    inspector = inspect(eng)
+    names = set(inspector.get_table_names())
+    total = 0
+    with eng.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in names:
+                continue
+            for col in table.columns:
+                if not isinstance(col.type, SAJSON):
+                    continue
+                n = conn.execute(sa_text(
+                    f"UPDATE {table.name} SET {col.name} = NULL "
+                    f"WHERE {col.name} = 'null'")).rowcount
+                total += n or 0
+    if total:
+        logging.getLogger(__name__).info(
+            "JSON 列历史 'null' 文本清扫：%d 行已归位 SQL NULL", total)
+
+
 def init_db() -> None:
     """幂等的数据库结构自检（桌面应用无部署环节——schema 升级收敛在启动时：
     新库自动建全套表、老库自动补缺列/触发器；结构已最新时全部检查落空，
@@ -659,6 +693,7 @@ def init_db() -> None:
     _migrate_updated_at_columns(engine)
     _ensure_updated_at_triggers(engine)
     _ensure_episodic_fts(engine)
+    _sweep_json_null_text(engine)
     _assert_sync_tables_updated_at(engine)  # 尾挂：迁移全跑完再核（sync_loop 未启动）
 
     log = logging.getLogger(__name__)

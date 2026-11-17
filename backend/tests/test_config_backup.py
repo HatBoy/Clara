@@ -80,3 +80,22 @@ def test_maybe_restore_corrupt_snapshot_skips(monkeypatch, fresh_db, snap_path):
         cb.maybe_restore_and_snapshot(db)
         assert db.query(ModelProvider).count() == 0
     assert snap_path.read_text(encoding="utf-8") != "{broken json"
+
+
+def test_restore_json_null_physical_fidelity(fresh_db):
+    """恢复快照的 JSON 列 None 落库须为 SQL NULL（2026-11-17 真机实证：config
+    自愈恢复路径对 JSON 列显式 None 同样 json.dumps 成 'null' 文本——B 机
+    ingest_sources.fetch_args/memory_rules.structured_anchor 中招）。"""
+    from sqlalchemy import text
+
+    with TestingSessionLocal() as db:
+        snap = {"mcp_servers": [{
+            "id": "mcp-null", "name": "本地文件夹", "transport": "stdio",
+            "command": "run", "args": None,  # JSON 列 None
+            "created_at": "2026-11-17T10:00:00", "updated_at": "2026-11-17T10:00:00",
+        }]}
+        n = cb.restore_config(db, snap)
+        assert n >= 1
+        kind = db.execute(text(
+            "SELECT typeof(args) FROM mcp_servers WHERE id='mcp-null'")).scalar()
+        assert kind == "null"  # 修复前为 'text'（'null' 字符串）

@@ -109,8 +109,20 @@ def restore_config(db, snap: dict) -> int:
         table = tables[name]
         db.execute(delete(table))
         if rows:
+            from sqlalchemy import JSON as SAJSON
+            from sqlalchemy import null as sa_null
+
+            def _bindable(col, value):
+                v = _revive(col, value)
+                # JSON 列的显式 None 会被 SQLAlchemy json.dumps 成文本 'null'
+                # （同 sync_engine._writable_row；2026-11-17 真机双机对账实证
+                # 恢复路径同样中招）——SQL null() 直渲染 NULL 绕过序列化器
+                if v is None and isinstance(col.type, SAJSON):
+                    return sa_null()
+                return v
+
             db.execute(table.insert(), [
-                {c: _revive(table.columns[c], v) for c, v in row.items()}
+                {c: _bindable(table.columns[c], v) for c, v in row.items()}
                 for row in rows])
         total += len(rows)
     db.commit()

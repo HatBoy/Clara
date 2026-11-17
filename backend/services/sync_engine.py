@@ -485,6 +485,22 @@ def _revive_row(table, row: dict) -> dict:
     return out
 
 
+def _writable_row(table, row: dict) -> dict:
+    """_revive_row 后再过一道：JSON 列的 None → SQL null() 构造。
+
+    SQLAlchemy 2.0 对 JSON 列的**显式 None 绑定**会走 json.dumps 落成文本
+    'null'（省略键才是真 NULL）——2026-11-17 双机真机对账实证：B 机拉取的
+    全部行 JSON 空列变成 'null' 字符串（逻辑读回仍是 None，但物理形态与
+    A 机分叉，raw SQL 的 IS NULL 查询对这些行失明）。null() 直接渲染
+    SQL NULL，绕过序列化器（INSERT / UPDATE / executemany 均验证可用）。"""
+    from sqlalchemy import JSON as SAJSON
+    from sqlalchemy import null as sa_null
+
+    return {c: (sa_null() if (v is None and isinstance(table.columns[c].type, SAJSON))
+                else v)
+            for c, v in _revive_row(table, row).items()}
+
+
 def _write_local(db: Session, name: str, merged: list[dict],
                  local_map: dict, deletable: set[str] | None = None) -> tuple[list[dict], int, int]:
     """把合并行集写进本地（单事务由调用方统一 commit；本函数只 execute）。
@@ -507,7 +523,7 @@ def _write_local(db: Session, name: str, merged: list[dict],
     for key, row in list(merged_map.items()):
         local_row = local_map.get(key)
         if local_row is None:
-            values = _revive_row(table, row)
+            values = _writable_row(table, row)
             try:
                 db.execute(table.insert().values(**values))
                 inserted += 1
@@ -537,7 +553,7 @@ def _write_local(db: Session, name: str, merged: list[dict],
             if lt is not None and rt is not None and lt >= rt:
                 actual.append(local_row)  # 本地新（撞车场景 LWW）：保留本地
                 continue
-            values = _revive_row(table, row)
+            values = _writable_row(table, row)
             values[pk] = key  # 撞车场景：远端内容落在本地 pk 上
             db.execute(table.update().where(
                 getattr(table.c, pk) == key).values(**values))

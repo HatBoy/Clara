@@ -754,3 +754,40 @@ def test_manifest_prunes_excluded_table_entries():
         se.run_sync(db, dav, CFG)  # 纯拉取轮：无内容变化
         assert "workflow_runs" not in dav.manifest_hashes()  # 重推已剔除
         assert "tasks" in dav.manifest_hashes()  # 正常表记录保留
+
+
+def test_json_null_physical_fidelity_on_write():
+    """JSON 列 None 经同步写库必须落 SQL NULL（2026-11-17 双机真机对账实证：
+    SQLAlchemy 2.0 对 JSON 列的显式 None 绑定走 json.dumps 成文本 'null'——
+    ORM 读回仍是 None，但物理形态与源端分叉，raw SQL 的 IS NULL 对其失明）。"""
+    from sqlalchemy import text
+
+    with TestingSessionLocal() as db:
+        tid = _add_task(db, "源任务")
+        db.execute(text("UPDATE tasks SET cancelled_dates = NULL WHERE id = :i"),
+                   {"i": tid})
+        db.commit()
+        row = se.table_rows(db, "tasks")[0]
+        assert row["cancelled_dates"] is None
+
+        # INSERT 路径（模拟对端拉取落库）：全新 pk + JSON 列 None
+        row2 = {**row, "id": "json-null-insert", "title": "拉取行",
+                "cancelled_dates": None}
+        se._write_local(db, "tasks", [row2], {})
+        db.commit()
+        kind = db.execute(text(
+            "SELECT typeof(cancelled_dates) FROM tasks WHERE id='json-null-insert'"
+        )).scalar()
+        assert kind == "null"  # SQL NULL；修复前为 'text'（'null' 字符串）
+
+        # UPDATE 路径：内容变化触发更新，None 列保持 SQL NULL
+        row3 = {**row2, "title": "拉取行改",
+                "updated_at": (datetime.now() + timedelta(minutes=1)).isoformat()}
+        se._write_local(db, "tasks", [row3], {row2["id"]: row2})
+        db.commit()
+        kind = db.execute(text(
+            "SELECT typeof(cancelled_dates) FROM tasks WHERE id='json-null-insert'"
+        )).scalar()
+        assert kind == "null"
+        assert db.execute(text(
+            "SELECT title FROM tasks WHERE id='json-null-insert'")).scalar() == "拉取行改"
