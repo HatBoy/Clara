@@ -357,6 +357,13 @@ def init_llm(
         context_length=model.context_length,
         model_kwargs={
             "drop_params": True,  # provider 不支持的可选参数静默丢弃（如 zai/GLM 无 reasoning_effort）
+            # 瞬态网络错误重试（2026-11-17 真机批：deepseek SSL EOF 中断洞察
+            # 生成——litellm 默认零重试，ChatLiteLLM 的 tenacity 层只认
+            # Timeout/APIError/连接错误/限频，不含 InternalServerError，SSL 中断
+            # 被包装成 InternalServerError 直接穿透）。num_retries 走 litellm
+            # 官方重试（Timeout/连接错误/429/5xx，指数退避）；四个生成路径
+            # （同步/异步 × 整段/流式）单点全覆盖
+            "num_retries": 2,
             **thinking,
             **({"response_format": {"type": "json_object"}} if json_mode else {}),
         },

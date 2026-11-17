@@ -223,6 +223,7 @@ def test_init_llm_maps_provider_row(monkeypatch):
     assert m.max_tokens == 800
     assert m.context_length == 65536
     assert m.model_kwargs["drop_params"] is True
+    assert m.model_kwargs["num_retries"] == 2  # 瞬态网络错误重试（SSL EOF 等）
     assert "reasoning_effort" not in m.model_kwargs
 
 
