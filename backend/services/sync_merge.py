@@ -41,7 +41,7 @@ def load_zip_tables(path: str) -> dict[str, list[dict]]:
     内的表）。非法 zip / 缺 manifest / 异应用包抛 ValueError（router 翻 422）。
     成员名经 backup._normalize_members 归一——手压 WebDAV 目录多包一层
     `clara-sync/` 前缀也识别。"""
-    from services.backup import _normalize_members
+    from services.backup import _check_member_sizes, _normalize_members
 
     archive = Path(path)
     if not archive.is_file() or not zipfile.is_zipfile(archive):
@@ -50,6 +50,7 @@ def load_zip_tables(path: str) -> dict[str, list[dict]]:
         norm = _normalize_members(zf.namelist())
         if not norm:
             raise ValueError("备份包缺少 manifest.json，无法识别格式")
+        _check_member_sizes(zf, norm)  # 解压炸弹防线（二轮批 1，恢复路同款）
         try:
             manifest = json.loads(zf.read(norm["manifest.json"]))
         except (ValueError, OSError) as e:

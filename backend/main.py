@@ -76,7 +76,7 @@ async def lifespan(app: FastAPI):
     reminder_task = asyncio.create_task(reminder_loop())
     agent_task = asyncio.create_task(agent_loop())
     # WebDAV 同步循环（2026-11-14 同步备份）：脏表防抖 + 周期兜底 + 失败退避，
-    # 启动延迟 15s 避开建库/恢复/seed（services/sync_engine.py 有节奏说明）
+    # 启动延迟 2s 避开建库/恢复/seed（services/sync_engine.py 有节奏说明）
     sync_task = asyncio.create_task(sync_loop())
     # 聊天通讯 worker（2026-10-23 批 5）：捕获主循环引用 + 按 enabled 行启动
     # SDK 长连接线程——须在快照恢复之后（恢复带回的凭据才是 worker 读到的最终态）。
@@ -101,6 +101,8 @@ async def lifespan(app: FastAPI):
     try:
         await asyncio.wait_for(asyncio.to_thread(sync_engine._sync_once), timeout=20)
     except Exception as exc:
+        # busy（在途轮持锁）是可解释形态：在途轮自身可能被退出硬杀于中途，靠
+        # manifest 自愈收敛无最终丢失（docs/sync-backup.md）；留痕便于排障
         logger.info("退出前同步冲刷未完成（%s）", exc)
 
 

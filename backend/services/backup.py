@@ -130,6 +130,19 @@ def create_backup(dest: str, version: str | None = None) -> dict:
     return {"ok": True, "size_bytes": size, "files": files}
 
 
+_MAX_MEMBER_BYTES = 256 * 1024 * 1024  # 单成员解压上限（二轮批 1，同 fetch_table 200MB 量级口径）
+
+
+def _check_member_sizes(zf: zipfile.ZipFile, norm: dict[str, str]) -> None:
+    """zip 成员解压尺寸预查（2026-11-17 二轮批 1）：高压缩比炸弹/伪造超长成员
+    一次性读入内存会 OOM 后端；读前按 file_size 拒绝。恢复与合并导入两路共用。"""
+    for orig in norm.values():
+        size = zf.getinfo(orig).file_size
+        if size > _MAX_MEMBER_BYTES:
+            raise ValueError(
+                f"备份包成员过大（{orig}，{size // 1048576} MB），拒绝处理")
+
+
 def prepare_restore(src: str) -> dict:
     """恢复第一阶段（后端存活时调用）：校验 zip → 解包 staging → 落 PENDING
     标记 → 预写安全副本。返回 {ok, requires_restart: True, message}。
@@ -144,6 +157,7 @@ def prepare_restore(src: str) -> dict:
         norm = _normalize_members(zf.namelist())
         if not norm:
             raise ValueError("备份包缺少 manifest.json，无法识别格式")
+        _check_member_sizes(zf, norm)
         try:
             manifest: dict = json.loads(zf.read(norm["manifest.json"]))
         except (KeyError, ValueError, OSError):

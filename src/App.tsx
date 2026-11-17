@@ -279,8 +279,13 @@ function App() {
         upsertTasks(merged.map((t) => toFrontendTask(t, nameById)));
         // 新装机首拉场景：本地空 + 后台正在同步 → 显示「正在从云端同步数据」
         // 提示条（2026-11-16 真机批：此前空白近一分钟无任何反馈）；SSE sync
-        // 事件（同步完成）到达时清除，数据经 reloadTasks 自然到达
-        if (apiSync?.syncing && merged.length === 0) setSyncBootHint(true);
+        // 事件（同步完成）到达时清除，数据经 reloadTasks 自然到达。
+        // 60s 兜底自清（二轮批 1）：完成事件若在 SSE 订阅建立前发出（建连毫秒
+        // 级竞态）提示条会永卡——数据本身经 reloadTasks/切页照常到达
+        if (apiSync?.syncing && merged.length === 0) {
+          setSyncBootHint(true);
+          window.setTimeout(() => setSyncBootHint(false), 60_000);
+        }
         setBootError(null);
       } catch (e) {
         console.error("从后端加载数据失败", e);

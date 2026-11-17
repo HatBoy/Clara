@@ -42,7 +42,7 @@ def _local_name(tag: str) -> str:
 
 
 class WebDavClient:
-    """单次同步生命周期内使用的 WebDAV 客户端（with 语义，连接随关）。"""
+    """单次同步生命周期内使用的 WebDAV 客户端（close 随轮调用，连接复用）。"""
 
     def __init__(self, url: str, username: str | None, password: str | None,
                  timeout: httpx.Timeout | None = None,
@@ -55,7 +55,21 @@ class WebDavClient:
             self._headers["Authorization"] = "Basic " + base64.b64encode(raw).decode("ascii")
         self._timeout = timeout or httpx.Timeout(30.0, connect=8.0)
         self._file_timeout = httpx.Timeout(60.0, connect=8.0)
+        # 连接复用（2026-11-17 二轮批 1）：旧版每请求新建 Client——大库一轮
+        # 22+ 次 TCP+TLS 握手（各 100-300ms），叠加坚果云限频治理目标。
+        # 惰性持有随轮关闭（sync_engine._sync_once finally 调 close）
+        self._client: httpx.Client | None = None
         self._transport = transport  # 测试注入（httpx.MockTransport）；生产恒 None
+
+    def _client_instance(self) -> httpx.Client:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.Client(trust_env=False, transport=self._transport)
+        return self._client
+
+    def close(self) -> None:
+        """随同步轮关闭复用连接（未初始化时零动作）。"""
+        if self._client is not None and not self._client.is_closed:
+            self._client.close()
 
     def _request(self, method: str, path: str, *, headers: dict | None = None,
                  content: bytes | None = None, timeout: httpx.Timeout | None = None) -> httpx.Response:
@@ -71,9 +85,9 @@ class WebDavClient:
             if attempt:
                 time.sleep(1.5 * attempt)
             try:
-                with httpx.Client(trust_env=False, transport=self._transport) as client:
-                    resp = client.request(method, url, headers=merged, content=content,
-                                          timeout=timeout or self._timeout)
+                resp = self._client_instance().request(
+                    method, url, headers=merged, content=content,
+                    timeout=timeout or self._timeout)
             except httpx.HTTPError as e:
                 raise WebDavError(f"WebDAV 请求失败（{method} {path}）：{e}") from e
             if resp.status_code not in (429, 503):
@@ -105,6 +119,10 @@ class WebDavClient:
             mk = self._request("MKCOL", "/clara-sync")
             if mk.status_code == 403:
                 return False, ms, "可连接但无写入权限（403），请检查账号权限"
+            if mk.status_code in (429, 503):
+                # 限频不是目录问题（二轮批 1 文案修正：旧版「无法创建同步目录
+                # （HTTP 429）」误导排障方向）
+                return False, ms, f"触发服务器限频（HTTP {mk.status_code}），请稍后再试"
             if mk.status_code >= 400 and mk.status_code not in (405, 201, 200):
                 return False, ms, f"无法创建同步目录（HTTP {mk.status_code}）"
             return True, ms, "连接成功，可读写"

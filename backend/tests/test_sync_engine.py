@@ -51,6 +51,9 @@ class FakeDav:
     def put_readme(self, content: str) -> None:
         self.readme_writes += 1
 
+    def close(self) -> None:  # 对齐 WebDavClient 消费面（连接复用随轮关闭，二轮批 1）
+        pass
+
     def manifest_hashes(self):
         return {t: v.get("sha1") for t, v in (self.manifest or {}).get("tables", {}).items()}
 
@@ -733,3 +736,21 @@ def test_assert_sync_tables_updated_at_removes_bad_table(monkeypatch):
     monkeypatch.setattr(se, "SYNC_TABLES", fake)
     _assert_sync_tables_updated_at(eng)
     assert fake == ["subtasks"]  # tasks 缺列被移出；subtasks 未建表跳过
+
+
+def test_manifest_prunes_excluded_table_entries():
+    """远端残留已排除表条目时重推 manifest 剔除（2026-11-17 二轮批 1）：
+    2026-11-16 前同步过的目录必带 workflow_runs 条目——旧版永不清理，且每次
+    进程重启后 30s 探测发现远端 manifest（含多余键）≠ 记忆白跑一轮完整同步。"""
+    with TestingSessionLocal() as db:
+        _add_task(db, "任务A")
+        dav = FakeDav()
+        se.run_sync(db, dav, CFG)  # 首轮：建基线，manifest 干净
+        assert "workflow_runs" not in dav.manifest_hashes()
+
+        # 注入历史残留条目（模拟旧版本设备推过的 manifest）
+        dav.manifest["tables"]["workflow_runs"] = {
+            "sha1": "x", "rows": 3, "updated_at": "2026-11-15T09:00:00"}
+        se.run_sync(db, dav, CFG)  # 纯拉取轮：无内容变化
+        assert "workflow_runs" not in dav.manifest_hashes()  # 重推已剔除
+        assert "tasks" in dav.manifest_hashes()  # 正常表记录保留

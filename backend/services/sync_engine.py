@@ -814,6 +814,11 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
         set(known_remote) != set(pushed_tables)
         or any(known_remote[t].get("sha1") != pushed_tables[t].get("sha1")
                for t in pushed_tables)
+        # 远端残留已排除/已回撤表的条目（二轮批 1）：2026-11-16 前同步过的目录
+        # 必带 workflow_runs 条目——旧版永不清理（远端文件与条目双残留），且每
+        # 次进程重启后 30s 探测发现远端 manifest（含多余键）≠ 记忆，白跑一轮
+        # 完整同步才稳定。重推 manifest 自然剔除多余条目（远端表文件不动）
+        or bool(set(remote_tables) - set(SYNC_TABLES))
     )
     pushed_manifest = any_pushed or manifest is None or manifest_diverges
     if pushed_manifest:
@@ -906,6 +911,8 @@ def _sync_once(manual: bool = False) -> dict:
                     logger.debug("同步失败状态回写失败", exc_info=True)
                 _broadcast_sync(False, f"同步异常：{type(e).__name__}", 0)
                 return {"error": f"同步异常：{type(e).__name__}"}
+            finally:
+                client.close()  # 复用连接随轮关闭（二轮批 1）
     finally:
         _sync_lock.release()
 

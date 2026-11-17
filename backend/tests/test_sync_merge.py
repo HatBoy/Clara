@@ -257,3 +257,19 @@ def test_apply_overwrite_backup_newer_lands_on_local_pk(tmp_path):
         row = db.get(_P, "local-1")
         assert row.color == "#ff0000"  # 备份较新：覆盖内容
         assert db.query(_P).count() == 1  # 仍是一行（本地 pk）
+
+
+def test_oversized_zip_member_rejected(client, tmp_path, monkeypatch):
+    """解压尺寸预查（2026-11-17 二轮批 1）：超限成员读前拒绝（防高压缩比
+    炸弹 OOM；与 WebDAV fetch_table 上限同口径）。上限经 monkeypatch 缩小直测。"""
+    from services import backup as _bk
+
+    monkeypatch.setattr(_bk, "_MAX_MEMBER_BYTES", 10)
+    path = tmp_path / "big.zip"
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("manifest.json", json.dumps({"app": "clara"}))
+        zf.writestr("clara.db", "x" * 50)
+    with pytest.raises(ValueError, match="过大"):
+        sync_merge.load_zip_tables(str(path))
+    res = client.post("/api/sync/restore", json={"path": str(path)})
+    assert res.status_code == 422 and "过大" in res.text

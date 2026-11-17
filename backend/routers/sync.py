@@ -79,7 +79,11 @@ def test_connection(body: SyncTestIn, db: Session = Depends(get_db)):
     password = body.password if body.password is not None else row.webdav_password
     if not url:
         raise HTTPException(status_code=422, detail="请先填写 WebDAV 服务地址")
-    ok, ms, message = WebDavClient(url, username, password).test_connection()
+    client = WebDavClient(url, username, password)
+    try:
+        ok, ms, message = client.test_connection()
+    finally:
+        client.close()
     row.last_test_at = datetime.now()
     row.last_test_ok = ok
     row.last_test_ms = ms

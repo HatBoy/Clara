@@ -537,7 +537,10 @@ def _fix_proposal_declined_outcomes(eng) -> None:
 
 # 同步地基（2026-11-14 同步备份）：10 张表补 updated_at 列 + WHEN 守卫触发器。
 # backfill 源按表映射——memory_dismissals / ingestion_items 无 created_at（分别是
-# dismissed_at / first_seen_at），其余默认 created_at
+# dismissed_at / first_seen_at），其余默认 created_at。
+# **onupdate 例外**：chat_state / custom_briefs 不在本清单（无触发器），模型列的
+# onupdate 是唯一盖戳机制——勿按「模型层只 default 不 onupdate」通例删它，删了
+# 这两表的更新将不盖章（LWW 判据失真）。
 _NEEDS_UPDATED_AT = [
     "stats_reports", "subtasks", "reminders", "proposals", "messages",
     "memory_dismissals", "episodic_facts", "behavior_events",
