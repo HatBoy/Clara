@@ -111,21 +111,32 @@ def update_sync_config(db: Session, patch) -> SyncSettings:
 
     # —— 落库（last_* 回显态不设 NOT NULL，白名单外键进不来：schema 层已拦）——
     turning_on = (data.get("webdav_enabled") is True and not row.webdav_enabled)
-    for key, value in data.items():
-        setattr(row, key, value)
-    db.commit()
-    db.refresh(row)
-    logger.info("更新同步备份配置：本次字段 %s", sorted(data))
+    from services import sync_engine  # 局部导入防环（sync_engine 顶层不依赖本模块）
 
-    # —— 开启即调度首同步（局部导入防环：sync_engine 顶层不依赖本模块状态）——
-    if turning_on or server_changed:
-        from services import sync_engine
-
-        if server_changed:
-            # 换服务器/账号：清快照与探测记忆 → 下轮按冷启动 union 合并（不删数据）
+    if server_changed:
+        # 换服务器/账号：落库 + 清基线同入同步互斥锁（二轮批 1，reset-base 同款）
+        # ——此前清基线与在途同步轮无互斥，在途轮继续用旧凭证拉旧服务器，尾部把
+        # 混合形态写成新 Base，后续每轮守卫误判风险上升。拿不到锁抛 SyncBusy
+        # （router 翻 409）：配置一并不落，整包重试即生效，无「已换址未清基线」
+        # 中间态；换址低频，拒绝优于后台重试复杂度
+        with sync_engine.exclusive():
+            for key, value in data.items():
+                setattr(row, key, value)
+            db.commit()
+            db.refresh(row)
+            # 清快照与探测记忆 → 下轮按冷启动 union 合并（不删数据）
             sync_engine.clear_snapshot()
             sync_engine.forget_remote_memory()
-            logger.info("WebDAV 服务端已变更，同步基线已重置（下轮为首次合并）")
+        logger.info("WebDAV 服务端已变更，同步基线已重置（下轮为首次合并）")
+    else:
+        for key, value in data.items():
+            setattr(row, key, value)
+        db.commit()
+        db.refresh(row)
+    logger.info("更新同步备份配置：本次字段 %s", sorted(data))
+
+    # —— 开启即调度首同步（防抖通道——否则最长空等 300s 周期）——
+    if turning_on or server_changed:
         sync_engine.schedule_now()
         if turning_on:
             logger.info("WebDAV 同步已开启，首同步已调度")

@@ -61,6 +61,9 @@ def update_config(body: SyncConfigUpdate, db: Session = Depends(get_db)):
         row = sync_config_service.update_sync_config(db, body)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
+    except sync_engine.SyncBusy as e:
+        # 换址清基线与在途同步轮互斥（二轮批 1）：409 与 reset-base 同口径
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return _config_out(db, row)
 
 

@@ -135,6 +135,28 @@ def test_config_password_only_keeps_baseline(client, monkeypatch, tmp_path):
     assert sync_engine.has_base()
 
 
+def test_config_server_change_conflicts_with_running_sync(client, monkeypatch, tmp_path):
+    """换址清基线与在途同步轮互斥（2026-11-17 二轮批 1）：锁被占时 409
+    （reset-base 同口径），锁空闲照常清基线。"""
+    from services import sync_engine
+
+    monkeypatch.setattr(sync_engine, "get_data_dir", lambda: tmp_path)
+    client.patch("/api/sync", json={"webdav_url": "https://dav-a.example.com"})
+    (tmp_path / "sync_snapshot").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "sync_snapshot" / "meta.json").write_text("{}", encoding="utf-8")
+
+    with sync_engine._sync_lock:  # 模拟在途同步轮持锁
+        res = client.patch("/api/sync",
+                           json={"webdav_url": "https://dav-b.example.com"})
+        assert res.status_code == 409
+        assert sync_engine.has_base()  # 基线未动
+
+    res = client.patch("/api/sync",
+                       json={"webdav_url": "https://dav-b.example.com"})
+    assert res.status_code == 200
+    assert not sync_engine.has_base()
+
+
 def test_config_enable_requires_url(client):
     res = client.patch("/api/sync", json={"webdav_enabled": True})
     assert res.status_code == 422
