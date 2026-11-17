@@ -6,7 +6,7 @@
 - 数据采集提炼：ingest_enabled 开且 now ≥ ingest_brief_min 且当日未认领（补账同晨间；
   默认关——采集打外网 API，用户显式开启）——手写区 run_ingest 从数据接入源拉数据
   提炼任务/日程建议（services/data_ingest.py 采集管道，2026-10-14 增；过载熔断闸
-  2026-11-04 移除——采集是数据同步不是排期，见 _run_ingest docstring）；
+  2026-11-04 移除——采集是数据同步不是排期，见 run_ingest_now docstring）；
 - 夜间碎片整理：20:00 后且空闲（无进行中日程 + N 分钟无 HTTP 活动），启动宽限期内
   豁免空闲判定（= 补账语义：昨晚没开应用，今早启动即补跑）；
 - 脉搏监控：运行期每 3h tick 一次纯规则层负荷检查（无补账语义——不运行时无所谓监控）。
@@ -819,12 +819,12 @@ def _end_ingest() -> None:
 
 
 def ingest_in_flight() -> bool:
-    """只读窥视在途闸（手动触发端点 409 判定用）。真防重入由 _run_ingest 内部
+    """只读窥视在途闸（手动触发端点 409 判定用）。真防重入由 run_ingest_now 内部
     try_begin 原子兜底——窥视与 create_task 间的极端窗口最坏=本轮 202 但静默跳过。"""
     return _ingest_in_flight
 
 
-async def _run_ingest(manual: bool = False) -> None:
+async def run_ingest_now(manual: bool = False) -> None:
     """数据采集提炼：手写区 run_ingest 独立入口产出排期草案 / 收件箱清单 / 综述 →
     schedule 卡（evidence 溯源并入 payload，M1-①）+ inbox 卡（M1-②）+ ingest 广播。
     ai_enabled 关 / 零激活 / 手写区未就绪 → 静默跳过（降级矩阵），认领行
@@ -1328,7 +1328,7 @@ async def agent_loop() -> None:
             if morning:
                 asyncio.create_task(_run_morning())
             if ingest:
-                asyncio.create_task(_run_ingest())
+                asyncio.create_task(run_ingest_now())
             if nightly:
                 asyncio.create_task(_run_nightly())
             if prep:

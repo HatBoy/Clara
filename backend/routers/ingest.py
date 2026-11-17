@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/ingest", tags=["ingest"])
 @router.post("/run", status_code=202)
 async def run_ingest_now(wait: bool = False, db: Session = Depends(get_db)):
     """手动立即采集：前置快查（采集开关 / AI 开关 / 零激活 → 422 引导去设置）→
-    在途窥视（409）→ create_task(_run_ingest) 并出。注意当日调度认领与手动在跑
+    在途窥视（409）→ create_task(run_ingest_now) 并出。注意当日调度认领与手动在跑
     撞车时，调度侧静默让位（认领行已落不重试，登记 docs/tech-debt.md）。
 
     wait=true（2026-11-04 手动刷新批，数据源页刷新钮）：等待本轮完成后返回
@@ -46,11 +46,11 @@ async def run_ingest_now(wait: bool = False, db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail="上一轮采集仍在进行中，请稍后再试")
     if wait:
         logger.info("手动触发数据采集（等待完成）")
-        summary = await workflows._run_ingest(manual=True)
+        summary = await workflows.run_ingest_now(manual=True)
         return summary
     # 强引用池（2026-11-16 优化批 2，照 routers/sync.py 先例）：asyncio 只持
     # 弱引用，无引用的长任务可能在跑完前被 GC，表现为「手动采集偶发无后续」。
-    task = asyncio.create_task(workflows._run_ingest(manual=True))
+    task = asyncio.create_task(workflows.run_ingest_now(manual=True))
     _bg_tasks.add(task)
     task.add_done_callback(_bg_tasks.discard)
     logger.info("手动触发数据采集")

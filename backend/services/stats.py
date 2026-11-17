@@ -39,10 +39,11 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from models import BehaviorEvent, EpisodicFact, Project, Proposal, StatsReport, Task
+from models import (BehaviorEvent, EpisodicFact, Project, Proposal, StatsMessage,
+                    StatsReport, Task)
 from services.ai_data import (
     adoption_stats,
     aggregate_deviations,
@@ -1447,12 +1448,13 @@ def export_report_md(db: Session, report_id: str, path: str) -> dict:
     return {"ok": True, "path": str(p), "size_bytes": size}
 
 
-# todo_id 未传哨兵（区分「不动既有锚点」与「显式置 null 清除」）
-_UNSET = object()
+# todo_id 未传哨兵（区分「不动既有锚点」与「显式置 null 清除」）——
+# 2026-11-17 架构批 1 公有化：三态 PATCH 参数的哨兵是 service interface 的一部分
+UNSET = object()
 
 
 def set_advice_status(db: Session, report_id: str, index: int, status: str,
-                      todo_id=_UNSET) -> StatsReport:
+                      todo_id=UNSET) -> StatsReport:
     """建议打卡（用户确认执行情况）：payload.advice_items[index].status 更新
     （proposed/completed/dropped/inboxed）——下期生成对照时 completed 标注
     「你确认已完成」、inboxed 标注「已转待办」（行动承接信号）、dropped 不再
@@ -1464,7 +1466,7 @@ def set_advice_status(db: Session, report_id: str, index: int, status: str,
         raise LookupError(f"报告不存在：{report_id}")
     if status not in ("proposed", "completed", "dropped", "inboxed"):
         raise ValueError(f"非法建议状态：{status}")
-    if todo_id is not _UNSET and todo_id is not None and not str(todo_id).strip():
+    if todo_id is not UNSET and todo_id is not None and not str(todo_id).strip():
         raise ValueError("todo_id 不能为空串（null = 清除锚点）")
     items = list((report.payload or {}).get("advice_items") or [])
     if index < 0 or index >= len(items):
@@ -1476,7 +1478,7 @@ def set_advice_status(db: Session, report_id: str, index: int, status: str,
             row = {"text": text, "status": status}
             if isinstance(it, dict) and it.get("todo_id"):
                 row["todo_id"] = it["todo_id"]  # 既有锚点默认保留
-            if todo_id is not _UNSET:
+            if todo_id is not UNSET:
                 if todo_id is None:
                     row.pop("todo_id", None)  # 显式 null = 清除（状态离开转待办时）
                 else:
@@ -1668,3 +1670,36 @@ def export_stats_png(path: str, data_base64: str) -> dict:
     out.write_bytes(raw)
     logger.info("统计报告图片已导出：%s（%.1f MB）", out, len(raw) / 1048576)
     return {"ok": True, "path": str(out), "size_bytes": len(raw)}
+
+
+# —— 统计问答会话持久化（2026-11-17 架构批 1：从 router 下沉——原三端点
+#    在 HTTP 层直摸 ORM，且 /clear 的「合法清空豁免标记」顺序不变量泄漏给
+#    最上层；现收敛为 service 函数，router 只剩编解码）——————————————
+
+
+def list_stats_messages(db: Session) -> list:
+    """历史全量（created 升序）；空表 = 无历史（前端回落欢迎语）。"""
+    return db.scalars(select(StatsMessage).order_by(StatsMessage.created_at)).all()
+
+
+def append_stats_message(db: Session, *, role: str, content: str):
+    """追加一条（前端每轮发送/接收后各记一条；欢迎语不落库）。"""
+    row = StatsMessage(role=role, content=content)
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def clear_stats_messages(db: Session) -> None:
+    """清空（物理删全表 → 经 WebDAV 删除传播多端清空，同 messages 口径）。
+
+    不变量：全表删除后必须打合法清空豁免标记（note_table_cleared），否则攒过
+    百条后整表删空会撞同步守卫 b——此顺序约束属同步引擎 interface，收在 service
+    层不再泄漏给 router。
+    """
+    from services.sync_engine import note_table_cleared
+
+    db.execute(delete(StatsMessage))
+    db.commit()
+    note_table_cleared("stats_messages")

@@ -107,7 +107,7 @@ def finalize_turn(db: Session, final: dict, *, source: str | None = None) -> lis
         q_row = ai_data.create_proposal(db, kind="question", payload=payload)
         first_proposal_id = q_row.id
 
-    # —— 高可信直通拆分（2026-10-24，workflows._run_ingest 同款）——trusted 源
+    # —— 高可信直通拆分（2026-10-24，workflows.run_ingest_now 同款）——trusted 源
     # todo/calendar 域条目免确认直落（结构性数据可信；笔记/文档提炼的域为 doc
     # 恒建卡进数据源页，用户定案）。draft 直落独立落库（apply_plan_entries + 原子
     # 降级 fallback 形态）+ applied 事件刷新画布；inbox 直落逐条 create_task +

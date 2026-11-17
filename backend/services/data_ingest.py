@@ -956,7 +956,7 @@ def split_trusted_direct(db: Session, draft_plan: list[dict], inbox_items: list[
     判定纯靠台账回查（指纹对账）——零 LLM 依赖、零提示词改动：inbox 条目读自带
     source_ref，draft 条目按 evidence 溯源行（无证据 = 无法对账，保守建卡）；台账
     查不到（补采条目 / Reduce 白名单后滤残留）同样保守建卡。调用方：workflows.
-    _run_ingest 与 chat_turn.finalize_turn（直落落库在壳层，同 auto_apply 先例）。
+    run_ingest_now 与 chat_turn.finalize_turn（直落落库在壳层，同 auto_apply 先例）。
 
     返回八键：draft_rest / inbox_rest / evidence_rest（建卡组——原条目形状不变，
     rest 证据行 idx 已重排对齐收缩后的草案序，前端溯源契约不破）；draft_direct /

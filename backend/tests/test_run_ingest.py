@@ -678,7 +678,7 @@ def test_run_ingest_workflow_trusted_direct(monkeypatch):
 
     import asyncio
 
-    asyncio.run(wf._run_ingest())
+    asyncio.run(wf.run_ingest_now())
 
     with TestingSessionLocal() as db:
         tasks = {t.title: t for t in db.scalars(select(Task)).all()}

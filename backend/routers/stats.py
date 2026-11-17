@@ -150,7 +150,7 @@ def set_report_advice(report_id: str, body: AdviceStatusIn,
     """建议打卡：用户确认上期建议的执行情况（完成/放弃）——下期报告对照点评
     的反馈信号（completed 标注点评、dropped 不再追问）。"""
     try:
-        todo_id = body.todo_id if "todo_id" in body.model_fields_set else stats_service._UNSET
+        todo_id = body.todo_id if "todo_id" in body.model_fields_set else stats_service.UNSET
         return stats_service.set_advice_status(
             db, report_id, body.index, body.status, todo_id=todo_id)
     except LookupError as e:
@@ -264,35 +264,19 @@ async def ask_stats(body: StatsAskIn, db: Session = Depends(get_db)):
 @router.get("/messages", response_model=list[StatsMessageOut])
 def list_stats_messages(db: Session = Depends(get_db)):
     """历史全量（created 升序）；空表 = 无历史（前端回落欢迎语）。"""
-    from sqlalchemy import select
-
-    from models import StatsMessage
-    return db.scalars(select(StatsMessage).order_by(StatsMessage.created_at)).all()
+    return stats_service.list_stats_messages(db)
 
 
 @router.post("/messages", response_model=StatsMessageOut, status_code=201)
 def append_stats_message(body: StatsMessageIn, db: Session = Depends(get_db)):
     """追加一条（前端每轮发送/接收后各记一条；欢迎语不落库）。"""
-    from models import StatsMessage
-
-    row = StatsMessage(role=body.role, content=body.content)
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return row
+    return stats_service.append_stats_message(db, role=body.role, content=body.content)
 
 
 @router.delete("/messages", status_code=204)
 def clear_stats_messages(db: Session = Depends(get_db)):
-    """/clear：物理删全表（删除传播多端清空；攒过百条后整表删空会撞守卫 b——
-    打合法清空豁免标记，见 sync_engine.note_table_cleared）。"""
-    from sqlalchemy import delete
-
-    from models import StatsMessage
-    from services.sync_engine import note_table_cleared
-    db.execute(delete(StatsMessage))
-    db.commit()
-    note_table_cleared("stats_messages")
+    """/clear：物理删全表（删除传播多端清空；豁免标记顺序不变量在 service 层）。"""
+    stats_service.clear_stats_messages(db)
 
 
 @router.post("/export-image")

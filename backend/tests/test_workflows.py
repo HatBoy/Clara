@@ -896,7 +896,7 @@ def _activate_model() -> None:
 def test_run_ingest_skips_without_model(monkeypatch):
     # 零激活（不造模型行）：静默跳过，不落任何消息
     _use_test_db(monkeypatch)
-    asyncio.run(workflows._run_ingest())
+    asyncio.run(workflows.run_ingest_now())
     with TestingSessionLocal() as db:
         assert ai_data.list_messages(db) == []
 
@@ -914,7 +914,7 @@ def test_run_ingest_skips_when_overloaded(monkeypatch):
         return {}
 
     monkeypatch.setattr(workflows, "_load_agent", lambda module, attr: _fake_ingest)
-    asyncio.run(workflows._run_ingest())
+    asyncio.run(workflows.run_ingest_now())
     assert called != []  # 采集照常执行（旧口径断言「未被调」已废）
     assert workflows.ingest_in_flight() is False  # 在途闸已清
     with TestingSessionLocal() as db:
@@ -931,7 +931,7 @@ def test_run_ingest_runs_at_exact_threshold(monkeypatch):
         return {"draft_plan": [], "final_reply": ""}
 
     monkeypatch.setattr(workflows, "_load_agent", lambda module, attr: _fake_ingest)
-    asyncio.run(workflows._run_ingest())
+    asyncio.run(workflows.run_ingest_now())
     with TestingSessionLocal() as db:
         assert ai_data.list_messages(db) == []  # 综述不落消息（headline 随广播）
 
@@ -950,7 +950,7 @@ def test_run_ingest_builds_schedule_proposal(monkeypatch):
     monkeypatch.setattr(workflows, "_load_agent", lambda module, attr: _fake_ingest)
     q = workflows.subscribe()
     try:
-        asyncio.run(workflows._run_ingest())
+        asyncio.run(workflows.run_ingest_now())
         event = q.get_nowait()
         assert event["type"] == "ingest" and event["proposal_id"]
     finally:
@@ -976,7 +976,7 @@ def test_run_ingest_empty_draft_no_proposal(monkeypatch):
     monkeypatch.setattr(workflows, "_load_agent", lambda module, attr: _fake_ingest)
     q = workflows.subscribe()
     try:
-        asyncio.run(workflows._run_ingest())
+        asyncio.run(workflows.run_ingest_now())
         event = q.get_nowait()
         assert event["type"] == "ingest" and event["proposal_id"] is None
     finally:
@@ -1000,7 +1000,7 @@ def test_run_ingest_silent_round_no_message_no_broadcast(monkeypatch):
     monkeypatch.setattr(workflows, "_load_agent", lambda module, attr: _fake_ingest)
     q = workflows.subscribe()
     try:
-        asyncio.run(workflows._run_ingest())
+        asyncio.run(workflows.run_ingest_now())
         assert q.empty()  # 无广播
     finally:
         workflows.unsubscribe(q)
@@ -1025,7 +1025,7 @@ def test_run_ingest_manual_bypasses_catchup_silence(monkeypatch):
     monkeypatch.setattr(workflows, "_catchup_silent", lambda report_min, now=None: True)
     q = workflows.subscribe()
     try:
-        asyncio.run(workflows._run_ingest(manual=True))
+        asyncio.run(workflows.run_ingest_now(manual=True))
         event = q.get_nowait()
         assert event["type"] == "ingest"  # 广播照发
     finally:
@@ -1050,7 +1050,7 @@ def test_run_ingest_builds_inbox_card(monkeypatch):
     monkeypatch.setattr(workflows, "_load_agent", lambda module, attr: _fake_ingest)
     q = workflows.subscribe()
     try:
-        asyncio.run(workflows._run_ingest())
+        asyncio.run(workflows.run_ingest_now())
         event = q.get_nowait()
         assert event["type"] == "ingest" and event["proposal_id"]
     finally:
@@ -1078,7 +1078,7 @@ def test_run_ingest_evidence_into_schedule_payload(monkeypatch):
         }
 
     monkeypatch.setattr(workflows, "_load_agent", lambda module, attr: _fake_ingest)
-    asyncio.run(workflows._run_ingest())
+    asyncio.run(workflows.run_ingest_now())
     with TestingSessionLocal() as db:
         proposals = ai_data.list_proposals(db, unresolved_only=True)
         assert proposals[0].kind == "schedule"
@@ -1098,7 +1098,7 @@ def test_ingest_gate_blocks_reentry(monkeypatch):
             return {"draft_plan": [], "final_reply": "x"}
 
         monkeypatch.setattr(workflows, "_load_agent", lambda module, attr: _fake_ingest)
-        asyncio.run(workflows._run_ingest())  # 闸占用中：静默让位，不落消息
+        asyncio.run(workflows.run_ingest_now())  # 闸占用中：静默让位，不落消息
         with TestingSessionLocal() as db:
             assert ai_data.list_messages(db) == []
     finally:
@@ -1109,7 +1109,7 @@ def test_ingest_gate_blocks_reentry(monkeypatch):
 def test_run_ingest_gate_cleared_on_skip(monkeypatch):
     # ai_enabled 关 / 零激活等早退路径也必须清闸（finally 兜底），否则一次跳过永久 409
     _use_test_db(monkeypatch)
-    asyncio.run(workflows._run_ingest())  # 零激活 → 静默跳过
+    asyncio.run(workflows.run_ingest_now())  # 零激活 → 静默跳过
     assert workflows.ingest_in_flight() is False
     assert workflows.try_begin_ingest() is True
     workflows._end_ingest()

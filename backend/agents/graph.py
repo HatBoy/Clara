@@ -18,7 +18,7 @@ _reduce_phase 管道。
 双入口同体——共用同一条 _map_phase / _reduce_phase 管道，不复制：
 - run_ingest(db, day)：定时/手动采集工作流入口（services/workflows.py 经
   asyncio.to_thread 调用），返回 {"draft_plan", "inbox_items", "evidence",
-  "final_reply"} 四键，由壳 _run_ingest 消费（建议卡 / 自动收录 / ingest 广播）。
+  "final_reply"} 四键，由壳 run_ingest_now 消费（建议卡 / 自动收录 / ingest 广播）。
 - build_graph()：chat 意图路由图。center_router 先分类（ingest 意图才走采集
   分支——不再每轮 chat 无条件采集，非 ingest 意图更快更省）；collect_data
   确定性采集先行——直调 service（必调的取数不经 @tool、不经 LLM 仲裁），
@@ -630,7 +630,7 @@ def run_ingest(db: Session, day: date) -> dict:
     # 静默轮判定（2026-10-23 频率档位配套）：零候选 + 采集层无异常 + 各源全部 ok +
     # 注记全是「无新条目」尾串（Map 对 ok 且零 items 的源写死该文案，见 _map_phase）
     # → 跳过 Reduce 保底调用直接返回；预算用尽/提炼失败/认证类/源数超限注记都算
-    # 「有事」照走 Reduce 出综述。壳（workflows._run_ingest）按 silent 键静默收场。
+    # 「有事」照走 Reduce 出综述。壳（workflows.run_ingest_now）按 silent 键静默收场。
     if (not candidates and not raw.get("error") and not raw.get("truncated")
             and all(src.get("ok") for src in (raw.get("sources") or []))
             and all(n.endswith("无新条目") for n in source_notes)):
