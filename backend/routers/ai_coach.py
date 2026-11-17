@@ -61,15 +61,11 @@ from services.chat_turn import (
     compact_history_async as _compact_history_async,
 )
 from services import sse_kit
-from services.llm import AI_NO_MODEL_SHORT_MSG, NoActiveModelError, check_ai
+from services.llm import NoActiveModelError, check_ai
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
-
-# 轮次任务出队哨兵（2026-10-23 批 3）：轮次体全部事件已投递完毕——身份比较用
-_TURN_END = object()
-
 
 def _load_graph():
     """兼容再导出（2026-10-23 轮次内核下沉 services/chat_turn.py）：测试 monkeypatch
@@ -104,110 +100,11 @@ async def chat(body: ChatIn, db: Session = Depends(get_db)):
             yield sse_kit.sse_frame({"type": "error", "code": "not_ready", "message": "智能体尚未就绪（agents/graph.py 手写区未实现）"})
             yield sse_kit.sse_frame({"type": "done"})
             return
-
-        out: asyncio.Queue = asyncio.Queue()
-        lock = chat_turn.get_turn_lock()
-        await lock.acquire()
-
-        async def _turn() -> None:
-            """轮次体：持锁跑完「构造 state → 落 user 消息 → 图执行 → 收尾落库」
-            全程，事件（含错误帧）逐个投 out 队列，finally 释放锁 + 投哨兵。"""
-            from database import SessionLocal
-
-            try:
-                import time as _time
-
-                _t0 = _time.perf_counter()
-                with SessionLocal() as turn_db:
-                    state = build_initial_state(turn_db, body.message)
-                    ai_data.append_message(turn_db, role="user", content=body.message)
-                    logger.info("[chat] 新对话轮：%s", body.message[:60])
-                    out.put_nowait({"type": "message", "role": "user", "content": body.message})
-
-                    try:
-                        # —— 图执行：stream 驱动 + 跨线程队列桥（2026-10-16 token 级流式改造） ——
-                        # graph 同步阻塞（节点内 LLM 走 litellm 同步客户端）——仍在 to_thread
-                        # 工作线程跑，免得卡住事件循环拖迟同进程的提醒调度。stream_mode 双通道
-                        # （langgraph 1.2.11 源码验证过形态）：
-                        # - "custom"：节点经 get_stream_writer 推的 delta 帧（nodes._delta_emitter
-                        #   构造的 {"type":"delta","text":...}）——转发 out 队列，打字机体感，
-                        #   且逐 token 实时到达（custom 模式的 waiter 机制，不积压到 superstep 末）；
-                        # - "values"：每 superstep 后的全量 state，末帧 == invoke 返回值同源同值，
-                        #   记为 final 交 _finalize_turn。
-                        # 桥接/收尾信封 2026-11-17 架构批 1 收敛 sse_kit.stream_worker
-                        # （deliver + StreamDone/StreamFailure + 强引用池托管，线程不可中断
-                        # 自然跑完出池——不再需要 cancel 句柄）。turn_db 全程只在事件循环
-                        # 线程使用（线程隔离铁律）。
-                        def _consume_graph(deliver):
-                            final_local = None
-                            for mode, payload in graph().stream(state, stream_mode=["custom", "values"]):
-                                if mode == "custom":
-                                    deliver(payload)
-                                else:
-                                    final_local = payload
-                            return final_local
-
-                        queue = sse_kit.stream_worker(_consume_graph)
-                        graph_exc: BaseException | None = None
-                        final = None
-                        while True:
-                            item = await queue.get()
-                            if isinstance(item, sse_kit.StreamFailure):
-                                graph_exc = item.exc
-                                break
-                            if isinstance(item, sse_kit.StreamDone):
-                                final = item.payload
-                                break
-                            out.put_nowait(item)  # custom 帧 = delta 事件
-                        if graph_exc is not None:
-                            raise graph_exc
-                    except NoActiveModelError:
-                        out.put_nowait({"type": "error", "code": "no_model",
-                                        "message": AI_NO_MODEL_SHORT_MSG})
-                    except NotImplementedError:
-                        out.put_nowait({"type": "error", "code": "not_ready", "message": "智能体尚未就绪（build_graph 未实现）"})
-                    except Exception as exc:
-                        logger.exception("智能体运行异常（chat: %s）", body.message[:50])
-                        # 用户可读分类（2026-11-16 优化批 2）：401/429/超时/超限
-                        # 分别给操作建议，不再一律「详见后端日志」。
-                        from services.model_providers import describe_llm_error
-                        out.put_nowait({"type": "error", "code": "agent_error",
-                                        "message": describe_llm_error(exc)})
-                    else:
-                        for event in _finalize_turn(turn_db, final):
-                            out.put_nowait(event)
-                        # 轮耗时观测（优化批 4）：速度问题从体感变数字——总耗时
-                        # + 出口键一览（各 LLM 调用耗时已由 [llm] 单点日志覆盖）
-                        logger.info(
-                            "[chat] 轮完成：%.1fs，出口 %s",
-                            _time.perf_counter() - _t0,
-                            "、".join(sorted(k for k in (final or {}) if k in (
-                                "final_reply", "draft_plan", "question_plan",
-                                "applied_plan", "inbox_items", "delete_plan",
-                                "preflight")) or "（空）"))
-                        # 滚动上下文压缩（2026-10-20 增）：轮末 fire-and-forget，不占
-                        # 对话时延；任务挂引用池防 GC（chat_turn.schedule_compaction 注释）
-                        chat_turn.schedule_compaction()
-            except Exception:
-                # 外层兜底：state 构造 / user 落库等图执行之前的意外故障（图执行
-                # 段已有自己的翻译分支）——同样投错误帧，绝不静默 done
-                logger.exception("轮次前置异常（chat: %s）", body.message[:50])
-                out.put_nowait({"type": "error", "code": "agent_error", "message": "智能体运行异常，详见后端日志"})
-            finally:
-                lock.release()
-                out.put_nowait(_TURN_END)
-
-        # 强引用池托管（sse_kit.spawn）：断连后轮次继续跑（锁自释、消息照落）
-        sse_kit.spawn(asyncio.create_task(_turn()))
-        try:
-            while True:
-                item = await out.get()
-                if item is _TURN_END:
-                    break
-                yield sse_kit.sse_frame(item)
-        finally:
-            # 断连（GeneratorExit）或正常退出：轮次任务不取消——跑完落库、锁自释
-            pass
+        # 轮次编排下沉 chat_turn.stream_turn_events（2026-11-17 架构批 5）——
+        # graph 在本层加载后传入：ai_coach._load_graph 的 monkeypatch 锚点保持
+        # 命中（test_ai_coach 替身 graph 注入路径），router 只剩闸门/加载/帧序列化
+        async for event in chat_turn.stream_turn_events(body.message, graph):
+            yield sse_kit.sse_frame(event)
         yield sse_kit.sse_frame({"type": "done"})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
