@@ -599,13 +599,25 @@ def run_ingest(db: Session, day: date) -> dict:
         # 属性，调用时解析才吃到测试库（run_ingest 测试不 patch graph.SessionLocal）
         from database import SessionLocal as _SL
 
+        from models import AppSettings
         from services.ai_data import format_memory_lines, get_chat_state
+        from services.settings import DEFAULTS, SETTINGS_ROW_ID
+
+        def _settings_readonly(db2):
+            # 并行段只读（二轮批 1）：get_settings 是 get_or_create 会 INSERT——
+            # 与主线程 claim_llm_budget 的 get_or_create 在共享连接上竞态
+            # （test_run_ingest 预算用例偶发 UNIQUE app_settings.id 的真身，
+            # tech-debt 2026-11-01 登记）。缺行给默认对象不落库，消费方只读属性。
+            row = db2.get(AppSettings, SETTINGS_ROW_ID)
+            if row is not None:
+                return row
+            return AppSettings(id=SETTINGS_ROW_ID, **DEFAULTS)
 
         with _SL() as db2:
             _core, _ref = format_memory_lines(db2)  # 无人格（tech-debt 登记）
             return (dedup_context(db2),
                     _core + _ref,
-                    get_settings(db2), calendar_load_summary(db2),
+                    _settings_readonly(db2), calendar_load_summary(db2),
                     get_chat_state(db2).summary or None)
 
     with ThreadPoolExecutor(max_workers=1) as _pool:

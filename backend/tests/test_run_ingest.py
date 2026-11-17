@@ -283,12 +283,11 @@ def test_run_ingest_map_exception_isolated(monkeypatch):
 
 
 def test_run_ingest_budget_stops_map_reduce_keeps(monkeypatch):
-    # 验收⑦：预算设 1 → Map 只跑 1 源即停、第二源如实声明，Reduce 仍出综述
+    # 验收⑦：预算设 1 → Map 只跑 1 源即停、第二源如实声明，Reduce 仍出综述。
+    # 设置写入与 run_ingest 同会话（二轮批 1）：双会话时 StaticPool 共享连接上
+    # 的并行取数段与 get_or_create 竞态，第二会话偶发读不到已提交行——预算
+    # 读取回落默认 0（不限）或 INSERT 撞唯一键（tech-debt 2026-11-01 偶发真身）
     monkeypatch.setattr(data_ingest, "_LLM_BUDGET_STATE", None)  # 模块态防跨用例串台
-    with TestingSessionLocal() as db:
-        s = get_settings(db)
-        s.ingest_llm_budget = 1
-        db.commit()
     llm_fake = _FakeLLM(map_reply=json.dumps(
         {"source_note": "n", "candidates": []}, ensure_ascii=False))
     _patch_services(monkeypatch, sources=[
@@ -296,6 +295,9 @@ def test_run_ingest_budget_stops_map_reduce_keeps(monkeypatch):
         _src(name="源一", key="k1", items=[_item()]),
     ], llm_fake=llm_fake, budget=False)
     with TestingSessionLocal() as db:
+        s = get_settings(db)
+        s.ingest_llm_budget = 1
+        db.commit()
         result = graph_mod.run_ingest(db, date(2026, 10, 16))
     assert len(llm_fake.map_calls) == 1
     assert "源一: 当日预算用尽未提炼" in _reduce_payload(llm_fake)["source_notes"]
@@ -725,11 +727,16 @@ def test_finalize_turn_trusted_direct_events(monkeypatch):
 # —— Map 并发提炼（2026-10-26 提速批 3）————————————————————————————————
 
 
-def _map_direct(monkeypatch, sources, map_impl):
+def _map_direct(monkeypatch, sources, map_impl, *, budget=None):
     """_map_phase 直调壳：call_llm 只拦 Map 侧（其他 system prompt 到达即断言炸），
-    返回 (candidates, notes)——绕 run_ingest 聚焦 Map 并发语义。"""
+    返回 (candidates, notes)——绕 run_ingest 聚焦 Map 并发语义。budget 预算
+    设置与直调同会话（二轮批 1）：双会话在共享连接上偶发读不到已提交行。"""
     monkeypatch.setattr(llm, "call_llm", map_impl)
     with TestingSessionLocal() as db:
+        if budget is not None:
+            s = get_settings(db)
+            s.ingest_llm_budget = budget
+            db.commit()
         return graph_mod._map_phase(db, {"sources": sources})
 
 
@@ -760,10 +767,6 @@ def test_map_phase_budget_grants_remainder_in_order(monkeypatch):
     # 预算主线程预扣：cap=2、3 源 → 授 2 停 1（旧逐源语义保持——剩 1 提 1，
     # 不整批拒绝）；「预算用尽」如实注记在第 3 源
     monkeypatch.setattr(data_ingest, "_LLM_BUDGET_STATE", None)
-    with TestingSessionLocal() as db:
-        s = get_settings(db)
-        s.ingest_llm_budget = 2
-        db.commit()
     calls: list[str] = []
 
     def map_impl(messages, *, json_mode=False, max_tokens=None):
@@ -774,7 +777,7 @@ def test_map_phase_budget_grants_remainder_in_order(monkeypatch):
         _src(name="源零", key="k0", items=[_item()]),
         _src(name="源一", key="k1", items=[_item()]),
         _src(name="源二", key="k2", items=[_item()]),
-    ], map_impl)
+    ], map_impl, budget=2)
     assert len(calls) == 2
     assert "源零: ok" in notes and "源一: ok" in notes
     assert "源二: 当日预算用尽未提炼" in notes
@@ -784,10 +787,6 @@ def test_map_phase_refunds_failed_source(monkeypatch):
     # 失败源额度返还：cap=3、3 源全预扣、源一 LLM 抛异常 → 计数 3-1=2
     #（预算按实际消耗计，失败重试不白扣）
     monkeypatch.setattr(data_ingest, "_LLM_BUDGET_STATE", None)
-    with TestingSessionLocal() as db:
-        s = get_settings(db)
-        s.ingest_llm_budget = 3
-        db.commit()
 
     def flaky_map(messages, *, json_mode=False, max_tokens=None):
         if "k1" in messages[1]["content"]:
@@ -798,7 +797,7 @@ def test_map_phase_refunds_failed_source(monkeypatch):
         _src(name="源零", key="k0", items=[_item()]),
         _src(name="源一", key="k1", items=[_item()]),
         _src(name="源二", key="k2", items=[_item()]),
-    ], flaky_map)
+    ], flaky_map, budget=3)
     assert "源一: 提炼调用失败，已跳过" in notes
     assert data_ingest._LLM_BUDGET_STATE[1] == 2  # 3 预扣 − 1 返还
 
