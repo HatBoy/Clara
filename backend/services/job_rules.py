@@ -14,9 +14,16 @@
 import re
 from datetime import date, datetime, timedelta
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from services.tasks import _task_dur, expand_occurrences, list_tasks
+from models import Task
+from services.tasks import (
+    _attach_cancelled_dates,
+    _task_dur,
+    expand_occurrences,
+    list_tasks,
+)
 
 # "长会/大任务"阈值（分钟）：90 = 既有高强度派生口径，不另造第二套数
 LONG_MEETING_MINS = 90
@@ -64,8 +71,11 @@ def pick_important_meetings(db: Session, day: date) -> list[tuple[object, dateti
     ①单次任务走窗口查询（list_tasks(start, end) 按交集过滤）；
     ②重复系列主行（recurrence_rule 非空且非例外行）恒不在窗口查询的
     start_time 语义里可靠命中——「每周一站会」主行基准在上周，窗口查询会漏，
-    必须全量取系列行经 expand_occurrences 展开实例判定（墓碑/活体例外日已
-    挖空）。返回 (task, 实例开始时刻) 列表；无命中空列表。"""
+    必须取系列行经 expand_occurrences 展开实例判定（墓碑/活体例外日已挖空）。
+    二轮批 1（2026-11-17）：系列路从 list_tasks 全表改谓词过滤查询——本函数
+    被_minutes_invite 事件窗谓词每 60s tick 调用，全量拉取+逐行过滤在任务数
+    上百时每分钟白付全表扫描；过滤谓词与原 continue 条件逐项对齐（行为零漂移，
+    单次路不动）。返回 (task, 实例开始时刻) 列表；无命中空列表。"""
     lo = datetime.combine(day, datetime.min.time())
     hi = lo + timedelta(days=1)
     picked: list[tuple[object, datetime]] = []
@@ -74,9 +84,17 @@ def pick_important_meetings(db: Session, day: date) -> list[tuple[object, dateti
             continue  # 系列走展开路（窗口查询按 OR 谓词会带回系列行，防双计）
         if t.start_time is not None and is_important_meeting(t):
             picked.append((t, t.start_time))
-    for t in list_tasks(db):
-        if t.recurrence_rule is None or t.parent_id is not None or t.start_time is None:
-            continue  # 只看系列主行（例外/墓碑行是子行，日期已聚合进主行）
+    series_rows = db.scalars(
+        select(Task).where(
+            Task.recurrence_rule.is_not(None),
+            Task.parent_id.is_(None),
+            Task.is_deleted.is_(False),
+            Task.start_time.is_not(None),
+        )
+    ).all()
+    if series_rows:
+        _attach_cancelled_dates(db, series_rows)  # 挖空聚合（展开口径同 list_tasks）
+    for t in series_rows:
         for occ in expand_occurrences(t, lo, hi):
             if is_important_meeting(t):
                 picked.append((t, occ))

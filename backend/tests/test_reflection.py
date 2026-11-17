@@ -498,3 +498,19 @@ def test_anchor_high_confidence_rules(monkeypatch):
         assert fresh[high.id].structured_anchor == {
             "workdays": True, "start_min": 0, "end_min": 720,
             "rule": "[排期偏好] 工作日上午不排会"}
+
+
+def test_anchor_count_excludes_slot_backfill():
+    # 2026-11-17 二轮批 1：slot 回填是旧行迁移补齐，不计入 anchored——
+    # 旧版混计让夜间自进化日志虚高，误导调参判断
+    from sqlalchemy import select
+
+    with TestingSessionLocal() as db:
+        from models import MemoryRule
+
+        db.add(MemoryRule(category="作息规律", content="多喝水",
+                          source="ai_reflect", confidence=0.9, evidence="e"))
+        db.commit()
+        assert reflection._anchor_high_confidence_rules(db) == 0  # 仅回填不计
+        row = db.scalar(select(MemoryRule).where(MemoryRule.content == "多喝水"))
+        assert row.slot is not None  # 回填本身照常发生

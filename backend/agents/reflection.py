@@ -355,10 +355,12 @@ def _anchor_high_confidence_rules(db) -> int:
     记忆画像行据此显「已生效为硬约束」徽标（记忆行为化的白盒可观察面）；删行
     即摘锚（行没了锚自然失效），置信跌破阈值或文本改写后下一晚自动重打。
     一致性守卫：锚存在但运行时解析不出窗（提示词/解析器代际漂移）→ warning
-    暴露。返回打锚行数。全链闸消费锚形态（state 契约演进）登记后续项。"""
+    暴露。返回打锚行数（二轮批 1 口径修正：slot 回填不计入——那是旧行迁移
+    补齐不是自进化产物，混计让夜间日志 anchored 虚高误导调参判断）。
+    全链闸消费锚形态（state 契约演进）登记后续项。"""
     from services.preference_slots import parse_avoid_windows
 
-    n = 0
+    anchored = backfilled = 0
     for rule in list_memory_rules(db):
         # 批 7：旧行 slot 回填（2026-11-03 前的行 slot 为 NULL，打锚步每晚顺带
         # 补齐——不写一次性迁移，三晚内自然收敛）
@@ -366,15 +368,17 @@ def _anchor_high_confidence_rules(db) -> int:
             from services.ai_data import slot_of
 
             rule.slot = slot_of(rule.category, rule.content)
-            n += 1
+            backfilled += 1
         text = f"[{rule.category}] {rule.content}"
         windows = parse_avoid_windows([text]) or parse_avoid_windows([rule.content])
         anchor = windows[0] if (rule.confidence or 0) >= 0.8 and windows else None
         if getattr(rule, "structured_anchor", None) != anchor:
             rule.structured_anchor = anchor
-            n += 1
+            anchored += 1
         if rule.structured_anchor and not windows:
             logger.warning("规则锚与运行时解析漂移：%r", rule.content)
-    if n:
+    if anchored or backfilled:
         db.commit()
-    return n
+        if backfilled:
+            logger.info("记忆规则 slot 回填 %d 行（旧行迁移自然收敛）", backfilled)
+    return anchored
