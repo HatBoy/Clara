@@ -78,11 +78,12 @@ class _LLMCapture:
 
 def _patch_smalltalk_stream(monkeypatch, fake) -> None:
     """smalltalk 流式替身（优化批 6 温度直用后）：patch init_llm + stream_model
-    ——节点不再走 call_llm_stream，捕获口径与 _LLMCapture 不变。"""
+    ——节点不再走 call_llm_stream，捕获口径与 _LLMCapture 不变。usage_sink
+    （二轮批 1 补的用量打点回调）替身不消费。"""
     monkeypatch.setattr(llm, "init_llm", lambda **kw: object())
     monkeypatch.setattr(
         llm, "stream_model",
-        lambda model, messages, *, on_chunk: fake(messages, on_chunk=on_chunk))
+        lambda model, messages, *, on_chunk, usage_sink=None: fake(messages, on_chunk=on_chunk))
 
 
 def _task(id_="t1", title="周报评审", prio=1, start=None, end=None, notes=None, dur=90,
@@ -486,6 +487,31 @@ def test_smalltalk_empty_reply_fallback(monkeypatch):
     monkeypatch.setattr(nodes_mod, "SessionLocal", TestingSessionLocal)
     out = nodes_mod.smalltalk_node({"user_input": "嗯", "memory_rules": []})
     assert out["final_reply"]
+
+
+def test_smalltalk_usage_sink_records_telemetry(monkeypatch):
+    # 2026-11-17 二轮批 1：闲聊流式调用补用量打点——此前直调 stream_model
+    # 绕过遥测，面板系统性少记高频入口
+    from models import AiUsageEvent
+
+    monkeypatch.setattr(nodes_mod, "SessionLocal", TestingSessionLocal)
+    monkeypatch.setattr(
+        llm, "init_llm",
+        lambda **kw: SimpleNamespace(model="deepseek/deepseek-chat"))
+
+    def fake_stream(model, messages, *, on_chunk, usage_sink=None):
+        on_chunk("在")
+        if usage_sink is not None:
+            usage_sink({"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3})
+        return "在的"
+
+    monkeypatch.setattr(llm, "stream_model", fake_stream)
+    nodes_mod.smalltalk_node({"user_input": "在吗", "memory_rules": []})
+    with TestingSessionLocal() as db:
+        row = db.query(AiUsageEvent).first()
+    assert row is not None
+    assert row.feature == "smalltalk" and row.total_tokens == 3
+    assert row.usage_source == "provider"
 
 
 def test_qa_answerer_injects_history_and_summary(monkeypatch):
@@ -2018,7 +2044,7 @@ def test_smalltalk_uses_warmer_temperature(monkeypatch):
         lambda **kw: seen.append(kw) or object())
     monkeypatch.setattr(
         llm, "stream_model",
-        lambda model, messages, *, on_chunk: "轻松点～")
+        lambda model, messages, *, on_chunk, usage_sink=None: "轻松点～")
     monkeypatch.setattr(nodes_mod, "SessionLocal", TestingSessionLocal)
     monkeypatch.setattr(tasks_svc, "list_tasks", lambda db, **kw: [])
     out = nodes_mod.smalltalk_node({"user_input": "哈哈今天真累", "memory_rules": []})

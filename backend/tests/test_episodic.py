@@ -187,3 +187,27 @@ def test_qa_answerer_carries_related_facts(monkeypatch):
     nodes.qa_answerer({"user_input": "我感冒了明天能爬山吗", "memory_rules": []})
     facts = captured["payload"]["related_facts"]
     assert facts and "感冒" in facts[0]
+
+
+def test_maybe_side_facts_stores_via_bypass(monkeypatch):
+    # 2026-11-17 二轮批 1：旁路事实提取函数本体（路由出口已改后台线程，此处
+    # 直调验证提取→落库链路；正则不命中/非旁路意图零调用）
+    from agents import nodes as _nodes
+
+    calls: list[int] = []
+
+    def _fake_aux(messages, **kw):
+        calls.append(1)
+        return json.dumps({"action": "other", "facts": [
+            {"topic": "健康", "fact": "这周感冒需要多休息", "expires_days": 5}]},
+            ensure_ascii=False)
+
+    monkeypatch.setattr("services.llm.call_llm_aux", _fake_aux)
+    _nodes._maybe_side_facts("我这周感冒了", "smalltalk")
+    with TestingSessionLocal() as db:
+        hits = search_facts(db, "感冒")
+        assert hits and "感冒" in hits[0].fact
+
+    _nodes._maybe_side_facts("今天天气不错", "smalltalk")  # 正则不命中
+    _nodes._maybe_side_facts("我这周感冒了", "settings")  # settings 意图自提不旁路
+    assert len(calls) == 1

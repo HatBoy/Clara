@@ -27,6 +27,8 @@ import difflib
 import json
 import logging
 import re
+import threading
+import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
@@ -326,8 +328,16 @@ def center_router(state: AgentState) -> dict:
 
     def _early(intent: str) -> dict:
         """规则预路由出口（2026-11-16 优化批 2）：短路此前跳过临时状况旁路，
-        「提醒我下周三出差」这类被直判 schedule/qa 的状况陈述不进 Tier 2。"""
-        _maybe_side_facts(state.get("user_input") or "", intent)
+        「提醒我下周三出差」这类被直判 schedule/qa 的状况陈述不进 Tier 2。
+        二轮批 1 改后台线程 fire-and-forget：旁路提取是 max_tokens=120 的小
+        LLM 调用（最坏 45s），此前在首帧 status 之前同步阻塞路由轮——而产物
+        本就不进本轮回复，黑屏等待零收益（同 schedule_compaction 后台先例）。
+        函数自带全捕获，测试库拆除窗口期的写库异常也被吞掉，无碍。"""
+        threading.Thread(
+            target=_maybe_side_facts,
+            args=(state.get("user_input") or "", intent),
+            daemon=True, name="side-facts",
+        ).start()
         return {"intent": intent}
 
     content = state["user_input"]
@@ -662,14 +672,30 @@ def smalltalk_node(state: AgentState) -> dict:
     # llm.py 参数策略注释预留的「闲聊可显式调高」首次落地；init_llm 直用 +
     # stream_model 共享 <think> 三态过滤（与 call_llm_stream 单源不复制）。
     # max_tokens 2000 同 qa（<2048 思考闸，闲聊最该秒回）
+    client = init_llm(temperature=0.7, max_tokens=2000)
+    t0 = time.perf_counter()
+
+    def _usage_sink(usage: dict | None) -> None:
+        # 用量打点（2026-11-17 二轮批 1）：闲聊是高频入口，直调 stream_model
+        # 此前绕过遥测——面板系统性少记（call_llm_stream 同款口径）
+        try:
+            from services.llm_usage import record_usage
+
+            record_usage(model_name=getattr(client, "model", "") or "",
+                         feature="smalltalk", usage=usage,
+                         latency_ms=int((time.perf_counter() - t0) * 1000))
+        except Exception:  # noqa: BLE001
+            logger.debug("smalltalk 用量打点异常（忽略）", exc_info=True)
+
     reply = stream_model(
-        init_llm(temperature=0.7, max_tokens=2000),
+        client,
         _with_chat_history(
             state,
             assemble_system_prompt(state.get("memory_rules") or [], SMALLTALK_PROMPT,
                                    core_rules=state.get("core_memory")),
             state["user_input"] + brief),
-        on_chunk=_delta_emitter())
+        on_chunk=_delta_emitter(),
+        usage_sink=_usage_sink)
     return {"final_reply": reply.strip() or "我在。日程上的事随时说。"}
 
 
