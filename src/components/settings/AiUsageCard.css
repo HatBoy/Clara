@@ -1,7 +1,7 @@
-/* AI 用量卡（设置 → 智能体）：KPI 四格 + 按日柱条 + 按功能表 + 模型 chip。
-   容器复用 .settings-card，此处只加 .ai-usage-* 增量样式。 */
+/* AI 用量卡（设置 → 智能体）：居中大数字统计行 + 带时间轴的按日柱条 +
+   按模型表。容器复用 .settings-card，此处只加 .ai-usage-* 增量样式。 */
 .ai-usage-card {
-  gap: 12px;
+  gap: 14px;
   display: flex;
   flex-direction: column;
 }
@@ -49,26 +49,31 @@
   padding: 8px 0;
 }
 
+/* 统计行（2026-11-17 重设计）：去灰色底块，居中大数字 + 发丝竖线分隔 */
 .ai-usage-kpis {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
 }
 
 .ai-usage-kpi {
   display: flex;
   flex-direction: column;
-  gap: 1px;
-  padding: 8px 10px;
-  border-radius: 9px;
-  background: var(--glass-track);
+  align-items: center;
+  gap: 2px;
+  padding: 4px 0;
+  text-align: center;
+}
+
+.ai-usage-kpi + .ai-usage-kpi {
+  border-left: 1px solid var(--grid-line);
 }
 
 .ai-usage-kpi-value {
-  font-size: 16px;
+  font-size: 19px;
   font-weight: 600;
-  color: var(--text-primary);
+  color: var(--accent-deep);
   font-variant-numeric: tabular-nums;
+  line-height: 1.2;
 }
 
 .ai-usage-kpi-label {
@@ -77,15 +82,19 @@
   cursor: default;
 }
 
-.ai-usage-kpi.accent .ai-usage-kpi-value {
-  color: var(--accent-deep);
+/* 按日柱条 + 时间轴（首/中/尾刻度） */
+.ai-usage-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .ai-usage-bars {
   display: flex;
   align-items: flex-end;
-  gap: 1px;
-  height: 56px;
+  justify-content: space-between;
+  gap: 2px;
+  height: 64px;
   padding: 0 2px;
   border-bottom: 1px solid var(--border);
 }
@@ -93,9 +102,10 @@
 .ai-usage-bar {
   flex: 1;
   min-width: 1px;
+  max-width: 22px; /* 7 天档防巨柱，90 天档自然细柱 */
   border-radius: 2px 2px 0 0;
   background: var(--accent);
-  opacity: 0.75;
+  opacity: 0.7;
   transition: opacity 0.15s ease;
 }
 
@@ -104,14 +114,23 @@
 }
 
 .ai-usage-bar.zero {
-  background: var(--border);
+  background: var(--grid-line);
   opacity: 1;
 }
 
+.ai-usage-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  padding: 0 2px;
+}
+
+/* 按模型表：发丝线行分隔（去斑马灰条） */
 .ai-usage-table {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
 .ai-usage-row {
@@ -121,12 +140,11 @@
   align-items: center;
   font-size: 11px;
   color: var(--text-primary);
-  padding: 3px 4px;
-  border-radius: 5px;
+  padding: 5px 4px;
 }
 
-.ai-usage-row:not(.ai-usage-row-head):nth-child(even) {
-  background: var(--glass-track);
+.ai-usage-row:not(.ai-usage-row-head) + .ai-usage-row:not(.ai-usage-row-head) {
+  border-top: 1px solid var(--grid-line);
 }
 
 .ai-usage-row > span:not(:first-child) {
@@ -143,28 +161,8 @@
 .ai-usage-row-head {
   color: var(--text-muted);
   font-size: 10.5px;
-}
-
-.ai-usage-features {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.ai-usage-feature-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  font-size: 10.5px;
-  color: var(--text-secondary);
-  background: var(--glass-track);
-  border-radius: 999px;
-  padding: 2px 9px;
-}
-
-.ai-usage-feature-chip em {
-  font-style: normal;
-  color: var(--text-muted);
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--border);
 }
 
 .ai-usage-note {

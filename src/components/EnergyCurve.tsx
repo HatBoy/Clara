@@ -1,8 +1,10 @@
-// 精力画像卡（统计报告页，2026-11-17 批 3；同日 UI 打磨重构）：
-// 左栏 = 逐小时完成倾向柱状图 + 峰谷（2026-11-17 改柱状——小时级数据多数时段
-// 无样本，折线的连续性暗示会误导"相邻时段连得起来"，柱各自独立、无样本留
-// 空槽更诚实）；右栏 = Energy Profile 白盒（AI 学到的作息规则原文/置信/证据）。
-// 数据只读派生（GET /api/stats/energy-profile），无新表；样本不足显示积累中。
+// 精力画像卡（统计报告页，2026-11-17 批 3；同日两轮打磨）：左卡 = 逐小时完成
+// 倾向柱状图 + 峰谷（折线改柱——小时级数据多数时段无样本，折线的连续性暗示
+// 会误导"相邻时段连得起来"，柱各自独立、无样本留空槽更诚实）；右卡 =
+// Energy Profile 白盒（AI 学到的作息规则原文/置信/证据）。两卡共用全站
+// `.report-duo` 双栏行（与每日趋势/习惯分析、项目花费/优先级分布同模板，
+// 左右分割缝上下对齐）。数据只读派生（GET /api/stats/energy-profile），无新
+// 表；样本不足显示积累中。
 import { useEffect, useMemo, useState } from "react";
 import { Fingerprint, Zap } from "lucide-react";
 import { fetchEnergyProfile, type EnergyProfile } from "../lib/api";
@@ -10,7 +12,7 @@ import "./EnergyCurve.css";
 
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
 
-// SVG 几何：viewBox 定宽高，CSS 拉满左栏；文字随比例缩放可接受（标题类不走 SVG）
+// SVG 几何：viewBox 定宽高，CSS 拉满左卡；文字随比例缩放可接受（标题类不走 SVG）
 const W = 720;
 const H = 172;
 const PAD = { l: 30, r: 10, t: 18, b: 22 };
@@ -99,185 +101,195 @@ export default function EnergyCurve({
     [chipPeak, chipLow].flatMap((p) => (p ? [p.hour] : [])),
   );
 
+  if (error || !data) {
+    return (
+      <section className="report-card energy-card">
+        <div className="energy-head">
+          <span className="report-card-title">
+            <Zap size={13} strokeWidth={2} className="report-title-ico" />
+            精力画像
+          </span>
+        </div>
+        {error ? (
+          <div className="report-empty">{error}</div>
+        ) : (
+          <div className="report-loading">加载精力画像中…</div>
+        )}
+      </section>
+    );
+  }
+
   return (
-    <section className="report-card energy-card">
-      <div className="energy-head">
-        <span className="report-card-title">
-          <Zap size={13} strokeWidth={2} className="report-title-ico" />
-          精力画像
-        </span>
-        <span className="energy-head-sub">柱高 = 该小时完成倾向（完成 ÷ 完成+改期）</span>
-      </div>
+    <div className="report-duo">
+      <section className="report-card energy-card">
+        <div className="energy-head">
+          <span className="report-card-title">
+            <Zap size={13} strokeWidth={2} className="report-title-ico" />
+            精力画像
+          </span>
+          <span className="energy-head-sub">柱高 = 该小时完成倾向（完成 ÷ 完成+改期）</span>
+        </div>
 
-      {error ? (
-        <div className="report-empty">{error}</div>
-      ) : !data ? (
-        <div className="report-loading">加载精力画像中…</div>
-      ) : (
-        <div className="energy-body">
-          <div className="energy-left">
-            {data.status === "collecting" ? (
-              <div className="energy-collecting">
-                数据积累中（已完成/改期共 {data.sample_count} 次，至少需要{" "}
-                {data.total_threshold} 次）；右侧先看 AI 学到的作息规则。
-              </div>
-            ) : (
-              <div className="energy-chips">
-                {chipPeak && (
-                  <span className="energy-chip up">
-                    高峰 {String(chipPeak.hour).padStart(2, "0")}:00 · 完成倾向{" "}
-                    {chipPeak.score}%
-                  </span>
-                )}
-                {chipLow && chipPeak && chipLow.hour !== chipPeak.hour && (
-                  <span className="energy-chip down">
-                    低谷 {String(chipLow.hour).padStart(2, "0")}:00 · 完成倾向{" "}
-                    {chipLow.score}%
-                  </span>
-                )}
-              </div>
+        {data.status === "collecting" ? (
+          <div className="energy-collecting">
+            数据积累中（已完成/改期共 {data.sample_count} 次，至少需要{" "}
+            {data.total_threshold} 次）；右侧先看 AI 学到的作息规则。
+          </div>
+        ) : (
+          <div className="energy-chips">
+            {chipPeak && (
+              <span className="energy-chip up">
+                高峰 {String(chipPeak.hour).padStart(2, "0")}:00 · 完成倾向{" "}
+                {chipPeak.score}%
+              </span>
             )}
+            {chipLow && chipPeak && chipLow.hour !== chipPeak.hour && (
+              <span className="energy-chip down">
+                低谷 {String(chipLow.hour).padStart(2, "0")}:00 · 完成倾向{" "}
+                {chipLow.score}%
+              </span>
+            )}
+          </div>
+        )}
 
-            <div className="energy-tabs" role="tablist" aria-label="按星期筛选">
-              <button
-                type="button"
-                className={`energy-tab${weekday === null ? " active" : ""}`}
-                onClick={() => setWeekday(null)}
-              >
-                全部
-              </button>
-              {WEEKDAY_LABELS.map((label, i) => (
-                <button
-                  key={label}
-                  type="button"
-                  className={`energy-tab${weekday === i ? " active" : ""}`}
-                  onClick={() => setWeekday(i)}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+        <div className="energy-tabs" role="tablist" aria-label="按星期筛选">
+          <button
+            type="button"
+            className={`energy-tab${weekday === null ? " active" : ""}`}
+            onClick={() => setWeekday(null)}
+          >
+            全部
+          </button>
+          {WEEKDAY_LABELS.map((label, i) => (
+            <button
+              key={label}
+              type="button"
+              className={`energy-tab${weekday === i ? " active" : ""}`}
+              onClick={() => setWeekday(i)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
-            <div className="energy-chart">
-              <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="各小时完成倾向柱状图">
-                {[25, 50, 75].map((v) => (
-                  <g key={v}>
-                    <line
-                      className="energy-grid"
-                      x1={PAD.l}
-                      x2={W - PAD.r}
-                      y1={yOf(v)}
-                      y2={yOf(v)}
-                    />
-                    <text className="energy-axis" x={PAD.l - 6} y={yOf(v) + 3} textAnchor="end">
-                      {v}
-                    </text>
-                  </g>
-                ))}
-                {/* 基线（柱底锚） */}
+        <div className="energy-chart">
+          <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="各小时完成倾向柱状图">
+            {[25, 50, 75].map((v) => (
+              <g key={v}>
                 <line
-                  className="energy-baseline"
+                  className="energy-grid"
                   x1={PAD.l}
                   x2={W - PAD.r}
-                  y1={yOf(0)}
-                  y2={yOf(0)}
+                  y1={yOf(v)}
+                  y2={yOf(v)}
                 />
-                {[6, 9, 12, 15, 18, 21, 23].map((h) => (
-                  <text key={h} className="energy-axis" x={xOf(h)} y={H - 6} textAnchor="middle">
-                    {h}
-                  </text>
-                ))}
+                <text className="energy-axis" x={PAD.l - 6} y={yOf(v) + 3} textAnchor="end">
+                  {v}
+                </text>
+              </g>
+            ))}
+            {/* 基线（柱底锚） */}
+            <line
+              className="energy-baseline"
+              x1={PAD.l}
+              x2={W - PAD.r}
+              y1={yOf(0)}
+              y2={yOf(0)}
+            />
+            {[6, 9, 12, 15, 18, 21, 23].map((h) => (
+              <text key={h} className="energy-axis" x={xOf(h)} y={H - 6} textAnchor="middle">
+                {h}
+              </text>
+            ))}
 
-                {points.map((p) => {
-                  const cx = xOf(p.hour);
-                  if (p.score === null) {
-                    // 无样本小时：基线小刻度（空槽可辨，不会误读为 0 分）
-                    return (
-                      <line
-                        key={p.hour}
-                        className="energy-tick"
-                        x1={cx - 3}
-                        x2={cx + 3}
-                        y1={yOf(0)}
-                        y2={yOf(0)}
-                      />
-                    );
-                  }
-                  const top = p.score === 0 ? yOf(0) - 2 : yOf(p.score);
-                  return (
-                    <g key={p.hour}>
-                      <path className="energy-bar" d={barPath(cx, top, yOf(0))}>
-                        <title>
-                          {String(p.hour).padStart(2, "0")}:00 · 完成倾向 {p.score}%（样本{" "}
-                          {p.sample}）
-                        </title>
-                      </path>
-                      {labelHours.has(p.hour) && (
-                        <text
-                          className="energy-bar-label"
-                          x={cx}
-                          y={top - 5}
-                          textAnchor="middle"
-                        >
-                          {p.score}
-                        </text>
-                      )}
-                    </g>
-                  );
-                })}
-                {!hasScore && (
-                  <text className="energy-axis" x={W / 2} y={H / 2} textAnchor="middle">
-                    当前筛选下样本不足（每时段 ≥{data.threshold} 次才出柱）
-                  </text>
-                )}
-              </svg>
-            </div>
-
-            {data.insights.length > 0 && (
-              <ul className="energy-insights">
-                {data.insights.map((it) => (
-                  <li key={it.text}>
-                    <span>{it.text}</span>
-                    <span className="energy-insight-evi">{it.evidence}</span>
-                  </li>
-                ))}
-              </ul>
+            {points.map((p) => {
+              const cx = xOf(p.hour);
+              if (p.score === null) {
+                // 无样本小时：基线小刻度（空槽可辨，不会误读为 0 分）
+                return (
+                  <line
+                    key={p.hour}
+                    className="energy-tick"
+                    x1={cx - 3}
+                    x2={cx + 3}
+                    y1={yOf(0)}
+                    y2={yOf(0)}
+                  />
+                );
+              }
+              const top = p.score === 0 ? yOf(0) - 2 : yOf(p.score);
+              return (
+                <g key={p.hour}>
+                  <path className="energy-bar" d={barPath(cx, top, yOf(0))}>
+                    <title>
+                      {String(p.hour).padStart(2, "0")}:00 · 完成倾向 {p.score}%（样本{" "}
+                      {p.sample}）
+                    </title>
+                  </path>
+                  {labelHours.has(p.hour) && (
+                    <text
+                      className="energy-bar-label"
+                      x={cx}
+                      y={top - 5}
+                      textAnchor="middle"
+                    >
+                      {p.score}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+            {!hasScore && (
+              <text className="energy-axis" x={W / 2} y={H / 2} textAnchor="middle">
+                当前筛选下样本不足（每时段 ≥{data.threshold} 次才出柱）
+              </text>
             )}
-          </div>
-
-          <div className="energy-right">
-            <div className="energy-rules-head">
-              <span className="energy-rules-title">
-                <Fingerprint size={12} strokeWidth={2} className="report-title-ico" />
-                AI 学到的作息规则
-              </span>
-              {onOpenMemory && (
-                <button type="button" className="energy-memory-link" onClick={onOpenMemory}>
-                  去记忆画像管理
-                </button>
-              )}
-            </div>
-            {data.profile.rules.length === 0 ? (
-              <div className="energy-rule-empty">
-                暂无作息规则——夜间反思会自动学习，也可在记忆画像中手写。
-              </div>
-            ) : (
-              <ul className="energy-rules">
-                {data.profile.rules.map((r) => (
-                  <li key={r.id} className="energy-rule">
-                    <span className="energy-rule-content">{r.content}</span>
-                    <span className="energy-rule-meta">
-                      {r.category} ·{" "}
-                      {r.source === "user_manual" ? "你手写" : `AI 学习 · 置信 ${r.confidence}`}
-                      {r.evidence ? ` · 依据：${r.evidence}` : ""}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+          </svg>
         </div>
-      )}
-    </section>
+
+        {data.insights.length > 0 && (
+          <ul className="energy-insights">
+            {data.insights.map((it) => (
+              <li key={it.text}>
+                <span>{it.text}</span>
+                <span className="energy-insight-evi">{it.evidence}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="report-card energy-rules-card">
+        <div className="energy-rules-head">
+          <span className="report-card-title">
+            <Fingerprint size={13} strokeWidth={2} className="report-title-ico" />
+            AI 学到的作息规则
+          </span>
+          {onOpenMemory && (
+            <button type="button" className="energy-memory-link" onClick={onOpenMemory}>
+              去记忆画像管理
+            </button>
+          )}
+        </div>
+        {data.profile.rules.length === 0 ? (
+          <div className="energy-rule-empty">
+            暂无作息规则——夜间反思会自动学习，也可在记忆画像中手写。
+          </div>
+        ) : (
+          <ul className="energy-rules">
+            {data.profile.rules.map((r) => (
+              <li key={r.id} className="energy-rule">
+                <span className="energy-rule-content">{r.content}</span>
+                <span className="energy-rule-meta">
+                  {r.category} ·{" "}
+                  {r.source === "user_manual" ? "你手写" : `AI 学习 · 置信 ${r.confidence}`}
+                  {r.evidence ? ` · 依据：${r.evidence}` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
   );
 }

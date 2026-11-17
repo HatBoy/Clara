@@ -1,5 +1,6 @@
-// AI 用量卡（设置 → 智能体，2026-11-17 批 3；同日 UI 打磨去成本列——不同模型
-// 单价差异大，估算成本无对照意义，只看调用次数与 token）：本设备遥测聚合展示。
+// AI 用量卡（设置 → 智能体，2026-11-17 批 3；同日两轮打磨重设计）：本设备遥测
+// 聚合展示。只看调用次数与 token（估算成本已删——不同模型单价差异大无对照
+// 意义；按功能明细已删——feature 字段是 LLM 调用日志标签，对用户无意义）。
 // 数据只读（GET /api/stats/ai-usage）；用量表不参与同步，换设备数字从零开始。
 import { useEffect, useState } from "react";
 import { Activity } from "lucide-react";
@@ -12,6 +13,8 @@ type RangeDays = (typeof RANGES)[number];
 
 const fmtTokens = (n: number) =>
   n >= 1_000_000 ? `${(n / 1_000_000).toFixed(2)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+
+const fmtDay = (key: string) => `${Number(key.slice(5, 7))}/${Number(key.slice(8, 10))}`;
 
 export default function AiUsageCard() {
   const [days, setDays] = useState<RangeDays>(30);
@@ -44,6 +47,10 @@ export default function AiUsageCard() {
     });
   })();
   const maxCalls = Math.max(1, ...bars.map((b) => b.calls));
+  // 时间轴刻度（首/中/尾三天，零调用日画基线小桩）
+  const axisDays = bars.length
+    ? [bars[0], bars[Math.floor((bars.length - 1) / 2)], bars[bars.length - 1]]
+    : [];
 
   return (
     <div className="settings-group">
@@ -81,7 +88,7 @@ export default function AiUsageCard() {
         ) : (
           <>
             <div className="ai-usage-kpis">
-              <div className="ai-usage-kpi accent">
+              <div className="ai-usage-kpi">
                 <span className="ai-usage-kpi-value">{data.calls}</span>
                 <span className="ai-usage-kpi-label">调用次数</span>
               </div>
@@ -91,7 +98,7 @@ export default function AiUsageCard() {
                   className="ai-usage-kpi-label"
                   title={`输入 ${fmtTokens(data.prompt_tokens)} / 输出 ${fmtTokens(data.completion_tokens)}`}
                 >
-                  Token 总量（悬停看输入/输出）
+                  Token 总量（悬停看明细）
                 </span>
               </div>
               <div className="ai-usage-kpi">
@@ -100,15 +107,26 @@ export default function AiUsageCard() {
               </div>
             </div>
 
-            <div className="ai-usage-bars" aria-label="按日调用次数">
-              {bars.map((b) => (
-                <span
-                  key={b.date}
-                  className={`ai-usage-bar${b.calls === 0 ? " zero" : ""}`}
-                  style={{ height: `${Math.max(4, (b.calls / maxCalls) * 100)}%` }}
-                  title={`${b.date} · ${b.calls} 次 · ${fmtTokens(b.tokens)} token`}
-                />
-              ))}
+            <div className="ai-usage-chart">
+              <div className="ai-usage-bars" aria-label="按日调用次数">
+                {bars.map((b) => (
+                  <span
+                    key={b.date}
+                    className={`ai-usage-bar${b.calls === 0 ? " zero" : ""}`}
+                    style={{
+                      height: b.calls === 0 ? 3 : `${Math.max(8, (b.calls / maxCalls) * 100)}%`,
+                    }}
+                    title={`${b.date} · ${b.calls} 次 · ${fmtTokens(b.tokens)} token`}
+                  />
+                ))}
+              </div>
+              <div className="ai-usage-axis" aria-hidden>
+                {axisDays.map((d, i) => (
+                  <span key={d.date} className={i === 1 ? "mid" : i === 0 ? "first" : "last"}>
+                    {fmtDay(d.date)}
+                  </span>
+                ))}
+              </div>
             </div>
 
             <div className="ai-usage-table">
@@ -123,15 +141,6 @@ export default function AiUsageCard() {
                   <span>{m.calls}</span>
                   <span>{fmtTokens(m.tokens)}</span>
                 </div>
-              ))}
-            </div>
-
-            <div className="ai-usage-features">
-              {data.by_feature.map((f) => (
-                <span key={f.feature} className="ai-usage-feature-chip" title={`${f.calls} 次 · ${fmtTokens(f.tokens)} token`}>
-                  {f.feature}
-                  <em>{f.calls}</em>
-                </span>
               ))}
             </div>
 

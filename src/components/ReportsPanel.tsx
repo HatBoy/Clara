@@ -669,7 +669,7 @@ export default function ReportsPanel({
             {/* ③ 时间去向：趋势折线 + 习惯热力图同排（两张时间分布图互补）→
                 项目花费/优先级分布两列 */}
             <span className="report-group">时间去向</span>
-            <div className="report-trend-row">
+            <div className="report-duo">
               <section className="report-card">
                 <span className="report-card-title">
                   <LineChart size={13} strokeWidth={2} className="report-title-ico" />
@@ -724,7 +724,7 @@ export default function ReportsPanel({
                 </section>
               )}
             </div>
-            <div className="report-grid-even">
+            <div className="report-duo">
               <section className="report-card">
                 <span className="report-card-title" title="按已发生日程实例的排期计划时长近似（全天不计）；实际偏差见下方脚注">
                   <PieChart size={13} strokeWidth={2} className="report-title-ico" />

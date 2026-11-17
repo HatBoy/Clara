@@ -495,10 +495,11 @@
   gap: 16px;
 }
 
-/* 趋势行：每日趋势折线（左大）+ 习惯分析热力图（右窄）同排——两张时间分布
-   图互补；两卡等高（stretch），趋势图 flex:1 拉满卡片高度（与右列等高无
-   卡内空白）；窄屏纵排 */
-.report-trend-row {
+/* 双栏行统一模板（2026-11-17 UI 对齐）：三处两两同排（精力画像 + 作息规则 /
+   每日趋势 + 习惯分析 / 项目花费 + 优先级分布）共用同一左右比例、间距与
+   折行断点——左右内容不同不必等宽，但三行的分割缝上下严格对齐；两卡等高
+   （stretch），窄屏纵排 */
+.report-duo {
   display: grid;
   grid-template-columns: minmax(0, 3fr) minmax(300px, 2fr);
   gap: 16px;
@@ -506,12 +507,12 @@
 }
 
 @media (max-width: 1000px) {
-  .report-trend-row {
+  .report-duo {
     grid-template-columns: 1fr;
   }
 }
 
-.report-trend-row > section:first-child .multi-line-trend {
+.report-duo > section:first-child .multi-line-trend {
   flex: 1;
   min-height: 264px; /* 容器高 − 图例预留后 canvas ≥ 220 */
   justify-content: space-between;
@@ -612,9 +613,10 @@
   font-size: 11px;
   line-height: 1;
   color: var(--text-secondary);
-  background: var(--glass-track);
+  background: var(--glass-input);
+  border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 5px 10px;
+  padding: 4px 10px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -748,8 +750,8 @@
   display: flex;
   align-items: center;
   gap: 2px;
-  background: var(--glass-track);
-  padding: 3px 5px 3px 2px;
+  padding: 6px 5px 6px 2px;
+  border-bottom: 1px solid var(--grid-line);
 }
 
 .report-item-toggle {
@@ -921,25 +923,15 @@
 }
 
 /* —— 建议打卡清单（报告正文上方）：完成/放弃回流 payload，下期对照点评 —— */
+/* 打卡清单（2026-11-17 去灰色块）：无底色无描边，与正文以细分隔线划界
+   （主视图与历史展开区同一形态） */
 .report-advice {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-top: 4px;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--glass-track);
-}
-
-/* 历史条目展开区内的打卡清单贴着浅底正文（去掉自身描边底、靠分隔线划界） */
-.report-item .report-advice {
-  margin: 0;
-  padding: 10px 14px;
-  border: none;
+  margin-top: 2px;
+  padding: 10px 2px;
   border-top: 1px solid var(--border);
-  border-radius: 0;
-  background: var(--glass-input);
 }
 
 /* 头行：短标题 + 右侧轻提示（长解释从标题里挪出来，2026-11-17 UI 打磨） */
