@@ -706,3 +706,30 @@ def test_workflow_runs_excluded_from_sync():
     assert "workflow_runs" not in se.SYNC_TABLES
     assert "sync_settings" not in se.SYNC_TABLES
     assert "tasks" in se.SYNC_TABLES
+
+
+def test_sync_tables_all_have_updated_at_column():
+    """模型层哨兵（2026-11-17 二轮批 1）：SYNC_TABLES 自动从元数据派生，行级
+    LWW 判据 updated_at 却是手工配置——漏列会静默退化为「对端删除恒胜」，
+    先于物理断言在测试期拦截。"""
+    from database import Base
+
+    missing = [t for t in se.SYNC_TABLES
+               if "updated_at" not in Base.metadata.tables[t].columns]
+    assert not missing, f"同步表缺 updated_at 模型列：{missing}"
+
+
+def test_assert_sync_tables_updated_at_removes_bad_table(monkeypatch):
+    """启动防呆直测：物理列缺失的表打 ERROR 并就地移出 SYNC_TABLES（安全侧
+    失败——拒绝参与同步，胜过静默丢数据）；未建表的表名不在此列。"""
+    from sqlalchemy import create_engine, text
+
+    from database import _assert_sync_tables_updated_at
+
+    eng = create_engine("sqlite://")
+    with eng.begin() as conn:
+        conn.execute(text("CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT)"))
+    fake = ["tasks", "subtasks"]
+    monkeypatch.setattr(se, "SYNC_TABLES", fake)
+    _assert_sync_tables_updated_at(eng)
+    assert fake == ["subtasks"]  # tasks 缺列被移出；subtasks 未建表跳过

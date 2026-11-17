@@ -598,6 +598,33 @@ def _ensure_updated_at_triggers(eng) -> None:
                 f"WHERE {pk} = NEW.{pk}; END"))
 
 
+def _assert_sync_tables_updated_at(eng) -> None:
+    """SYNC_TABLES 防呆（2026-11-17 二轮批 1）：表进 SYNC_TABLES 是自动的
+    （模型元数据派生），行级 LWW 判据 updated_at 却依赖「模型列 + 触发器」
+    双手工配置——新表漏配列时 dump 不含该键、对端删除恒判「本地未改过」
+    放行删除传播（数据丢失级失败形态），且无告警无哨兵。此处启动断言物理
+    列，缺失打 ERROR 并就地移出同步范围（安全侧失败；修复后重启自动回归）。
+    新增同步表三件套见 docs/sync-backup.md：模型列 + _NEEDS_UPDATED_AT +
+    NATURAL_KEYS 评估。"""
+    import logging
+
+    from sqlalchemy import inspect
+
+    from services.sync_engine import SYNC_TABLES  # 函数内导入防环
+
+    inspector = inspect(eng)
+    names = set(inspector.get_table_names())
+    for name in list(SYNC_TABLES):
+        if name not in names:
+            continue  # 尚未建表（如旧库新表）：不在此列
+        cols = {c["name"] for c in inspector.get_columns(name)}
+        if "updated_at" not in cols:
+            logging.getLogger(__name__).error(
+                "同步表 %s 缺 updated_at 列，已移出同步范围（新表须补列，"
+                "见 docs/sync-backup.md 三件套清单）", name)
+            SYNC_TABLES.remove(name)  # 就地改 list：from-import 持同一引用
+
+
 def init_db() -> None:
     """幂等的数据库结构自检（桌面应用无部署环节——schema 升级收敛在启动时：
     新库自动建全套表、老库自动补缺列/触发器；结构已最新时全部检查落空，
@@ -629,6 +656,7 @@ def init_db() -> None:
     _migrate_updated_at_columns(engine)
     _ensure_updated_at_triggers(engine)
     _ensure_episodic_fts(engine)
+    _assert_sync_tables_updated_at(engine)  # 尾挂：迁移全跑完再核（sync_loop 未启动）
 
     log = logging.getLogger(__name__)
     total = len(inspect(engine).get_table_names())
