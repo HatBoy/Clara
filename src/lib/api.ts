@@ -501,7 +501,7 @@ export const exportStatsImage = (path: string, dataBase64: string) =>
 export const setStatsAdvice = (
   id: string,
   index: number,
-  status: "proposed" | "completed" | "dropped",
+  status: "proposed" | "completed" | "dropped" | "inboxed",
 ) =>
   request<StatsReportRow>(
     "POST", `/api/stats/reports/${id}/advice`, { index, status }, 15_000);

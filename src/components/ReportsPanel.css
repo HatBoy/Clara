@@ -324,6 +324,7 @@
 }
 
 .report-insight-content code,
+.report-advice-text code,
 .report-md code {
   font-family: inherit;
   font-size: 11px;
@@ -335,18 +336,21 @@
 }
 
 .report-insight-content code.high,
+.report-advice-text code.high,
 .report-md code.high {
   color: var(--danger);
   background: var(--danger-softer);
 }
 
 .report-insight-content code.mid,
+.report-advice-text code.mid,
 .report-md code.mid {
   color: var(--orange);
   background: rgba(245, 158, 11, 0.1);
 }
 
 .report-insight-content code.low,
+.report-advice-text code.low,
 .report-md code.low {
   color: var(--green);
   background: rgba(34, 197, 94, 0.1);
@@ -975,6 +979,10 @@
   line-height: 1.6;
   color: var(--text-secondary);
   min-width: 0;
+}
+
+.report-advice-text code {
+  margin-right: 6px;
 }
 
 .report-advice-text.done {

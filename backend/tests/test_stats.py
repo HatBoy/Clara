@@ -948,3 +948,38 @@ def test_ask_context_build_runs_in_worker_thread(client: TestClient, monkeypatch
     events = _ask_events(client, {"days": 7, "question": "这周怎么样"})
     assert events[-1]["type"] == "done"
     assert seen["thread"] != threading.main_thread().ident
+
+
+def test_advice_inboxed_status_persists_and_annotates(client: TestClient, fresh_db):
+    """转待办四态（2026-11-17）：inboxed 经打卡端点落 payload 持久化（此前
+    只标前端本地态，切页即丢）；下期注入带「（已转待办）」行动承接标注。"""
+    from conftest import TestingSessionLocal
+
+    with TestingSessionLocal() as db:
+        row = StatsReport(
+            period_type="week", period_start=datetime.now() - timedelta(days=1),
+            content="【总评】x",
+            payload={"advice_items": [
+                {"text": "[高优] 每天专注 2 小时", "status": "proposed"},
+                {"text": "写晨间复盘", "status": "proposed"},
+            ]})
+        db.add(row)
+        db.commit()
+        rid = row.id
+
+    res = client.post(f"/api/stats/reports/{rid}/advice",
+                      json={"index": 0, "status": "inboxed"})
+    assert res.status_code == 200, res.text
+    assert res.json()["payload"]["advice_items"][0]["status"] == "inboxed"
+
+    with TestingSessionLocal() as db:
+        row = db.get(StatsReport, rid)
+        db.refresh(row)
+        items = stats_svc._advice_items_of(row)
+    assert items[0] == "[高优] 每天专注 2 小时（已转待办）"
+    assert items[1] == "写晨间复盘"
+
+    # 非法状态仍 422（四态白名单外）
+    bad = client.post(f"/api/stats/reports/{rid}/advice",
+                      json={"index": 0, "status": "bogus"})
+    assert bad.status_code == 422

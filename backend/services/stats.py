@@ -811,10 +811,10 @@ def _latest_report_row(db: Session) -> StatsReport | None:
 def _advice_items_of(row: StatsReport) -> list[str]:
     """报告行 → 建议条目清单（≤5 条，注入用纯文本）：payload.advice_items
     结构化优先——dict 条目（打卡形态）按 status 渲染：completed 加「（你确认
-    已完成）」标注（下期对照点评的反馈信号）、dropped 整条跳过（用户放弃的
-    不再追问）、proposed/缺省原样；字符串条目（旧留档）原样。回落正文
-    「## 建议」节按行拆（无 payload 的旧报告/降级模板兼容）。正文行剥
-    Markdown 列表记号（"- "/"1. "）。"""
+    已完成）」标注（下期对照点评的反馈信号）、inboxed 加「（已转待办）」
+    （行动承接信号）、dropped 整条跳过（用户放弃的不再追问）、proposed/缺省
+    原样；字符串条目（旧留档）原样。回落正文「## 建议」节按行拆（无 payload
+    的旧报告/降级模板兼容）。正文行剥 Markdown 列表记号（"- "/"1. "）。"""
     payload = row.payload or {}
     items = payload.get("advice_items")
     if isinstance(items, list) and items:
@@ -825,7 +825,12 @@ def _advice_items_of(row: StatsReport) -> list[str]:
                 status = it.get("status")
                 if not text or status == "dropped":
                     continue
-                out.append(f"{text}（你确认已完成）" if status == "completed" else text)
+                if status == "completed":
+                    out.append(f"{text}（你确认已完成）")
+                elif status == "inboxed":
+                    out.append(f"{text}（已转待办）")
+                else:
+                    out.append(text)
             elif isinstance(it, str) and it.strip():
                 out.append(it.strip())
             if len(out) >= 5:
@@ -1441,14 +1446,15 @@ def export_report_md(db: Session, report_id: str, path: str) -> dict:
 
 def set_advice_status(db: Session, report_id: str, index: int, status: str) -> StatsReport:
     """建议打卡（用户确认执行情况）：payload.advice_items[index].status 更新
-    （proposed/completed/dropped）——下期生成对照时 completed 标注「你确认已
-    完成」、dropped 不再追问（_advice_items_of 消费）。旧字符串条目顺带升级
-    为打卡形态。index 越界 / 非法状态 ValueError（router 翻 422）；报告不存
-    在 LookupError（404）。JSON 列整体替换（setattr 惯例）。"""
+    （proposed/completed/dropped/inboxed）——下期生成对照时 completed 标注
+    「你确认已完成」、inboxed 标注「已转待办」（行动承接信号）、dropped 不再
+    追问（_advice_items_of 消费）。旧字符串条目顺带升级为打卡形态。
+    index 越界 / 非法状态 ValueError（router 翻 422）；报告不存在
+    LookupError（404）。JSON 列整体替换（setattr 惯例）。"""
     report = db.get(StatsReport, report_id)
     if report is None:
         raise LookupError(f"报告不存在：{report_id}")
-    if status not in ("proposed", "completed", "dropped"):
+    if status not in ("proposed", "completed", "dropped", "inboxed"):
         raise ValueError(f"非法建议状态：{status}")
     items = list((report.payload or {}).get("advice_items") or [])
     if index < 0 or index >= len(items):

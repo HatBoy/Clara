@@ -1,6 +1,6 @@
-// AI 用量卡（设置 → 智能体，2026-11-17 批 3；同日两轮打磨重设计）：本设备遥测
-// 聚合展示。只看调用次数与 token（估算成本已删——不同模型单价差异大无对照
-// 意义；按功能明细已删——feature 字段是 LLM 调用日志标签，对用户无意义）。
+// AI 用量卡（设置 → 智能体，2026-11-17 批 3；同日三轮打磨对齐设置页行节奏）：
+// 本设备遥测聚合展示。只看调用次数与 token（估算成本已删——不同模型单价差
+// 异大无对照意义；按功能明细已删——feature 是 LLM 调用日志标签，对用户无意义）。
 // 数据只读（GET /api/stats/ai-usage）；用量表不参与同步，换设备数字从零开始。
 import { useEffect, useState } from "react";
 import { Activity } from "lucide-react";
@@ -76,18 +76,22 @@ export default function AiUsageCard() {
         </div>
 
         {error ? (
-          <EmptyState compact tone="error" title="用量加载失败" description={error} />
+          <div className="ai-usage-section">
+            <EmptyState compact tone="error" title="用量加载失败" description={error} />
+          </div>
         ) : !data ? (
-          <div className="ai-usage-loading">加载中…</div>
+          <div className="ai-usage-section ai-usage-loading">加载中…</div>
         ) : data.calls === 0 ? (
-          <EmptyState
-            compact
-            title="还没有 AI 调用记录"
-            description="对话、排期、简报等每次调用模型都会记一条（仅本设备，不参与同步）"
-          />
+          <div className="ai-usage-section">
+            <EmptyState
+              compact
+              title="还没有 AI 调用记录"
+              description="对话、排期、简报等每次调用模型都会记一条（仅本设备，不参与同步）"
+            />
+          </div>
         ) : (
           <>
-            <div className="ai-usage-kpis">
+            <div className="ai-usage-section ai-usage-kpis">
               <div className="ai-usage-kpi">
                 <span className="ai-usage-kpi-value">{data.calls}</span>
                 <span className="ai-usage-kpi-label">调用次数</span>
@@ -107,7 +111,7 @@ export default function AiUsageCard() {
               </div>
             </div>
 
-            <div className="ai-usage-chart">
+            <div className="ai-usage-section ai-usage-chart">
               <div className="ai-usage-bars" aria-label="按日调用次数">
                 {bars.map((b) => (
                   <span
@@ -129,7 +133,7 @@ export default function AiUsageCard() {
               </div>
             </div>
 
-            <div className="ai-usage-table">
+            <div className="ai-usage-section ai-usage-table">
               <div className="ai-usage-row ai-usage-row-head">
                 <span>模型</span>
                 <span>次数</span>
@@ -152,7 +156,7 @@ export default function AiUsageCard() {
           </>
         )}
 
-        <span className="ai-usage-note">本设备统计，不参与同步备份。</span>
+        <span className="ai-usage-note ai-usage-foot">本设备统计，不参与同步备份。</span>
       </div>
     </div>
   );

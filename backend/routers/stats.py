@@ -78,10 +78,11 @@ class StatsAskIn(BaseModel):
 
 
 class AdviceStatusIn(BaseModel):
-    """建议打卡入参：index = payload.advice_items 序号；status 三态。"""
+    """建议打卡入参：index = payload.advice_items 序号；status 四态
+    （inboxed = 已转待办，2026-11-17 增——此前转待办只标前端本地态，切页即丢）。"""
 
     index: int = Field(ge=0)
-    status: str = Field(pattern="^(proposed|completed|dropped)$")
+    status: str = Field(pattern="^(proposed|completed|dropped|inboxed)$")
 
 
 class StatsFactIn(BaseModel):

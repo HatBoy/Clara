@@ -80,8 +80,17 @@ const fmtPeriodRange = (type: "week" | "month", startIso: string) => {
   return `${fmtReportDate(startIso)}~${fmtReportDate(e.toISOString())}`;
 };
 
-/** 建议打卡条目归一化：旧留档纯字符串 → proposed 形态（打卡时后端顺带升级） */
-type AdviceEntry = { text: string; status: "proposed" | "completed" | "dropped" };
+/** 建议打卡条目归一化：旧留档纯字符串 → proposed 形态（打卡时后端顺带升级）。
+ *  status 四态：inboxed = 已转待办（落 payload 持久化，2026-11-17——此前只标
+ *  前端本地态，切页即丢）。 */
+type AdviceEntry = {
+  text: string;
+  status: "proposed" | "completed" | "dropped" | "inboxed";
+};
+
+/** 建议条目开头的优先级标签（与报告正文同格式：[高优]/[中优]/[低优] →
+ *  行内 code 由 MdCode 同款 chip 色渲染） */
+const ADVICE_PRIO_TAG = /^\[(高|中|低)优\]\s*/;
 
 /** AI 输出重点标记（纯前端渲染层，不改后端产出契约）：
  *  ① 段首【X】→ ## 小节头（accent 竖条样式；报告首行【总评】单独转 blockquote
@@ -116,9 +125,10 @@ const normalizeAdvice = (
     .filter((it) => it.text);
 
 /** 建议打卡清单：报告正文上方的交互条（轻动作前置）——确认执行情况
- *  （完成/放弃）回流 payload.advice_items，下期报告对照点评（completed 标注、
- *  dropped 不再追问）；「转待办」把建议落收件箱变成行动（待办状态归收件箱管，
- *  本地标记不复写报告）。再点同状态钮 = 撤销回 proposed。 */
+ *  （完成/放弃/转待办）回流 payload.advice_items，下期报告对照点评（completed
+ *  标注、inboxed 行动承接标注、dropped 不再追问）；「转待办」把建议落收件箱
+ *  变成行动并同步落 payload（待办本体归收件箱管）。再点完成/放弃同状态钮 =
+ *  撤销回 proposed；转待办一次即定（任务已建，复位会撒谎）。 */
 function AdviceChecklist({
   report,
   onUpdate,
@@ -128,8 +138,6 @@ function AdviceChecklist({
 }) {
   const items = normalizeAdvice(report.payload?.advice_items);
   const [busy, setBusy] = useState<number | null>(null);
-  // 已转待办条目（本地态，不写回 payload）
-  const [inboxed, setInboxed] = useState<Set<number>>(new Set());
   const [todoBusy, setTodoBusy] = useState<number | null>(null);
   if (items.length === 0) return null;
 
@@ -148,7 +156,9 @@ function AdviceChecklist({
     setTodoBusy(index);
     try {
       await createTask({ title: text.slice(0, 30) });
-      setInboxed((prev) => new Set(prev).add(index));
+      // 状态同步落 payload（2026-11-17 修复：此前只标本地态，切页即丢）——
+      // 建任务成功但打卡失败时任务已在收件箱，重按一次幂等可见
+      onUpdate(await setStatsAdvice(report.id, index, "inboxed"));
     } catch {
       /* 转待办失败静默（按钮复位可重试） */
     } finally {
@@ -165,55 +175,64 @@ function AdviceChecklist({
         </span>
         <span className="report-advice-hint">完成 · 放弃 · 转待办，下期报告对照点评</span>
       </div>
-      {items.map((it, i) => (
-        <div key={i} className={`report-advice-item ${it.status}`}>
-          <span className={`report-advice-text${it.status === "completed" ? " done" : ""}`}>
-            {it.text}
-          </span>
-          <span className="report-advice-tail">
-            {it.status !== "proposed" && (
-              <span className={`report-advice-tag ${it.status}`}>
-                {it.status === "completed" ? "已完成" : "已放弃"}
-              </span>
-            )}
-            {it.status === "proposed" && inboxed.has(i) && (
-              <span className="report-advice-tag inboxed">已入待办</span>
-            )}
-            <span className="report-advice-ops">
-              <button
-                type="button"
-                className={it.status === "completed" ? "on" : ""}
-                disabled={busy === i}
-                aria-label="标记完成"
-                title="标记完成"
-                onClick={() => toggle(i, it.status === "completed" ? "proposed" : "completed")}
-              >
-                <Check size={13} strokeWidth={2} />
-              </button>
-              <button
-                type="button"
-                className={it.status === "dropped" ? "on danger" : ""}
-                disabled={busy === i}
-                aria-label="标记放弃"
-                title="标记放弃（下期不再追问）"
-                onClick={() => toggle(i, it.status === "dropped" ? "proposed" : "dropped")}
-              >
-                <X size={13} strokeWidth={2} />
-              </button>
-              <button
-                type="button"
-                className={inboxed.has(i) ? "on" : ""}
-                disabled={todoBusy === i || inboxed.has(i)}
-                aria-label="转入待办"
-                title={inboxed.has(i) ? "已入待办（收件箱可见）" : "加入收件箱变成行动"}
-                onClick={() => toTodo(i, it.text)}
-              >
-                {inboxed.has(i) ? <Check size={13} strokeWidth={2} /> : <Inbox size={13} strokeWidth={2} />}
-              </button>
+      {items.map((it, i) => {
+        // 优先级标签与报告正文同格式（[高优] 等 → MdCode 同款 chip 色）
+        const prio = it.text.match(ADVICE_PRIO_TAG);
+        const prioChip = prio?.[1];
+        const textBody = prio ? it.text.slice(prio[0].length) : it.text;
+        const inboxed = it.status === "inboxed";
+        return (
+          <div key={i} className={`report-advice-item ${it.status}`}>
+            <span className={`report-advice-text${it.status === "completed" ? " done" : ""}`}>
+              {prioChip && (
+                <code className={prioChip === "高" ? "high" : prioChip === "中" ? "mid" : "low"}>
+                  {`[${prioChip}优]`}
+                </code>
+              )}
+              {textBody}
             </span>
-          </span>
-        </div>
-      ))}
+            <span className="report-advice-tail">
+              {it.status !== "proposed" && (
+                <span className={`report-advice-tag ${it.status}`}>
+                  {it.status === "completed" ? "已完成" : it.status === "dropped" ? "已放弃" : "已入待办"}
+                </span>
+              )}
+              <span className="report-advice-ops">
+                <button
+                  type="button"
+                  className={it.status === "completed" ? "on" : ""}
+                  disabled={busy === i}
+                  aria-label="标记完成"
+                  title="标记完成"
+                  onClick={() => toggle(i, it.status === "completed" ? "proposed" : "completed")}
+                >
+                  <Check size={13} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  className={it.status === "dropped" ? "on danger" : ""}
+                  disabled={busy === i}
+                  aria-label="标记放弃"
+                  title="标记放弃（下期不再追问）"
+                  onClick={() => toggle(i, it.status === "dropped" ? "proposed" : "dropped")}
+                >
+                  <X size={13} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  className={inboxed ? "on" : ""}
+                  disabled={todoBusy === i || inboxed}
+                  aria-label="转入待办"
+                  title={inboxed ? "已入待办（收件箱可见）" : "加入收件箱变成行动"}
+                  onClick={() => toTodo(i, textBody)}
+                >
+                  {inboxed ? <Check size={13} strokeWidth={2} /> : <Inbox size={13} strokeWidth={2} />}
+                </button>
+              </span>
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
