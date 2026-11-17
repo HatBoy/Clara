@@ -501,6 +501,11 @@ def test_claim_autobackup_three_slots(monkeypatch):
         assert workflows._claim_autobackup(db, datetime(2026, 11, 14, 21, 0)) is False
         # 次日 08:00 重新认领
         assert workflows._claim_autobackup(db, datetime(2026, 11, 15, 8, 0)) is True
+        # 补领截止窗 2 小时（二轮批 1）：20:30 距晚槽 150 分钟超窗不补领
+        #（旧版晚开机 60s tick 逐槽连发三份全量 zip）
+        assert workflows._claim_autobackup(db, datetime(2026, 11, 15, 20, 30)) is False
+        # 19:50 距晚槽 110 分钟在窗内 → 补领晚槽
+        assert workflows._claim_autobackup(db, datetime(2026, 11, 15, 19, 50)) is True
 
 
 # —— 批 3：危险操作与同步互斥 / 清空标记版本 ——————————————————————————

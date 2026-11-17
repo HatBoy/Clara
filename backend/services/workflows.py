@@ -74,6 +74,9 @@ _INGEST_SLOT_OFFSETS: dict[int, tuple[int, ...]] = {
 NIGHT_PICK_MAX = 5
 # 自动备份三槽时刻（分钟，2026-11-14 同步备份）：早 08:00 / 中 12:00 / 晚 18:00
 _AUTOBACKUP_SLOT_MIN = (480, 720, 1080)
+# 槽位补领截止窗（分钟，二轮批 1）：距槽位时刻超窗不补——防晚开机 60s tick
+# 逐槽连发三份几乎相同的全量 zip（7 天滚动窗内有效历史点变相减少）
+_AUTOBACKUP_CATCHUP_MAX_MIN = 120
 
 
 # —— 空闲检测（main.py 的 HTTP middleware 调 note_activity 刷新活动信号） ——————————
@@ -335,6 +338,8 @@ def _claim_autobackup(db: Session, now: datetime) -> bool:
     """自动备份（2026-11-14 同步备份）：早/中/晚三槽（_AUTOBACKUP_SLOT_MIN），
     槽位认领键 "autobackup"/"autobackup@2"/"autobackup@3" 零表迁移复用
     (name, run_date) 唯一键；错过补账语义同采集槽位（启动首 tick 逐槽补领）。
+    补领截止窗 2 小时（二轮批 1）：距槽位时刻超窗的槽不再补——晚开机时旧版
+    60s tick 逐槽连发三份几乎相同的全量 zip，7 天滚动窗内有效历史点变相减少。
     纯规则零 LLM——不受 ai_enabled 闸（heartbeat 先例）。auto_backup_enabled
     关 = 永不认领不落行（开关只管这一个流）。不进 jobs.py 注册表——展示收敛
     在「设置 → 同步备份」页（避免两页口径分叉，docs/scheduled-jobs.md 注记）。"""
@@ -346,6 +351,8 @@ def _claim_autobackup(db: Session, now: datetime) -> bool:
     for slot, minute in enumerate(_AUTOBACKUP_SLOT_MIN):
         if cur < minute:
             continue
+        if cur - minute > _AUTOBACKUP_CATCHUP_MAX_MIN:
+            continue  # 错过太久不补领（连发防线；晨间 MORNING_CATCHUP_WINDOW 哲学）
         name = "autobackup" if slot == 0 else f"autobackup@{slot + 1}"
         if _claim_run(db, name, now.date()):
             return True
