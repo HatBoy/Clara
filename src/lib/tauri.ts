@@ -257,6 +257,9 @@ export async function showActionableReminderToast(payload: {
 export async function onReminderToastAction(
   cb: (payload: ReminderToastActionPayload) => void,
 ): Promise<UnlistenFn> {
+  // 非 Tauri 返回空函数（形态同 onPeerSync/onAppShortcut——2026-11-17 浏览器
+  // 冒烟实证：缺此守卫时 listen 在纯浏览器 dev 直接炸 transformCallback）
+  if (!isTauri()) return () => {};
   return listen<ReminderToastActionPayload>("reminder-toast-action", (e) => cb(e.payload));
 }
 
