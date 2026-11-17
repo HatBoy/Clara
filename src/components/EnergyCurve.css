@@ -1,4 +1,4 @@
-/* 精力曲线卡（统计报告页）：头部 + 峰谷 chip + 星期 Tab + SVG 折线 + 白盒规则。
+/* 精力画像卡（统计报告页）：双栏 = 左柱状图 + 右白盒规则。
    增量样式一律 .energy-* 前缀；卡片外壳复用 .report-card。颜色走设计变量。 */
 .energy-card {
   gap: 10px;
@@ -14,6 +14,43 @@
   margin-left: auto;
   font-size: 10.5px;
   color: var(--text-muted);
+}
+
+/* 双栏：左图右规则（窄窗口塌成上下，规则区以虚线分隔） */
+.energy-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 0 16px;
+  align-items: stretch;
+}
+
+.energy-left {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.energy-right {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 16px;
+  border-left: 1px dashed var(--border);
+}
+
+@media (max-width: 1280px) {
+  .energy-body {
+    grid-template-columns: 1fr;
+  }
+
+  .energy-right {
+    padding-left: 0;
+    border-left: none;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+  }
 }
 
 .energy-collecting {
@@ -95,21 +132,31 @@
   font-size: 9px;
 }
 
-.energy-line {
-  fill: none;
-  stroke: var(--chart-1, #6366f1);
+.energy-baseline {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+/* 柱：单系列单色（chart-1），峰/谷两柱以柱顶数字直接标注（不逐柱标数） */
+.energy-bar {
+  fill: var(--chart-1, #6366f1);
+  opacity: 0.8;
+  transition: opacity 0.15s ease;
+}
+
+.energy-bar:hover {
+  opacity: 1;
+}
+
+.energy-tick {
+  stroke: var(--border);
   stroke-width: 2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
-.energy-area {
-  fill: var(--chart-1, #6366f1);
-  opacity: 0.08;
-}
-
-.energy-dot {
-  fill: var(--chart-1, #6366f1);
+.energy-bar-label {
+  fill: var(--text-secondary);
+  font-size: 9.5px;
+  font-weight: 600;
 }
 
 .energy-insights {
@@ -140,9 +187,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 2px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border);
 }
 
 .energy-rules-title {
@@ -172,10 +216,13 @@
 .energy-rules {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 0 2px 0 0;
   display: flex;
   flex-direction: column;
   gap: 5px;
+  /* 规则多时卡内滚动（全局 5px 细滚动条惯例），不把卡片无限撑高 */
+  max-height: 228px;
+  overflow-y: auto;
 }
 
 .energy-rule {

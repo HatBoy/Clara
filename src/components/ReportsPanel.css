@@ -942,6 +942,13 @@
   background: var(--glass-input);
 }
 
+/* 头行：短标题 + 右侧轻提示（长解释从标题里挪出来，2026-11-17 UI 打磨） */
+.report-advice-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
 .report-advice-title {
   display: inline-flex;
   align-items: center;
@@ -951,18 +958,31 @@
   color: var(--text-secondary);
 }
 
+.report-advice-hint {
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
 .report-advice-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 3px 0;
+  padding: 4px 6px;
+  border-radius: 7px;
+  transition: background 0.15s ease;
+}
+
+.report-advice-item:hover {
+  background: var(--glass-input);
 }
 
 .report-advice-text {
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--text-secondary);
+  min-width: 0;
 }
 
 .report-advice-text.done {
@@ -970,23 +990,38 @@
   color: var(--text-muted);
 }
 
-.report-advice-text em {
-  font-style: normal;
-  margin-left: 6px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.report-advice-item.completed em {
-  color: var(--green);
-}
-
 .report-advice-item.dropped .report-advice-text {
   color: var(--text-muted);
 }
 
-.report-advice-item.dropped em {
+/* 状态标签：小胶囊（替代旧的内嵌 em 文本） */
+.report-advice-tail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.report-advice-tag {
+  font-size: 10.5px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.report-advice-tag.completed {
+  color: var(--green);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.report-advice-tag.dropped {
   color: var(--danger);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.report-advice-tag.inboxed {
+  color: var(--accent-deep);
+  background: var(--accent-softer);
 }
 
 .report-advice-ops {

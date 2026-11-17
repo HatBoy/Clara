@@ -72,3 +72,18 @@
   white-space: normal;
   line-height: 1.55;
 }
+
+/* 导入/导出合行（2026-11-17 UI 打磨）：双按钮 + 结果提示共占控制列——
+   提示文案可换行兜底，不再挤成一条 */
+.sync-io-control {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 320px;
+}
+
+.sync-io-control .settings-action-hint {
+  max-width: none;
+  flex: 1 1 100%;
+  text-align: right;
+  white-space: normal;
+}

@@ -51,7 +51,7 @@
 
 .ai-usage-kpis {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
 
@@ -75,6 +75,10 @@
   font-size: 10.5px;
   color: var(--text-muted);
   cursor: default;
+}
+
+.ai-usage-kpi.accent .ai-usage-kpi-value {
+  color: var(--accent-deep);
 }
 
 .ai-usage-bars {
@@ -112,7 +116,7 @@
 
 .ai-usage-row {
   display: grid;
-  grid-template-columns: 1fr 56px 72px 64px;
+  grid-template-columns: minmax(0, 1fr) 56px 72px;
   gap: 6px;
   align-items: center;
   font-size: 11px;
@@ -141,13 +145,13 @@
   font-size: 10.5px;
 }
 
-.ai-usage-models {
+.ai-usage-features {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
 }
 
-.ai-usage-model-chip {
+.ai-usage-feature-chip {
   display: inline-flex;
   align-items: baseline;
   gap: 5px;
@@ -158,7 +162,7 @@
   padding: 2px 9px;
 }
 
-.ai-usage-model-chip em {
+.ai-usage-feature-chip em {
   font-style: normal;
   color: var(--text-muted);
 }

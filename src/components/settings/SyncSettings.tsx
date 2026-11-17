@@ -578,12 +578,14 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
           </div>
           <div className="settings-row">
             <div className="settings-row-info">
-              <span className="settings-row-name">覆盖恢复</span>
+              <span className="settings-row-name">导入数据</span>
               <span className="settings-row-desc">
-                用备份包整库替换当前数据（恢复前自动留存当前数据副本），需重启后端生效
+                从备份包导入：覆盖恢复 = 整库替换当前数据（自动留存副本，需重启后端
+                生效）；合并导入 = 保留双方、同条目冲突可选处理（无需重启）。备份
+                zip 与 WebDAV 同步目录压的 zip 均可
               </span>
             </div>
-            <div className="settings-row-control">
+            <div className="settings-row-control sync-io-control">
               <button
                 type="button"
                 className="settings-action-btn"
@@ -594,21 +596,8 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                   if (path) setBackup({ kind: "confirm", path });
                 }}
               >
-                恢复备份
+                覆盖恢复
               </button>
-              {backupHint()}
-            </div>
-          </div>
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <span className="settings-row-name">合并导入</span>
-              <span className="settings-row-desc">
-                把备份包的数据合并进当前库（保留双方）：新增照收，同条目冲突时按
-                下方选择处理；不会删除当前库已有的数据，无需重启。备份 zip 与
-                WebDAV 同步目录压的 zip 均可导入
-              </span>
-            </div>
-            <div className="settings-row-control">
               <button
                 type="button"
                 className="settings-action-btn"
@@ -616,21 +605,23 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                   || cfg.syncing}
                 onClick={doAnalyze}
               >
-                {merge.kind === "analyzing" ? "分析中…" : merge.kind === "applying" ? "导入中…" : "选择文件"}
+                {merge.kind === "analyzing" ? "分析中…" : merge.kind === "applying" ? "导入中…" : "合并导入"}
               </button>
               {merge.kind === "done" && <span className="settings-action-hint ok">{merge.text}</span>}
               {merge.kind === "bad" && <span className="settings-action-hint bad">{merge.text}</span>}
+              {backupHint()}
             </div>
           </div>
           <div className="settings-row">
             <div className="settings-row-info">
-              <span className="settings-row-name">导出任务表格（CSV）</span>
+              <span className="settings-row-name">导出任务数据</span>
               <span className="settings-row-desc">
-                全部任务（含已完成与未排期）一条一行：项目、优先级、时间、备注、
-                子任务——Excel 直开中文正常
+                CSV = 全部任务一条一行（项目、优先级、时间、备注、子任务，Excel
+                直开中文正常）；.ics = 已排期任务导出标准日历（重复规则与已取消
+                实例一并带上），可导入 Google Calendar / Outlook / 手机日历
               </span>
             </div>
-            <div className="settings-row-control">
+            <div className="settings-row-control sync-io-control">
               <button
                 type="button"
                 className="settings-action-btn"
@@ -639,17 +630,6 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
               >
                 {dataExport.kind === "busy" && dataExport.fmt === "csv" ? "导出中…" : "导出 CSV"}
               </button>
-            </div>
-          </div>
-          <div className="settings-row">
-            <div className="settings-row-info">
-              <span className="settings-row-name">导出日历（.ics）</span>
-              <span className="settings-row-desc">
-                已排期任务导出为标准日历文件：重复规则与已取消实例一并带上，可导入
-                Google Calendar / Outlook / 手机日历
-              </span>
-            </div>
-            <div className="settings-row-control">
               <button
                 type="button"
                 className="settings-action-btn"

@@ -158,48 +158,59 @@ function AdviceChecklist({
 
   return (
     <div className="report-advice">
-      <span className="report-advice-title">
-        <ListChecks size={12} strokeWidth={2} />
-        本期建议打卡——确认执行情况（下期报告对照点评）或转入待办
-      </span>
+      <div className="report-advice-head">
+        <span className="report-advice-title">
+          <ListChecks size={12} strokeWidth={2} />
+          本期建议打卡
+        </span>
+        <span className="report-advice-hint">完成 · 放弃 · 转待办，下期报告对照点评</span>
+      </div>
       {items.map((it, i) => (
         <div key={i} className={`report-advice-item ${it.status}`}>
           <span className={`report-advice-text${it.status === "completed" ? " done" : ""}`}>
             {it.text}
-            {it.status === "completed" && <em>已完成</em>}
-            {it.status === "dropped" && <em>已放弃</em>}
           </span>
-          <span className="report-advice-ops">
-            <button
-              type="button"
-              className={it.status === "completed" ? "on" : ""}
-              disabled={busy === i}
-              aria-label="标记完成"
-              title="标记完成"
-              onClick={() => toggle(i, it.status === "completed" ? "proposed" : "completed")}
-            >
-              <Check size={13} strokeWidth={2} />
-            </button>
-            <button
-              type="button"
-              className={it.status === "dropped" ? "on danger" : ""}
-              disabled={busy === i}
-              aria-label="标记放弃"
-              title="标记放弃（下期不再追问）"
-              onClick={() => toggle(i, it.status === "dropped" ? "proposed" : "dropped")}
-            >
-              <X size={13} strokeWidth={2} />
-            </button>
-            <button
-              type="button"
-              className={inboxed.has(i) ? "on" : ""}
-              disabled={todoBusy === i || inboxed.has(i)}
-              aria-label="转入待办"
-              title={inboxed.has(i) ? "已入待办（收件箱可见）" : "加入收件箱变成行动"}
-              onClick={() => toTodo(i, it.text)}
-            >
-              {inboxed.has(i) ? <Check size={13} strokeWidth={2} /> : <Inbox size={13} strokeWidth={2} />}
-            </button>
+          <span className="report-advice-tail">
+            {it.status !== "proposed" && (
+              <span className={`report-advice-tag ${it.status}`}>
+                {it.status === "completed" ? "已完成" : "已放弃"}
+              </span>
+            )}
+            {it.status === "proposed" && inboxed.has(i) && (
+              <span className="report-advice-tag inboxed">已入待办</span>
+            )}
+            <span className="report-advice-ops">
+              <button
+                type="button"
+                className={it.status === "completed" ? "on" : ""}
+                disabled={busy === i}
+                aria-label="标记完成"
+                title="标记完成"
+                onClick={() => toggle(i, it.status === "completed" ? "proposed" : "completed")}
+              >
+                <Check size={13} strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                className={it.status === "dropped" ? "on danger" : ""}
+                disabled={busy === i}
+                aria-label="标记放弃"
+                title="标记放弃（下期不再追问）"
+                onClick={() => toggle(i, it.status === "dropped" ? "proposed" : "dropped")}
+              >
+                <X size={13} strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                className={inboxed.has(i) ? "on" : ""}
+                disabled={todoBusy === i || inboxed.has(i)}
+                aria-label="转入待办"
+                title={inboxed.has(i) ? "已入待办（收件箱可见）" : "加入收件箱变成行动"}
+                onClick={() => toTodo(i, it.text)}
+              >
+                {inboxed.has(i) ? <Check size={13} strokeWidth={2} /> : <Inbox size={13} strokeWidth={2} />}
+              </button>
+            </span>
           </span>
         </div>
       ))}
