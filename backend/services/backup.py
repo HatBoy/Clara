@@ -356,11 +356,14 @@ def apply_pending_restore() -> bool:
         if stale.exists():
             stale.unlink()
 
+    # 恢复前留存本机 sync_settings（raw sqlite 只读——此刻尚无 ORM 连接）
+    local_sync = _read_sync_settings_row(DATABASE_PATH)
     shutil.copy2(new_db, DATABASE_PATH)
     snapshot = staging / "config_snapshot.json"
     if snapshot.is_file():
         shutil.copy2(snapshot, get_data_dir() / "config_snapshot.json")
     shutil.rmtree(staging, ignore_errors=True)
+    _reconcile_sync_settings_after_restore(local_sync)
     # 同步快照失效（2026-11-14 同步备份）：数据回到过去，旧 Base 与现库不再同源，
     # 下轮同步按冷启动语义重新对齐（防旧数据凭旧快照被判定为「远端已删」）。
     # 局部导入防环（backup ← sync_engine 的 import 链在函数体内闭环）
@@ -369,3 +372,77 @@ def apply_pending_restore() -> bool:
     clear_snapshot()
     logger.info("已从备份恢复数据（clara.db / 配置快照），同步快照已重置")
     return True
+
+
+def _read_sync_settings_row(db_path: Path) -> dict | None:
+    """只读取库内 sync_settings 首行（列名随库）；表/库缺失（首装或同步格式
+    物化库）返回 None。"""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            cur = conn.execute("SELECT * FROM sync_settings LIMIT 1")
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return dict(zip([d[0] for d in cur.description], row))
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def _reconcile_sync_settings_after_restore(local_row: dict | None) -> None:
+    """恢复后的 sync_settings 对账（2026-11-17 二轮批 1）：
+
+    - **device_id 恒保本机**（本机无则新生成）：备份格式 zip 原样带回原机的
+      device_id——恢复到第二台设备会出现双机同署名（平局决胜退化、B 机以 A
+      的身份推 manifest）；同步格式 zip 不含该表，恢复后默认重建会换新 uuid。
+    - **凭证跟随备份**：备份格式自带原机 url/账号/密码，灾备到新设备免重配。
+    - **同步格式恢复整行回写本机值**：物化库只有 SYNC_TABLES，此前恢复后
+      get_or_create 重建默认行——WebDAV 凭证/自动备份目录全丢，须重新配置。
+    """
+    import uuid as _uuid
+
+    restored = _read_sync_settings_row(DATABASE_PATH)
+    conn = sqlite3.connect(DATABASE_PATH)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(sync_settings)")}
+        if not cols:
+            # 同步格式物化库无该表：借 SQLAlchemy 轻引擎按模型元数据补建（列集
+            # 单源；进程内首个连接即本函数，无锁竞争）
+            conn.close()
+            from sqlalchemy import create_engine
+
+            from database import Base
+
+            table = Base.metadata.tables["sync_settings"]
+            eng = create_engine(f"sqlite:///{DATABASE_PATH}")
+            try:
+                table.create(eng, checkfirst=True)
+            finally:
+                eng.dispose()
+            conn = sqlite3.connect(DATABASE_PATH)
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(sync_settings)")}
+        if local_row is None:
+            # 本机首装：备份带来的行只换 device_id（防署名复用），凭证照单全收
+            if restored is not None and restored.get("device_id"):
+                conn.execute("UPDATE sync_settings SET device_id = ?",
+                             (str(_uuid.uuid4()),))
+                conn.commit()
+            return
+        if restored is not None and (restored.get("webdav_url") or "").strip():
+            # 备份格式（凭证跟随备份）：只回写本机署名
+            conn.execute("UPDATE sync_settings SET device_id = ?",
+                         (local_row.get("device_id") or str(_uuid.uuid4()),))
+        else:
+            # 同步格式 / 备份无凭证：本机行整行回写（INSERT OR REPLACE——表可能
+            # 刚补建为空；列交集取键，旧备份列少不炸）
+            keys = [c for c in local_row if c in cols]
+            if keys:
+                conn.execute(
+                    "INSERT OR REPLACE INTO sync_settings (" + ", ".join(keys)
+                    + ") VALUES (" + ", ".join("?" for _ in keys) + ")",
+                    tuple(local_row[k] for k in keys))
+        conn.commit()
+    finally:
+        conn.close()

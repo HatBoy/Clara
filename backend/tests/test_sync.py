@@ -236,6 +236,109 @@ def test_apply_without_pending_is_noop(tmp_path):
     assert backup_svc.apply_pending_restore() is False
 
 
+# —— 恢复的 sync_settings 对账（2026-11-17 二轮批 1）——————————————————————
+
+_SYNC_DDL = (
+    "CREATE TABLE IF NOT EXISTS sync_settings (id INTEGER PRIMARY KEY, "
+    "webdav_enabled BOOLEAN, webdav_url TEXT, webdav_username TEXT, "
+    "webdav_password TEXT, auto_backup_enabled BOOLEAN, auto_backup_dir TEXT, "
+    "device_id TEXT, last_sync_at TEXT, last_sync_ok BOOLEAN, last_sync_error TEXT, "
+    "last_test_at TEXT, last_test_ok BOOLEAN, last_test_ms INTEGER, "
+    "created_at TEXT, updated_at TEXT)"
+)
+
+
+def _seed_sync_row(path, *, device, url="https://dav.example.com", user="u", pwd="p"):
+    conn = sqlite3.connect(path)
+    conn.execute(_SYNC_DDL)
+    conn.execute(
+        "INSERT OR REPLACE INTO sync_settings (id, webdav_enabled, webdav_url, "
+        "webdav_username, webdav_password, auto_backup_enabled, device_id, "
+        "created_at, updated_at) "
+        "VALUES (1, 1, ?, ?, ?, 1, ?, '2026-11-15 09:00:00', '2026-11-15 09:00:00')",
+        (url, user, pwd, device))
+    conn.commit()
+    conn.close()
+
+
+def _sync_field(path, col):
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute(f"SELECT {col} FROM sync_settings WHERE id = 1").fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _sync_task_row() -> dict:
+    """同步格式物化用的全列任务行（物化 INSERT 按全列绑定参数，缺键即报错；
+    列集从模型元数据单源取，NOT NULL 列给值其余 None）。"""
+    from database import Base
+
+    filled = {"id": "t9", "title": "远端任务", "all_day": 0, "priority": 2,
+              "sort_order": 0, "reschedule_count": 0, "ever_scheduled": 1,
+              "is_deleted": 0, "created_at": "2026-11-15T09:00:00",
+              "updated_at": "2026-11-15T09:00:00"}
+    return {c: filled.get(c) for c in Base.metadata.tables["tasks"].columns.keys()}
+
+
+def test_restore_keeps_local_device_id_and_backup_credentials(client, tmp_path):
+    """备份格式恢复：device_id 恒保本机（防双机同署名）；凭证跟随备份。"""
+    _make_db(tmp_path / "clara.db", rows=2)
+    _seed_sync_row(tmp_path / "clara.db", device="dev-backup")
+    src = _make_backup(tmp_path)
+    # 本机当前：另一套凭证与署名
+    _make_db(tmp_path / "clara.db", rows=1)
+    _seed_sync_row(tmp_path / "clara.db", device="dev-local",
+                   url="https://other.example.com")
+
+    client.post("/api/sync/restore", json={"path": str(src)})
+    assert backup_svc.apply_pending_restore() is True
+    db = tmp_path / "clara.db"
+    assert _sync_field(db, "device_id") == "dev-local"  # 署名保本机
+    assert _sync_field(db, "webdav_url") == "https://dav.example.com"  # 凭证跟随备份
+
+
+def test_restore_sync_format_keeps_local_sync_row(client, tmp_path):
+    """同步格式恢复（物化库只有 SYNC_TABLES、sync_settings 空表）：本机行整行
+    回写——此前恢复后 get_or_create 重建默认行，WebDAV 凭证/备份目录全丢须重配。"""
+    import json as _json
+
+    _make_db(tmp_path / "clara.db", rows=1)
+    _seed_sync_row(tmp_path / "clara.db", device="dev-local",
+                   url="https://dav.example.com")
+    z = _zip_of(tmp_path, "sync.zip", {
+        "manifest.json": _json.dumps({"app": "clara-sync", "format": 1}),
+        "tables/tasks.json": _json.dumps({"table": "tasks", "rows": [_sync_task_row()]}),
+    })
+    res = client.post("/api/sync/restore", json={"path": str(z)})
+    assert res.status_code == 200, res.text
+    assert backup_svc.apply_pending_restore() is True
+    db = tmp_path / "clara.db"
+    assert _sync_field(db, "device_id") == "dev-local"
+    assert _sync_field(db, "webdav_url") == "https://dav.example.com"
+    assert _sync_field(db, "webdav_username") == "u"
+    assert _titles(db) == ["远端任务"]  # 数据本体照常恢复
+
+
+def test_restore_to_new_device_regenerates_device_id(client, tmp_path):
+    """备份恢复到新设备（本机无 sync_settings）：备份凭证照收免重配，但
+    device_id 重新生成（绝不能双机同署名）。"""
+    _make_db(tmp_path / "clara.db", rows=2)
+    _seed_sync_row(tmp_path / "clara.db", device="dev-backup")
+    src = _make_backup(tmp_path)
+    _make_db(tmp_path / "clara.db", rows=1)
+    conn = sqlite3.connect(tmp_path / "clara.db")  # _make_db 不清残留表：显式去表
+    conn.execute("DROP TABLE IF EXISTS sync_settings")
+    conn.commit()
+    conn.close()
+
+    client.post("/api/sync/restore", json={"path": str(src)})
+    assert backup_svc.apply_pending_restore() is True
+    db = tmp_path / "clara.db"
+    assert _sync_field(db, "device_id") != "dev-backup"  # 新署名
+    assert _sync_field(db, "webdav_url") == "https://dav.example.com"  # 凭证照收
+
+
 def _zip_of(tmp_path, name, members: dict):
     path = tmp_path / name
     with zipfile.ZipFile(path, "w") as zf:
