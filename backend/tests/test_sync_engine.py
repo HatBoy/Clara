@@ -813,7 +813,7 @@ def test_natural_key_collision_pk_convergence():
                   "updated_at": "2026-11-17 12:00:00"}
         local = {r["id"]: r for r in se.table_rows(db, "projects")}
         merged = list(local.values()) + [remote]  # 契约：merged=全量并集
-        actual, _, _ = se._write_local(db, "projects", merged, local)
+        actual, _, _, _ = se._write_local(db, "projects", merged, local)
         db.commit()
         assert [(r["id"], r["color"]) for r in se.table_rows(db, "projects")] == \
             [("aaa-remote", "#222222")]  # 本地行删除、远端行完整落位（内容胜）
@@ -837,3 +837,37 @@ def test_natural_key_collision_pk_convergence():
         row = next(r for r in se.table_rows(db, "projects")
                    if r["name"] == "第二轮撞名")
         assert (row["id"], row["color"]) == ("aaa-keep", "#444444")
+
+
+def test_cross_table_deletion_children_first():
+    """跨表删除传播按子先父后执行（2026-11-17 真机批实证：对端删 proposal +
+    其 message 后，父表内联删除时子行仍在库，immediate FK 语句级炸——B 机
+    IntegrityError 卡死整轮同步；现收集待删键集逆拓扑序统一执行）。"""
+    from sqlalchemy import text
+
+    from models import Message, Proposal
+
+    with TestingSessionLocal() as db:
+        for i in (1, 2):
+            db.add(Proposal(id=f"pp{i}", kind="schedule", payload={"i": i}))
+        db.commit()
+        for i in (1, 2):
+            db.add(Message(id=f"mm{i}", role="assistant", content=f"x{i}",
+                           proposal_id=f"pp{i}"))
+        db.commit()
+        dav = FakeDav()
+        se.run_sync(db, dav, CFG)  # 首轮：基线含全部四行
+
+        # 对端删掉 pp1/mm1（远端表文件少一行）
+        dav.tables["proposals"] = {"table": "proposals", "rows": [
+            r for r in dav.tables["proposals"]["rows"] if r["id"] != "pp1"]}
+        dav.tables["messages"] = {"table": "messages", "rows": [
+            r for r in dav.tables["messages"]["rows"] if r["id"] != "mm1"]}
+        # manifest 哈希标变，强制真实拉取（否则增量跳过按 R=Base 处理见不到删除）
+        dav.manifest["tables"]["proposals"]["sha1"] = "changed-p"
+        dav.manifest["tables"]["messages"]["sha1"] = "changed-m"
+        se.run_sync(db, dav, CFG)  # 删除传播：proposals 先处理（父）但不内联删
+
+        n_prop = db.execute(text("SELECT COUNT(*) FROM proposals")).scalar()
+        n_msg = db.execute(text("SELECT COUNT(*) FROM messages")).scalar()
+        assert (n_prop, n_msg) == (1, 1), (n_prop, n_msg)  # 各删一行、零 FK 异常

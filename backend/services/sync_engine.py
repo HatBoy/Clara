@@ -502,15 +502,17 @@ def _writable_row(table, row: dict) -> dict:
 
 
 def _write_local(db: Session, name: str, merged: list[dict],
-                 local_map: dict, deletable: set[str] | None = None) -> tuple[list[dict], int, int]:
+                 local_map: dict, deletable: set[str] | None = None) -> tuple[list[dict], int, int, set]:
     """把合并行集写进本地（单事务由调用方统一 commit；本函数只 execute）。
-    返回 (实际落库行集, 插入数, 更新数)。
+    返回 (实际落库行集, 插入数, 更新数, 待删键集)。
 
     - 键不在本地 → INSERT；撞自然键唯一约束 → pk 收敛（canonical = 双方 pk
       字典序小者；内容 ts 新者胜、平局行哈希小者；本地 pk 败时子表外键改指
       canonical——2026-11-17 真机实证旧版双端各持己 pk 互推永不收敛）；
     - 键在本地且内容不同 → UPDATE（显式带 updated_at——触发器 WHEN 守卫不覆盖）；
-    - 本地有而 merged 无 → DELETE（调用方逆拓扑序处理跨表）。
+    - 本地有而 merged 无 → 进待删键集（**不内联删**——2026-11-17 真机批：
+      父表先处理时子表删除行仍在库，immediate FK 语句级即炸；调用方收集后
+      按逆拓扑序子先父后统一执行，不再依赖 defer_foreign_keys 落在对的连接）。
     实际落库行集 = merged 经撞车收敛后的形态，按 pk 规范序（保 Base=本地=远端
     一致且跨轮 sha1 稳定）。
     """
@@ -600,14 +602,16 @@ def _write_local(db: Session, name: str, merged: list[dict],
             actual[key] = row
 
     # 删除（本地有而 merged 无）。deletable 限定删除范围（优化批 3）：规划与
-    # 写库之间的新写入不在规划键集内，绝不能被"本地删除传播"误删
+    # 写库之间的新写入不在规划键集内，绝不能被"本地删除传播"误删。
+    # 2026-11-17 真机批：**不再内联执行**——表按父前子后处理，父表删除时子表
+    # 的对端删除行仍在库，immediate FK 下语句级即炸（defer_foreign_keys 在
+    # 与后台线程共用连接池时可能不落在执行连接上，实测偶发 IntegrityError
+    # 卡死整轮同步）。改由调用方收集后按逆拓扑序（子先父后）统一执行。
     scope = set(local_map) if deletable is None else (set(local_map) & set(deletable))
     doomed = scope - set(merged_map)
-    if doomed:
-        db.execute(delete(table).where(getattr(table.c, pk).in_(doomed)))
     # 规范序返回（与 table_rows 同序：跨轮 sha1 稳定，推送跳过判定才可靠）
     ordered = sorted(actual.values(), key=lambda r: str(r.get(pk, "")))
-    return ordered, inserted, updated
+    return ordered, inserted, updated, doomed
 
 
 def _repoint_children(db: Session, parent_name: str, old_pk: str, new_pk: str) -> None:
@@ -831,18 +835,28 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
     db.rollback()
 
     # —— 阶段 2：单事务写本地（零网络 IO，短事务）———————————————
+    # 插入/更新按父前子后；删除收集后逆序（子先父后）统一执行——同事务内
+    # 删父行时子表的对端删除行必须已清，immediate FK 才不炸（2026-11-17 真机
+    # 批：此前每表内联删，父表先处理即撞 FK；defer_foreign_keys 在与后台线程
+    # 共用连接池时可能不落在执行连接上，实测偶发 IntegrityError 卡死整轮）
+    pending_deletes: list[tuple[str, str, set]] = []
     try:
         db.execute(text("PRAGMA defer_foreign_keys=ON"))
         for p in plans:
             name, pk = p["name"], p["pk"]
             fresh = {r[pk]: r for r in table_rows(db, name)}
-            actual, ins, upd = _write_local(db, name, p["merged"], fresh,
-                                            deletable=p["planned_keys"])
+            actual, ins, upd, doomed = _write_local(db, name, p["merged"], fresh,
+                                                    deletable=p["planned_keys"])
             p["actual"] = actual
+            if doomed:
+                pending_deletes.append((name, pk, doomed))
             stats["inserted"] += ins
             stats["updated"] += upd
-            if ins or upd or p["del_local"]:
+            if ins or upd or doomed:
                 stats["tables_changed"] += 1
+        for name, pk, doomed in reversed(pending_deletes):  # plans 序=父前子后
+            table, _ = _table_meta(name)
+            db.execute(delete(table).where(getattr(table.c, pk).in_(doomed)))
         db.commit()
     except Exception:
         db.rollback()
