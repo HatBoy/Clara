@@ -165,6 +165,13 @@ def _refine_with_llm(*, candidates: dict[str, dict], rule_slots: dict, now: date
     from agents.prompts import clip_rules  # 延迟 import；批 3 补——engine 是唯一不 clip 的 JSON 入口
     from services.llm import call_llm  # 函数内 import 防环（house style）
 
+    # 精力峰谷（2026-11-17 二轮批 1）：仅 AI 微调层付一次只读查询（use_ai=True
+    # 才进本函数）；样本不足 None 不落键，提示词零变化
+    from database import SessionLocal
+    from services.stats import energy_peak_low
+
+    with SessionLocal() as db:
+        energy = energy_peak_low(db)
     payload = {
         "now": f"{now:%Y-%m-%dT%H:%M:%S}",
         "tasks": [
@@ -176,6 +183,7 @@ def _refine_with_llm(*, candidates: dict[str, dict], rule_slots: dict, now: date
         "load_summary": load_summary,
         "weather": weather,
         "memory_rules": clip_rules(list(rules or [])),
+        **({"energy": energy} if energy is not None else {}),
     }
     raw = call_llm(
         [{"role": "system", "content": SLOT_REFINE_PROMPT},

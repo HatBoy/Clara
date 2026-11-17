@@ -86,6 +86,28 @@ def test_energy_low_tiebreak_takes_better_sampled_hour():
     assert all(s["hour"] != 10 for s in out["slots"])
 
 
+def test_energy_peak_low_shapes():
+    # 2026-11-17 二轮批 1：排期链注入口的单源峰谷——与 energy_profile 同口径，
+    # 样本不足返回 None（注入点零变化）；低谷与高峰同小时时无 low 键
+    from services.stats import energy_peak_low
+
+    base = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    with TestingSessionLocal() as db:
+        tid = _make_task(db)
+        for i in range(5):
+            _event(db, tid, "done", (base - timedelta(days=i)).replace(hour=9))
+        for i in range(5):
+            _event(db, tid, "reschedule", (base - timedelta(days=i)).replace(hour=20))
+        db.commit()
+        out = energy_peak_low(db, days=30)
+    assert out == {"peak": {"hour": 9, "score": 100},
+                   "low": {"hour": 20, "score": 0}, "sample": 10}
+    with TestingSessionLocal() as db:  # 清空遥测 → collecting → None
+        db.query(BehaviorEvent).delete()
+        db.commit()
+        assert energy_peak_low(db, days=30) is None
+
+
 def test_energy_endpoint_validates_days(client: TestClient):
     assert client.get("/api/stats/energy-profile", params={"days": 7}).status_code == 200
     assert client.get("/api/stats/energy-profile", params={"days": 15}).status_code == 422

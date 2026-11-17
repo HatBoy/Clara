@@ -1494,15 +1494,12 @@ ENERGY_TOTAL_MIN = 8        # 总样本门槛（不足整体标 collecting）
 _ENERGY_DEFER_KINDS = ("reschedule", "unschedule", "abandon")
 
 
-def energy_profile(db: Session, *, days: int = 30) -> dict:
-    """精力曲线 + Energy Profile 白盒（只读派生，无新表）。
+def _energy_derive(db: Session, days: int) -> tuple:
+    """事件 → (桶明细, 按小时聚合, 总样本, peak, low)——精力端点与排期注入的
+    单源推导（2026-11-17 二轮批 1 抽出；peak/low 为 (hour, score, sample) 或 None）。
 
     数据源：BehaviorEvent 的完成/改期事件按实例原时刻落 (weekday, hour) 桶；
-    分数 = 完成 / (完成 + 改期)（样本 ≥3 才给分）；总样本 ≥8 才给峰谷。
-    白盒证据：MemoryRule 中 slot=rhythm 的规则原文/置信度/证据。
-    """
-    from datetime import date as _date
-
+    分数 = 完成 / (完成 + 改期)（样本 ≥3 才给分）；总样本 ≥8 才给峰谷。"""
     since = datetime.now() - timedelta(days=days)
     evs = list(db.scalars(
         select(BehaviorEvent).where(BehaviorEvent.created_at >= since)))
@@ -1525,20 +1522,11 @@ def energy_profile(db: Session, *, days: int = 30) -> dict:
         elif e.kind in _ENERGY_DEFER_KINDS:
             b["defer"] += 1
 
-    slots: list[dict] = []
-    by_weekday: dict[int, dict] = {i: {"done": 0, "defer": 0} for i in range(7)}
     by_hour: dict[int, dict] = {}
-    for (wd, hour), b in buckets.items():
-        sample = b["done"] + b["defer"]
-        score = round(100 * b["done"] / sample) if sample >= ENERGY_SAMPLE_MIN else None
-        slots.append({"weekday": wd, "hour": hour, "done": b["done"],
-                      "defer": b["defer"], "sample": sample, "score": score})
-        by_weekday[wd]["done"] += b["done"]
-        by_weekday[wd]["defer"] += b["defer"]
+    for (_wd, hour), b in buckets.items():
         hb = by_hour.setdefault(hour, {"done": 0, "defer": 0})
         hb["done"] += b["done"]
         hb["defer"] += b["defer"]
-    slots.sort(key=lambda s: (s["weekday"], s["hour"]))
 
     total = sum(b["done"] + b["defer"] for b in buckets.values())
     hour_scores = [
@@ -1551,6 +1539,42 @@ def energy_profile(db: Session, *, days: int = 30) -> dict:
         # 的时段——把证据最弱的时刻报给用户）
         peak = max(hour_scores, key=lambda x: (x[1], x[2]))
         low = min(hour_scores, key=lambda x: (x[1], -x[2]))
+    return buckets, by_hour, total, peak, low
+
+
+def energy_peak_low(db: Session, *, days: int = 30) -> dict | None:
+    """精力峰谷（排期链注入口，2026-11-17 二轮批 1）：与 energy_profile 单源
+    同口径（_energy_derive）。样本不足（collecting）或低谷与高峰同小时时返回
+    None / 无 low 键——注入点据此条件注入，键缺席时行为零变化。"""
+    _, _, total, peak, low = _energy_derive(db, days)
+    if peak is None:
+        return None
+    out = {"peak": {"hour": peak[0], "score": peak[1]},
+           "low": ({"hour": low[0], "score": low[1]}
+                   if low and low[0] != peak[0] else None),
+           "sample": total}
+    return out
+
+
+def energy_profile(db: Session, *, days: int = 30) -> dict:
+    """精力曲线 + Energy Profile 白盒（只读派生，无新表）。
+
+    数据源：BehaviorEvent 的完成/改期事件按实例原时刻落 (weekday, hour) 桶；
+    分数 = 完成 / (完成 + 改期)（样本 ≥3 才给分）；总样本 ≥8 才给峰谷。
+    白盒证据：MemoryRule 中 slot=rhythm 的规则原文/置信度/证据。
+    """
+    buckets, by_hour, total, peak, low = _energy_derive(db, days)
+
+    slots: list[dict] = []
+    by_weekday: dict[int, dict] = {i: {"done": 0, "defer": 0} for i in range(7)}
+    for (wd, hour), b in buckets.items():
+        sample = b["done"] + b["defer"]
+        score = round(100 * b["done"] / sample) if sample >= ENERGY_SAMPLE_MIN else None
+        slots.append({"weekday": wd, "hour": hour, "done": b["done"],
+                      "defer": b["defer"], "sample": sample, "score": score})
+        by_weekday[wd]["done"] += b["done"]
+        by_weekday[wd]["defer"] += b["defer"]
+    slots.sort(key=lambda s: (s["weekday"], s["hour"]))
 
     from models import MemoryRule
 

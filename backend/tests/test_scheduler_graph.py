@@ -557,6 +557,38 @@ def test_no_slot_insisted_marks_budget_waiver(monkeypatch):
     assert out["resolved"] == {"proposal_id": "q1", "outcome": "accepted"}
 
 
+def test_intake_carries_energy_to_profiler_payload(monkeypatch):
+    # 2026-11-17 二轮批 1：精力峰谷注入——行为遥测样本足够时 intake 落 energy
+    # 键、profiler 载荷透传（collecting 用户的 ctx 无键、载荷 energy 恒 None）
+    from datetime import timedelta
+
+    from models import BehaviorEvent, Task as _Task
+
+    base = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    with TestingSessionLocal() as db:
+        t = _Task(title="遥测样本")
+        db.add(t)
+        db.flush()
+        for i in range(6):
+            db.add(BehaviorEvent(task_id=t.id, kind="done",
+                                 prev_start=(base - timedelta(days=i)).replace(hour=9),
+                                 created_at=base - timedelta(days=i)))
+            db.add(BehaviorEvent(task_id=t.id, kind="reschedule",
+                                 prev_start=(base - timedelta(days=i)).replace(hour=15),
+                                 created_at=base - timedelta(days=i)))
+        db.commit()
+    fake = _LLMCapture({PLANNER_PROMPT: json.dumps(
+        {"entries": [{"task_id": None, "origin": "user", "title": "写方案",
+                      "start": "2026-10-17T14:00:00", "duration": 60}],
+         "reply": "好"}, ensure_ascii=False)})
+    monkeypatch.setattr(llm, "call_llm", fake)
+    _patch_inputs(monkeypatch, pending=[])
+    scheduler_app.invoke({"user_input": "把方案排了", "memory_rules": []})
+    payload = json.loads(fake.calls[0][1])
+    assert payload["energy"] == {"peak": {"hour": 9, "score": 100},
+                                 "low": {"hour": 15, "score": 0}, "sample": 12}
+
+
 # —— 冲突让位（2026-10-22）：问询点名挡路者 + resolution 第七形态 displace —————
 
 

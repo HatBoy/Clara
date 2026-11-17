@@ -206,6 +206,9 @@ def profiler_node(state: SchedulerState) -> dict:
         # 建议避开用户上周明确拒绝过的同类时间/理由
         "execution_rhythm": ctx.get("execution_rhythm"),
         "recent_rejects": ctx.get("recent_rejects"),
+        # 精力峰谷（2026-11-17 二轮批 1）：行为遥测派生的真实完成倾向（样本
+        # 不足时 intake 不落键，提示词零变化）——估时/类别判断的个性化证据
+        "energy": ctx.get("energy"),
     }
     _status_emitter()("正在剖析任务画像…")  # LLM① 过程反馈（提速批 2）
     # insisted 确定性短路（2026-11-01 真机批）：「还是坚持安排」类变体 LLM

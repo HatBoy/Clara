@@ -26,6 +26,27 @@ def test_energy_section_only_for_deep_or_high_drain():
     assert "精力匹配" not in system2
 
 
+def test_energy_section_appends_measured_peaks():
+    """实测峰谷追加行（2026-11-17 二轮批 1）：energy 键可用时精力段带一行
+    用户完成倾向对照（collecting 用户 ctx 无键零变化）；载荷透传 energy。"""
+    ctx = dict(_CTX, energy={"peak": {"hour": 10, "score": 92},
+                             "low": {"hour": 14, "score": 31}, "sample": 23})
+    system, user = build_adjudicator_prompt(
+        [{"title": "t", "duration": 60, "profile": _DEEP}],
+        [{"key": "a0", "title": "t", "slot": "2026-10-19T09:00:00"}],
+        ctx, [])
+    assert "实测完成倾向" in system
+    assert "高峰约 10:00" in system and "低谷约 14:00" in system
+    assert '"energy"' in user  # 载荷带键（LLM 可见数值）
+
+    plain_system, plain_user = build_adjudicator_prompt(
+        [{"title": "t", "duration": 60, "profile": _DEEP}],
+        [{"key": "a0", "title": "t", "slot": "2026-10-19T09:00:00"}],
+        dict(_CTX), [])
+    assert "实测完成倾向" not in plain_system  # collecting：静态常识段原样
+    assert '"energy": null' in plain_user or '"energy":null' in plain_user
+
+
 def test_weather_section_needs_outdoor_and_forecast():
     sunny = [{"date": "2026-10-19", "text": "晴", "tmax": 22, "tmin": 14, "precip": 10}]
     system, _ = _prompt([_OUTDOOR], weather=sunny)

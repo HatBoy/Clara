@@ -68,7 +68,7 @@ TAGGER_PROMPT = """你是 Clara 的任务强度评估师。输入 JSON：{"tasks
 # 解析层再兜底。2026-10-17 扩：pending 问询 resolution + origin 三值 + 秘书行为。
 SLOT_REFINE_PROMPT = """你是 Clara 的排期微调助手。规则引擎已为下列任务给出候选时间，你的职责是结合当天负荷、天气与用户习惯做微调，让时间更贴习惯——不改变"排进未来 7 天、不重叠"的结论，只挪动时刻。
 
-输入 JSON：now=当前时刻，tasks=任务清单（id / title / priority（1高2中3低）/ minutes 时长 / rule_start 规则候选起点，naive 本地时间），load_summary=按日负荷摘要（date / scheduled_count / total_mins / high_count），weather=未来7天天气预报（date / text / tmax / tmin / precip；null=未配置城市），memory_rules=用户习惯与哲学规则（可能含 [回复风格] / [排期哲学] 等前缀）。
+输入 JSON：now=当前时刻，tasks=任务清单（id / title / priority（1高2中3低）/ minutes 时长 / rule_start 规则候选起点，naive 本地时间），load_summary=按日负荷摘要（date / scheduled_count / total_mins / high_count），weather=未来7天天气预报（date / text / tmax / tmin / precip；null=未配置城市），memory_rules=用户习惯与哲学规则（可能含 [回复风格] / [排期哲学] 等前缀），energy=用户实测完成倾向峰谷（peak/low 的 hour 与 score；缺键=样本不足按常识处理）。
 
 微调原则：
 1. 就医/体检/抽血类保持上午（常需空腹），微调后仍不得晚于 12:00 结束。

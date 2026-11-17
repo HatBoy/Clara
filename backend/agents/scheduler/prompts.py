@@ -14,7 +14,7 @@ from agents.prompts import INJECTION_GUARD, clip_rules  # 防注入条款/规则
 # _needs_organize 内联（前者看常识条款关键词，后者看同 category 计数）
 _BRIEFING_RE = re.compile(r"汇报|路演|答辩|述职")
 
-PROFILER_PROMPT = """你是 Clara 的私人秘书的「任务剖析官」——排期流水线的第一道工序：听懂诉求、定夺去留、给每件事画出多维画像。你不决定具体时刻（排期引擎与裁决器负责），你负责把用户的每句话变成结构化条目 + 剖析档案。输入 JSON：today=今天日期，now=当前时刻，user_input=用户诉求，pending=上一轮待确认问询快照（无则 null：kind=conflict/similar/no_time/past，entries=问询条目，suggestion=建议时间，date_hint=日期线索，original_input=当时原话，ask_text=问询原句），tasks_unscheduled=待排期待办（id 为真实任务 id；title / duration 分钟 / priority（1高2中3低）/ reschedule_count 改期次数（高=这件事一直被挤）/ intensity 脑力强度 / est_hint 同类历史耗时分钟（null=无记录）/ notes），tasks_scheduled=前后两周已排期任务（title / start / end / priority，naive 本地时间），recent_done=近 7 天完成的任务（title / done_at，新→旧；真实产能与节奏的证据——估时和"今天还能不能排"都对照它），load_summary=按日负荷摘要（date / scheduled_count 当日条数 / total_mins 当日已排分钟 / high_count 高强度条数），settings={work_minutes_per_day 每日可排分钟上限, day_start / day_end 可排时段, lunch 午休区间或 null, reminder_lead_min 提前提醒分钟}，weather=未来7天天气预报（date / text 天气 / tmax / tmin 摄氏温度 / precip 降水概率%；null=未配置城市，据实忽略），recent_chat=近期对话（多轮指代如"把它改到明天"靠它衔接），chat_summary=更早对话的滚动摘要（null=无；跨天偏好与久前话题的线索，近处衔接仍以 recent_chat 为准），memory_rules=用户习惯规则，execution_rhythm=近14天执行节奏（planned_count/done_count/done_rate 勾选完成率 / avg_done_mins 完成均时长（样本<3 为 null）/ top_deferred 反复推迟清单——估时与"今天还能不能排"对照它），recent_rejects=近7天用户拒绝同类建议的理由（titles+reason——出建议时避开用户明确拒绝过的时间与理由）。
+PROFILER_PROMPT = """你是 Clara 的私人秘书的「任务剖析官」——排期流水线的第一道工序：听懂诉求、定夺去留、给每件事画出多维画像。你不决定具体时刻（排期引擎与裁决器负责），你负责把用户的每句话变成结构化条目 + 剖析档案。输入 JSON：today=今天日期，now=当前时刻，user_input=用户诉求，pending=上一轮待确认问询快照（无则 null：kind=conflict/similar/no_time/past，entries=问询条目，suggestion=建议时间，date_hint=日期线索，original_input=当时原话，ask_text=问询原句），tasks_unscheduled=待排期待办（id 为真实任务 id；title / duration 分钟 / priority（1高2中3低）/ reschedule_count 改期次数（高=这件事一直被挤）/ intensity 脑力强度 / est_hint 同类历史耗时分钟（null=无记录）/ notes），tasks_scheduled=前后两周已排期任务（title / start / end / priority，naive 本地时间），recent_done=近 7 天完成的任务（title / done_at，新→旧；真实产能与节奏的证据——估时和"今天还能不能排"都对照它），load_summary=按日负荷摘要（date / scheduled_count 当日条数 / total_mins 当日已排分钟 / high_count 高强度条数），settings={work_minutes_per_day 每日可排分钟上限, day_start / day_end 可排时段, lunch 午休区间或 null, reminder_lead_min 提前提醒分钟}，weather=未来7天天气预报（date / text 天气 / tmax / tmin 摄氏温度 / precip 降水概率%；null=未配置城市，据实忽略），recent_chat=近期对话（多轮指代如"把它改到明天"靠它衔接），chat_summary=更早对话的滚动摘要（null=无；跨天偏好与久前话题的线索，近处衔接仍以 recent_chat 为准），memory_rules=用户习惯规则，execution_rhythm=近14天执行节奏（planned_count/done_count/done_rate 勾选完成率 / avg_done_mins 完成均时长（样本<3 为 null）/ top_deferred 反复推迟清单——估时与"今天还能不能排"对照它），recent_rejects=近7天用户拒绝同类建议的理由（titles+reason——出建议时避开用户明确拒绝过的时间与理由），energy=用户实测完成倾向峰谷（peak/low 的 hour 与 score、sample 样本次数；缺键=样本积累中按常识判断）——高耗任务估时与时段倾向可对照它。
 
 一、pending 非空时先判 resolution（本轮回复对问询的态度，输出 resolution 键）：
 - confirmed：明确同意按建议时间执行（如"可以""好的""行，就这个时间"）。
@@ -121,7 +121,16 @@ def build_adjudicator_prompt(entries: list[dict], slots: list[dict], ctx: dict,
     sections = []
     if any(p.get("category") == "深度脑力" or p.get("energy_drain") == "高"
            for p in profiles):
-        sections.append(_ADJ_ENERGY)
+        # 真实峰谷（2026-11-17 二轮批 1）：行为遥测派生的完成倾向（样本足够才
+        # 注入，≤2 行；collecting 用户零变化）——精力段从静态常识升级为实测对照
+        energy = ctx.get("energy")
+        extra = ""
+        if isinstance(energy, dict) and energy.get("peak"):
+            extra = (f"\n（用户实测完成倾向：高峰约 {energy['peak']['hour']:02d}:00"
+                     + (f"、低谷约 {energy['low']['hour']:02d}:00"
+                        if energy.get("low") else "")
+                     + "，高耗任务尽量靠峰避谷）")
+        sections.append(_ADJ_ENERGY + extra)
     if (any(p.get("category") in ("外出体力", "差旅通勤")
             or "需要好天气" in (p.get("env_deps") or []) for p in profiles)
             and ctx.get("weather")):
@@ -148,6 +157,8 @@ def build_adjudicator_prompt(entries: list[dict], slots: list[dict], ctx: dict,
         "busy": [f"{b0:%m-%d %H:%M}-{b1:%H:%M}" for b0, b1 in ctx.get("busy") or []],
         "load_summary": ctx.get("load_summary") or [],
         "weather": ctx.get("weather"),
+        # 实测精力峰谷（二轮批 1，条件键——collecting 时 ctx 无此键）
+        "energy": ctx.get("energy"),
         # 载荷双闸（优化批 4）：与 profiler 同款 clip_rules 头部切片——
         # 裁决器此前同样全量直通，画像库涨满后的溢出隐患一并堵上
         "memory_rules": clip_rules(ctx.get("memory_rules") or []),

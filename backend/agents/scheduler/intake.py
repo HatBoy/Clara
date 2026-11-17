@@ -36,6 +36,7 @@ def intake_node(state: SchedulerState) -> dict:
     """
     from services.ai_data import chat_context, recent_reject_reasons
     from services.settings import get_settings
+    from services.stats import energy_peak_low
     from services.tasks import (
         _task_dur,
         expand_occurrences,
@@ -67,6 +68,9 @@ def intake_node(state: SchedulerState) -> dict:
         candidates = unscheduled[:_PLANNER_MAX_CANDIDATES]
         est_hints = {t.id: similar_done_durations(db, t.title) for t in candidates}
         recent_done_rows = recent_done(db)
+        # 精力峰谷（2026-11-17 二轮批 1）：排期轮一次取数，子图内零重复读库；
+        # 样本不足为 None（ctx 不落键，profiler/裁决器注入点零变化）
+        energy = energy_peak_low(db)
 
     # 天气注入：城市未配置/网络失败恒 None——排期不依赖天气，提示词层降级
     weather = forecast_for_city(s.weather_city)
@@ -158,9 +162,12 @@ def intake_node(state: SchedulerState) -> dict:
         "busy": busy,
         "busy_meta": busy_meta,
         "similar_pool": similar_pool,
+        # 精力峰谷（二轮批 1）：None = 样本积累中，下游注入点条件消费
+        **({"energy": energy} if energy is not None else {}),
     }
     logger.info("[scheduler] intake：候选待排 %d / 已排任务 %d（busy 区间 %d）/"
-                "历史 %d 条 / 天气 %s", len(candidates), len(scheduled), len(busy),
-                len(recent_msgs), "有" if weather else "无")
+                "历史 %d 条 / 天气 %s / 精力峰谷 %s",
+                len(candidates), len(scheduled), len(busy), len(recent_msgs),
+                "有" if weather else "无", "有" if energy else "无")
     return {"raw_input": state["user_input"], "now": now,
             "philosophy_ids": philosophy_ids, "context": context}
