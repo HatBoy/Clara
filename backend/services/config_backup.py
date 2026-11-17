@@ -18,7 +18,6 @@ data/config_snapshot.json；下次启动若检测到「库刚重建」特征（�
 
 import json
 import logging
-from datetime import date, datetime, time
 from pathlib import Path
 
 from sqlalchemy import delete, select
@@ -58,21 +57,17 @@ def snapshot_path() -> Path:
     return get_data_dir() / "config_snapshot.json"
 
 
-def _ser(value):
-    """值序列化：日期时间族转 isoformat 字符串，其余原样（JSON 列已是对象）。"""
-    if isinstance(value, (datetime, date, time)):
-        return value.isoformat()
-    return value
-
-
 def dump_config(db) -> dict:
-    """七张配置表整表 dump → {表名: [行 dict, ...]}。"""
+    """七张配置表整表 dump → {表名: [行 dict, ...]}（值口径单源 row_codec.ser_value
+    ——与同步域规范行同内核，2026-11-17 架构批 2）。"""
+    from services.row_codec import ser_value
+
     tables = {t.name: t for t in Base.metadata.sorted_tables}
     snap: dict = {}
     for name in _CONFIG_TABLES:
         table = tables[name]
         snap[name] = [
-            {c: _ser(v) for c, v in zip(table.columns.keys(), row)}
+            {c: ser_value(v) for c, v in zip(table.columns.keys(), row)}
             for row in db.execute(select(table)).all()
         ]
     return snap
@@ -81,48 +76,21 @@ def dump_config(db) -> dict:
 def restore_config(db, snap: dict) -> int:
     """整表恢复（先清后插，幂等）。返回恢复总行数。isoformat 字符串按目标列
     类型转回 datetime/date/time 对象（SQLite DateTime 方言只认对象不接受字符串）。"""
-    from sqlalchemy import Date, DateTime, Time
+    from services.row_codec import bindable_value
 
     tables = {t.name: t for t in Base.metadata.sorted_tables}
 
-    def _revive(col, value):
-        if value is None:
-            # 非空布尔列的 None 是历史快照踩坑形态（2026-10-23：push_enabled 经
-            # ADD COLUMN 补列后旧行为 NULL，dump 忠实存成 None——恢复 insert 撞
-            # NOT NULL 炸 lifespan）：归 False 恢复；可空列 None 合法原样回
-            from sqlalchemy import Boolean
-
-            if isinstance(col.type, Boolean) and not col.nullable:
-                return False
-            return None
-        if isinstance(col.type, DateTime):
-            return datetime.fromisoformat(value)
-        if isinstance(col.type, Date):
-            return date.fromisoformat(value)
-        if isinstance(col.type, Time):
-            return time.fromisoformat(value)
-        return value
-
+    # 值级内核单源 row_codec（2026-11-17 架构批 2）：datetime 复活 / 非空布尔
+    # None 归 False（历史 ADD COLUMN 踩坑防御）/ JSON 列显式 None → null()
+    # （af6daf2 同型修复，恢复路径与同步路径自此同一实现）
     total = 0
     for name in _CONFIG_TABLES:
         rows = snap.get(name) or []
         table = tables[name]
         db.execute(delete(table))
         if rows:
-            from sqlalchemy import JSON as SAJSON
-            from sqlalchemy import null as sa_null
-
-            def _bindable(col, value):
-                v = _revive(col, value)
-                # JSON 列的显式 None 会被 SQLAlchemy json.dumps 成文本 'null'
-                # （同 sync_engine._writable_row；2026-11-17 真机双机对账实证
-                # 恢复路径同样中招）——SQL null() 直渲染 NULL 绕过序列化器
-                if v is None and isinstance(col.type, SAJSON):
-                    return sa_null()
-                return v
-
             db.execute(table.insert(), [
-                {c: _bindable(table.columns[c], v) for c, v in row.items()}
+                {c: bindable_value(table.columns[c], v) for c, v in row.items()}
                 for row in rows])
         total += len(rows)
     db.commit()

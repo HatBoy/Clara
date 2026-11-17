@@ -104,11 +104,13 @@ def load_zip_tables(path: str) -> dict[str, list[dict]]:
 
 
 def _dump_sqlite_tables(db_path: Path) -> dict[str, list[dict]]:
-    """SQLite 库文件 → {表名: 行 dict}（sqlite3 原生只读游标；datetime 以文本
-    读出，口径与 table_rows 的 isoformat 一致）。列取「metadata 列 ∩ 库内实有
-    列」交集——旧版本备份列少时取共有列（缺表整表跳过），与 _revive_row 的
-    列集过滤口径一致。"""
+    """SQLite 库文件 → {表名: 规范行集}（sqlite3 原生只读游标；行口径归一
+    收敛 row_codec.canonical_rows——裸读文本 datetime / JSON 字符串 / 0-1
+    布尔与 table_rows 同口径，2026-11-16「冲突虚高」事故的结构性单源）。
+    列取「metadata 列 ∩ 库内实有列」交集——旧版本备份列少时取共有列
+    （缺表整表跳过）。"""
     from database import Base  # 列类型/主键元数据单源
+    from services import row_codec
 
     meta = {t.name: t for t in Base.metadata.sorted_tables}
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -124,59 +126,10 @@ def _dump_sqlite_tables(db_path: Path) -> dict[str, list[dict]]:
                 continue  # 旧版本备份表更少：缺表跳过
             cols = [c for c in meta[name].columns.keys() if c in actual]
             rows = conn.execute(f"SELECT {','.join(cols)} FROM {name}").fetchall()
-            out[name] = [_normalize_dump_row(meta[name], dict(r)) for r in rows]
+            out[name] = row_codec.canonical_rows(name, rows)
         return out
     finally:
         conn.close()
-
-
-def _normalize_dump_row(table, row: dict) -> dict:
-    """裸 sqlite3 读出的行 → 与 table_rows 同口径（2026-11-16 优化批 3）。
-
-    此前 DateTime 读出 "YYYY-MM-DD HH:MM:SS.ffffff"、JSON 列读出原始字符串，
-    而 table_rows 给的是 isoformat（T 分隔）与 Python 对象 → analyze_merge 几乎
-    每行都判"不同"（冲突数虚高、无冲突直通永远不生效）；apply 时 JSON 字符串
-    再被 SQLAlchemy 二次 json.dumps（落库成双重编码字符串）。"""
-    from sqlalchemy import JSON as SAJSON
-    from sqlalchemy import Boolean, Date as SADate, DateTime as SADateTime, Time as SATime
-
-    out: dict = {}
-    for key, value in row.items():
-        col = table.columns.get(key)
-        if value is None or col is None:
-            out[key] = value
-            continue
-        t = col.type
-        if isinstance(t, (SADateTime, SADate, SATime)):
-            try:
-                out[key] = _iso_norm(value, t)
-            except ValueError:
-                out[key] = value
-        elif isinstance(t, SAJSON):
-            if isinstance(value, str):
-                try:
-                    out[key] = json.loads(value)
-                except ValueError:
-                    out[key] = value
-            else:
-                out[key] = value
-        elif isinstance(t, Boolean):
-            out[key] = bool(value)
-        else:
-            out[key] = value
-    return out
-
-
-def _iso_norm(value, col_type) -> str:
-    from sqlalchemy import Date as SADate, DateTime as SADateTime, Time as SATime
-
-    if isinstance(col_type, SADateTime):
-        return datetime.fromisoformat(str(value)).isoformat()
-    if isinstance(col_type, SADate):
-        return date.fromisoformat(str(value)).isoformat()
-    if isinstance(col_type, SATime):
-        return time.fromisoformat(str(value)).isoformat()
-    return str(value)
 
 
 def analyze_merge(db: Session, path: str) -> dict:
@@ -186,9 +139,8 @@ def analyze_merge(db: Session, path: str) -> dict:
     设备、同名项目/规则）且内容不同的行计入 conflicts 而非 new——「无冲突
     直通」以 conflicts 空为准，此前撞键行藏进 new_count 让 skip 直通静默
     覆盖本地新改动。撞键同内容 = 合并零操作，两侧都不计。"""
-    from services.sync_engine import (
-        NATURAL_KEYS, _find_by_natural_key, _rows_equal, _table_meta, table_rows,
-    )
+    from services import row_codec
+    from services.sync_engine import NATURAL_KEYS, _find_by_natural_key
 
     tables = load_zip_tables(path)
     new_count = updated_count = 0
@@ -198,10 +150,10 @@ def analyze_merge(db: Session, path: str) -> dict:
         rows = tables.get(name) or []
         if not rows:
             continue
-        table, pk = _table_meta(name)
+        table, pk = row_codec.table_meta(name)
         cols = table.columns.keys()
         body_cols = [c for c in cols if c != pk]  # 内容比对剔除主键：撞键两行 pk 必不同
-        local = {r[pk]: r for r in table_rows(db, name)}
+        local = {r[pk]: r for r in row_codec.dump_table(db, name)}
         t_new = t_upd = 0
         for row in rows:
             key = row.get(pk)
@@ -209,12 +161,12 @@ def analyze_merge(db: Session, path: str) -> dict:
             if local_row is None and name in NATURAL_KEYS:
                 hit = _find_by_natural_key(db, name, row)
                 if hit is not None:
-                    if _rows_equal(row, hit, body_cols):
+                    if row_codec.rows_equal(row, hit, body_cols):
                         continue
                     local_row = hit  # 撞键视同本地已有行（apply 同口径）
             if local_row is None:
                 t_new += 1
-            elif not _rows_equal(row, local_row, cols):
+            elif not row_codec.rows_equal(row, local_row, cols):
                 t_upd += 1
                 if len(conflicts) < 50:
                     conflicts.append({
@@ -241,10 +193,8 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
     必然覆盖且 updated_at=now 让它在后续同步强制胜出；「无冲突直通」（skip）
     会静默覆盖本地新改动。现与 sync_engine._write_local 同款：撞键视同本地
     已有行，过 strategy 与 LWW 再写。"""
-    from services.sync_engine import (
-        _find_by_natural_key, _row_ts, _rows_equal, _table_meta, _writable_row,
-        mark_tables_dirty, schedule_now, table_rows,
-    )
+    from services import row_codec
+    from services.sync_engine import _find_by_natural_key, mark_tables_dirty, schedule_now
 
     tables = load_zip_tables(path)
     inserted = updated = skipped = 0
@@ -255,16 +205,16 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
             rows = tables.get(name) or []
             if not rows:
                 continue
-            table, pk = _table_meta(name)
+            table, pk = row_codec.table_meta(name)
             cols = table.columns.keys()
             body_cols = [c for c in cols if c != pk]  # 撞键两行 pk 必不同，内容比对剔除
-            local = {r[pk]: r for r in table_rows(db, name)}
+            local = {r[pk]: r for r in row_codec.dump_table(db, name)}
             for row in rows:
                 key = row.get(pk)
                 local_row = local.get(key)
                 collided = False
                 if local_row is None:
-                    values = _writable_row(table, row)
+                    values = row_codec.writable_row(table, row)
                     if "updated_at" in cols:
                         values["updated_at"] = now  # 盖当前时刻：视为本地最新修改
                     try:
@@ -277,18 +227,18 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
                             skipped += 1
                             continue
                         key, local_row, collided = hit[pk], hit, True
-                if _rows_equal(row, local_row, body_cols):
+                if row_codec.rows_equal(row, local_row, body_cols):
                     continue
                 if strategy != "overwrite":
                     skipped += 1
                     continue
                 if collided:
-                    lt, rt = _row_ts(local_row), _row_ts(row)
+                    lt, rt = row_codec.row_ts(local_row), row_codec.row_ts(row)
                     if lt is not None and rt is not None and lt >= rt:
                         skipped += 1  # 本地较新：备份让位（LWW）
                         continue
                 # overwrite：备份内容落本地（自然键撞车场景落在本地 pk 上）
-                values = _writable_row(table, row)
+                values = row_codec.writable_row(table, row)
                 values[pk] = key
                 if "updated_at" in cols:
                     values["updated_at"] = now

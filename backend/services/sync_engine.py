@@ -24,17 +24,16 @@ sync_snapshot/）/ Remote（WebDAV 上 tables/<t>.json）。合并真值表与�
 """
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
 import threading
 import time
 from contextlib import contextmanager
-from datetime import date, datetime, time as dt_time
+from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import DateTime, Date, Time, delete, select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -178,54 +177,21 @@ def register_dirty_hook() -> None:
     logger.info("同步脏表 after_flush 钩子已挂载")
 
 
-# —— 序列化与哈希（口径复用 config_backup._ser：datetime 族 isoformat）———————
+# —— 序列化与哈希（2026-11-17 架构批 2：口径族单源迁移 services/row_codec.py，
+#    此处旧名降级为薄委托——测试与跨模块 import 的锚点逐字保真；新代码一律
+#    直连 row_codec）———————————————————————————————————————————————————————
 
+from services import row_codec  # noqa: E402（延迟至口径段集中导入）
 
-def _ser(value):
-    if isinstance(value, (datetime, date, dt_time)):
-        return value.isoformat()
-    return value
-
-
-def _table_meta(name: str):
-    """表对象与主键列名（cli_tools 主键是 adapter_id，动态取不硬编码）。"""
-    table = Base.metadata.tables[name]
-    pk = table.primary_key.columns[0].name
-    return table, pk
-
-
-def table_rows(db: Session, name: str) -> list[dict]:
-    """全表 dump 为行 dict 列表（datetime → isoformat）。**行按主键排序**——
-    规范序保证「同一份数据两次读 / push 与快照」的 sha1 恒一致（增量判定的
-    命脉；无 ORDER BY 的 SQLite 返回序是 rowid 序，与合并输出的键序不同）。"""
-    table, pk = _table_meta(name)
-    cols = table.columns.keys()
-    rows = [
-        {c: _ser(v) for c, v in zip(cols, row)}
-        for row in db.execute(select(table)).all()
-    ]
-    rows.sort(key=lambda r: str(r.get(pk, "")))
-    return rows
-
-
-def _hash_rows(rows: list[dict]) -> str:
-    payload = json.dumps(rows, ensure_ascii=False, separators=(",", ":"),
-                         default=str)
-    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
-
-
-def _row_ts(row: dict) -> datetime | None:
-    """行级 LWW 时间判据：updated_at → created_at 回退；解析失败/缺失返 None。
-    调用方平局规则恒本地优先（>= 判定）。"""
-    for key in ("updated_at", "created_at"):
-        raw = row.get(key)
-        if not raw:
-            continue
-        try:
-            return datetime.fromisoformat(str(raw))
-        except ValueError:
-            continue
-    return None
+_ser = row_codec.ser_value
+_table_meta = row_codec.table_meta
+table_rows = row_codec.dump_table
+_hash_rows = row_codec.hash_rows
+_row_ts = row_codec.row_ts
+_rows_equal = row_codec.rows_equal
+_revive_value = row_codec.revive_value
+_revive_row = row_codec.revive_row
+_writable_row = row_codec.writable_row
 
 
 # —— 快照（Base；原子写）——————————————————————————————————————————————
@@ -446,59 +412,8 @@ def _merge_table(name: str, local: list[dict], base: list[dict] | None,
 
 
 # —— 写库（单事务 + defer FK；返回实际落库行集）———————————————————————————
-
-
-def _revive_value(col, value):
-    """单值 → 可写值：datetime 族字符串按列类型转回对象（SQLite DateTime 方言
-    只认对象）；非空布尔列的 None 归 False（config_backup._revive 同款防御）。"""
-    from sqlalchemy import JSON as SAJSON
-    from sqlalchemy import Boolean
-
-    if value is None:
-        return False if (isinstance(col.type, Boolean) and not col.nullable) else None
-    if isinstance(col.type, DateTime):
-        return datetime.fromisoformat(str(value))
-    if isinstance(col.type, Date):
-        return date.fromisoformat(str(value))
-    if isinstance(col.type, Time):
-        return dt_time.fromisoformat(str(value))
-    if isinstance(col.type, SAJSON) and isinstance(value, str):
-        # JSON 列拿到字符串先解析（2026-11-16 优化批 3）：直接交给 SQLAlchemy
-        # 会再 json.dumps 一次，落库成双重编码字符串
-        try:
-            return json.loads(value)
-        except ValueError:
-            return value
-    return value
-
-
-def _revive_row(table, row: dict) -> dict:
-    """行 dict → 可写值（按目标表列集过滤：远端多列/少列均安全——少列时
-    NOT NULL 列缺省由列 default 兜不住会炸，旧版本数据场景由 schema 兼容性
-    兜底：同版本包正常，跨版本记 tech-debt）。"""
-    out: dict = {}
-    for col_name, value in row.items():
-        col = table.columns.get(col_name)
-        if col is None:
-            continue  # 远端多列（本表已无）：忽略
-        out[col_name] = _revive_value(col, value)
-    return out
-
-
-def _writable_row(table, row: dict) -> dict:
-    """_revive_row 后再过一道：JSON 列的 None → SQL null() 构造。
-
-    SQLAlchemy 2.0 对 JSON 列的**显式 None 绑定**会走 json.dumps 落成文本
-    'null'（省略键才是真 NULL）——2026-11-17 双机真机对账实证：B 机拉取的
-    全部行 JSON 空列变成 'null' 字符串（逻辑读回仍是 None，但物理形态与
-    A 机分叉，raw SQL 的 IS NULL 查询对这些行失明）。null() 直接渲染
-    SQL NULL，绕过序列化器（INSERT / UPDATE / executemany 均验证可用）。"""
-    from sqlalchemy import JSON as SAJSON
-    from sqlalchemy import null as sa_null
-
-    return {c: (sa_null() if (v is None and isinstance(table.columns[c].type, SAJSON))
-                else v)
-            for c, v in _revive_row(table, row).items()}
+# 行口径族（_revive_value/_revive_row/_writable_row）已单源迁移 row_codec，
+# 本文件顶部以同名薄委托续租——af6daf2 类「一处修三处漏」自此结构性不可能。
 
 
 def _write_local(db: Session, name: str, merged: list[dict],
@@ -625,10 +540,6 @@ def _repoint_children(db: Session, parent_name: str, old_pk: str, new_pk: str) -
                 db.execute(t.update().where(
                     getattr(t.c, fk.parent.name) == old_pk
                 ).values({fk.parent.name: new_pk}))
-
-
-def _rows_equal(a: dict, b: dict, cols) -> bool:
-    return all(a.get(c) == b.get(c) for c in cols)
 
 
 def _find_by_natural_key(db: Session, name: str, row: dict) -> dict | None:

@@ -223,7 +223,8 @@ def _materialize_sync_zip(zf: zipfile.ZipFile, staging: Path,
     解 tasks.parent_id 自引用）→ 行内键按目标表列集过滤（旧版数据列少不炸
     NOT NULL）。"""
     from database import Base
-    from services.sync_engine import SYNC_EXCLUDED_TABLES, SYNC_TABLES, _revive_row
+    from services import row_codec
+    from services.sync_engine import SYNC_EXCLUDED_TABLES, SYNC_TABLES
 
     # 白名单放行云端自带的「使用说明.txt」（2026-11-16 优化批 3）：云端 README
     # 指导用户把整个 clara-sync 目录压缩为 zip——旧白名单会把说明文件当未知成员
@@ -259,24 +260,12 @@ def _materialize_sync_zip(zf: zipfile.ZipFile, staging: Path,
             placeholders = ",".join(f":{c}" for c in cols)
             sql = f"INSERT INTO {name} ({','.join(cols)}) VALUES ({placeholders})"
             for row in rows:
-                values = _revive_row(table, row)
+                # 规范行 → 裸 sqlite3 文本（row_codec.flat_row 单源：datetime
+                # → iso 文本、JSON → dumps 文本——先 revive 再拍平的必要性
+                # 与 ProgrammingError 陷阱收在 codec）
+                values = row_codec.flat_row(table, row)
                 values.setdefault(pk, row.get(pk))
-                # sqlite3 直插不接受对象：datetime 转 isoformat 文本、JSON 列
-                # 转回 JSON 文本（_revive_row 会先 loads，不回 dumps 会
-                # ProgrammingError——优化批 3）
-                from sqlalchemy import JSON as SAJSON
-
-                flat = {}
-                for c, v in values.items():
-                    if v is None:
-                        flat[c] = None
-                    elif hasattr(v, "isoformat"):
-                        flat[c] = v.isoformat()
-                    elif isinstance(table.columns[c].type, SAJSON):
-                        flat[c] = json.dumps(v, ensure_ascii=False)
-                    else:
-                        flat[c] = v
-                tmp.execute(sql, flat)
+                tmp.execute(sql, values)
         tmp.commit()
         # 完整性探测
         tmp.execute("SELECT count(*) FROM sqlite_master").fetchone()
