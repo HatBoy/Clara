@@ -16,9 +16,9 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-  <a href="https://github.com/HatBoy/Clara/releases"><img src="https://img.shields.io/badge/version-1.0.0-6C63FF.svg" alt="v1.0.0" /></a>
+  <a href="https://github.com/HatBoy/Clara/releases"><img src="https://img.shields.io/badge/version-1.1.0-6C63FF.svg" alt="v1.1.0" /></a>
   <a href="https://github.com/HatBoy/Clara/releases"><img src="https://img.shields.io/badge/platform-Windows%20x64-0078D6.svg" alt="Windows" /></a>
-  <a href="backend/tests"><img src="https://img.shields.io/badge/tests-1300%2B%20passed-brightgreen.svg" alt="tests" /></a>
+  <a href="backend/tests"><img src="https://img.shields.io/badge/tests-1500%2B%20passed-brightgreen.svg" alt="tests" /></a>
   <img src="https://img.shields.io/badge/Tauri%202-Rust-orange.svg" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/React%2019-TypeScript-61DAFB.svg" alt="React 19" />
   <img src="https://img.shields.io/badge/backend-Python%20FastAPI-3776AB.svg" alt="FastAPI" />
@@ -42,7 +42,7 @@ Clara 是一个跑在你自己电脑上的 AI 日程助手。它的定位不是"
 
 ### 日历核心
 
-三栏布局，左侧导航 + 中间日历 + 右侧收件箱/项目待办。日 / 周 / 月三视图，拖拽排期与拉伸改时，重复日程完整支持（含时区感知与拖拽语义三问）。
+三栏布局，左侧导航 + 中间日历 + 右侧收件箱/项目待办。日 / 周 / 月三视图，拖拽排期与拉伸改时（落点冲突实时预览），重复日程完整支持（含时区感知与拖拽语义三问）。
 
 <!-- 📸 截图占位：日/周/月三视图（可拼图） -->
 ![日历三视图](images/2.png)
@@ -50,7 +50,9 @@ Clara 是一个跑在你自己电脑上的 AI 日程助手。它的定位不是"
 
 - **三符号快捷录入**：一行文本带 `时间`、`#标签`、`@项目` 三种符号，Enter 直接入库——"明天下午3点 Q3 复盘 #深活 @Alpha"
 - **收件箱与项目**：灵感先进收件箱，聚沙成塔进项目，右栏拖拽流转，一键智能安排上日历
-- **提醒**：SSE 推送 + 独立置顶提醒小窗 + 提示音，不打断当前工作
+- **撤销**：编辑 / 删除 / 项目改动一步可撤，底部撤销条一键还原（系列"仅此日程"的例外与挖空也随撤随复原）
+- **提醒**：SSE 推送 + 独立置顶提醒小窗 + 提示音；也可用系统通知——Windows toast 上直接点"完成 / 10 分钟后再提醒 / 1 小时后再提醒"，稍后**只推迟提醒不动日程**
+- **会议缓冲保护**：重要会议前后自动出现虚拟缓冲块，背靠背无喘息一眼可见（可整体关闭）
 - **桌面小部件**：常驻桌面的今日日程速览，与主窗双窗同步
 - **全局快捷键**：16 个动作全部可自定义，任何应用里一按即达
 - **统一搜索**：`Ctrl+K` 唤起，标题 / 备注 / 拼音首字母 / 时间词（"下周三的会"）混搜任务与项目
@@ -83,8 +85,10 @@ Clara 是一个跑在你自己电脑上的 AI 日程助手。它的定位不是"
 - **总览带**：健康度雷达、总分趋势线、六格 KPI（环比 / 基线 / 个人基线预警）
 - **时间去向**：趋势折线、项目花费、优先级分布（计划时长口径，诚实标注）
 - **AI 洞察**：注入记忆画像与个人分位基线，行为模式推断（要事逃避、估时乐观等）宁缺毋滥
+- **精力画像**：从你的完成 / 改期行为实测出逐小时精力峰谷（白盒曲线 + 作息规则卡），并反哺排期引擎——高耗任务自动靠峰避谷
 - **周期复盘**：完成 / 放弃 / 转待办三态打卡清单前置，复盘结论沉淀为事实反哺日程助手
 - **StatsChatPanel**：报告页内独立 AI 对话，复盘引导模式陪你回顾这一周
+- **导出与透明**：报告整页一键导出 PNG；设置里可查本设备 AI 用量（调用次数 / token 按日按模型）
 
 ### 数据接入
 
@@ -98,6 +102,15 @@ Clara 是一个跑在你自己电脑上的 AI 日程助手。它的定位不是"
 - **CLI 工具**：自定义只读命令安全执行器
 - **.ics 导入**：日历文件一键导入，指纹防重导
 - 结构化数据零 LLM 直映射，高可信条目直通，AI 只在必要时提炼——省 token 也省心
+
+### 同步与备份
+
+数据主权不止"存在本地"，还要**带得走、救得回**：
+
+- **WebDAV 跨设备同步**：坚果云 / Nextcloud 等任意 WebDAV 服务，多端增量同步——行级三路合并 + 最后写入胜出，对端 30 秒内可见；三重守卫防"删库重建连带清空云端"，冷启动全自动合并无需确认
+- **自动备份**：每日早 / 午 / 晚三时段自动全量备份 zip，7 天滚动保留，误删误改随时回退
+- **恢复与合并导入**：备份一键覆盖恢复（本机署名与 WebDAV 凭证智能对账，灾备换机免重配）；或选择合并导入——冲突逐条列明，"保留本地"还是"用备份覆盖"你说了算
+- **数据导出**：任务随时导出 CSV / .ics，进出自由，不锁 data
 
 ### 远程渠道
 
@@ -118,6 +131,7 @@ Clara 是一个跑在你自己电脑上的 AI 日程助手。它的定位不是"
 | 数据归属 | 本地 SQLite，你的就是你的 | 厂商服务器 | 本地/厂商 |
 | 模型绑定 | 任意厂商随时换，本地模型也行 | 绑定单一模型 | 无 AI |
 | 个人记忆 | 双层记忆 + 行为学习，越用越懂你 | 泛化记忆，难迁移 | 无 |
+| 多设备同步 | 任意 WebDAV（坚果云/自建），数据仍归你 | 厂商云 | 厂商云 |
 | 隐私 | API Key 与数据不出本机 | 全链路上云 | 取决于厂商 |
 | 价格 | 自负模型调用费（用多少付多少） | 订阅制 | 免费/订阅 |
 
@@ -137,6 +151,7 @@ flowchart LR
         AGENT["LangGraph 智能体<br/>排期子图 · 幕僚长子图"]
         MEM["记忆系统<br/>规则槽 + 情节事实"]
         ING["数据接入<br/>Composio · MCP · CLI · .ics"]
+        SYNC["同步备份<br/>WebDAV 三路合并 · 自动备份"]
         DB[("SQLite<br/>本地存储")]
     end
     UI -->|"HTTP RESTful<br/>指令与数据"| API
@@ -146,6 +161,7 @@ flowchart LR
     AGENT --> ING
     API --> DB
     MEM --> DB
+    SYNC --> DB
 ```
 
 | 层 | 技术 |
@@ -155,8 +171,9 @@ flowchart LR
 | 后端 | Python · FastAPI · SQLAlchemy 2.0 · SQLite (WAL) · PyInstaller sidecar |
 | AI | LangGraph · LiteLLM · SSE 流式 · 双子图智能体 |
 | 数据接入 | Composio · MCP · CLI 执行器 · icalendar |
+| 同步备份 | WebDAV（坚果云 / Nextcloud）· 行级三路合并 · zip 备份槽 |
 | 通讯 | 飞书 lark-oapi · 钉钉 dingtalk-stream · 企微 SDK · 微信 iLink |
-| 质量 | pytest 1300+ 用例 · 前端 tsc 零错误 |
+| 质量 | pytest 1500+ 用例 · 前端 tsc 零错误 |
 
 ## 快速开始
 
@@ -164,7 +181,7 @@ flowchart LR
 
 1. 从 [Releases](https://github.com/HatBoy/Clara/releases) 下载最新的 `Clara_<version>_x64-setup.exe`
 2. 双击安装（NSIS 安装包），启动即用
-3. 首次使用前往 **设置 → 模型接入** 配置你的模型
+3. 首次启动有 30 秒入职访谈，回答作息与偏好三问即可上手；之后前往 **设置 → 模型接入** 配置你的模型
 
 ### 配置模型
 
@@ -199,7 +216,7 @@ npm install
 npm run tauri dev
 ```
 
-dev 数据库在 `backend/data/clara.db`，删掉即按当天重新生成种子数据（`data/config_snapshot.json` 是用户配置快照，勿删）。
+dev 数据库在 `backend/data/clara.db`（启动一律零灌入测试数据；需要测试数据手动跑 `python gen_test_data.py`。`data/config_snapshot.json` 是用户配置快照，勿删）。
 
 ### 测试
 
@@ -225,7 +242,7 @@ npm run build:all    # 先 PyInstaller 编边车 → src-tauri/bin/，再 tauri 
 │   ├── services/         # 业务逻辑层（AI 不越层直查库）
 │   ├── routers/          # HTTP 薄壳（只做编解码与状态码）
 │   ├── agents/           # LangGraph：双子图 + 统一排期引擎 + prompts
-│   └── tests/            # pytest 1300+ 用例
+│   └── tests/            # pytest 1500+ 用例
 └── brand/                # 品牌资源
 ```
 

@@ -16,9 +16,9 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
-  <a href="https://github.com/HatBoy/Clara/releases"><img src="https://img.shields.io/badge/version-1.0.0-6C63FF.svg" alt="v1.0.0" /></a>
+  <a href="https://github.com/HatBoy/Clara/releases"><img src="https://img.shields.io/badge/version-1.1.0-6C63FF.svg" alt="v1.1.0" /></a>
   <a href="https://github.com/HatBoy/Clara/releases"><img src="https://img.shields.io/badge/platform-Windows%20x64-0078D6.svg" alt="Windows" /></a>
-  <a href="backend/tests"><img src="https://img.shields.io/badge/tests-1300%2B%20passed-brightgreen.svg" alt="tests" /></a>
+  <a href="backend/tests"><img src="https://img.shields.io/badge/tests-1500%2B%20passed-brightgreen.svg" alt="tests" /></a>
   <img src="https://img.shields.io/badge/Tauri%202-Rust-orange.svg" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/React%2019-TypeScript-61DAFB.svg" alt="React 19" />
   <img src="https://img.shields.io/badge/backend-Python%20FastAPI-3776AB.svg" alt="FastAPI" />
@@ -42,7 +42,7 @@ Clara is an AI schedule assistant that runs entirely on your own machine. It is 
 
 ### Calendar
 
-A three-column layout: sidebar navigation, calendar in the middle, inbox and project to-dos on the right. Day / week / month views, drag-and-drop scheduling with stretch-to-resize, and full recurring-event support (timezone-aware, with drag semantics for instances).
+A three-column layout: sidebar navigation, calendar in the middle, inbox and project to-dos on the right. Day / week / month views, drag-and-drop scheduling with stretch-to-resize (with live conflict preview at the drop target), and full recurring-event support (timezone-aware, with drag semantics for instances).
 
 <!-- 📸 Screenshot placeholder: day/week/month views (composite is fine) -->
 ![日历三视图](images/2.png)
@@ -50,7 +50,9 @@ A three-column layout: sidebar navigation, calendar in the middle, inbox and pro
 
 - **Three-symbol quick add** — one line of text with `time`, `#tag`, and `@project` symbols, press Enter and it's scheduled: `"tomorrow 3pm Q3 review #deep-work @Alpha"`
 - **Inbox & projects** — capture ideas into the inbox, grow them into projects, drag between columns, and one-click smart-schedule onto the calendar
-- **Reminders** — SSE push + a dedicated always-on-top reminder window + sound cues that don't interrupt your flow
+- **Undo** — the last edit / delete / project change is always one click away on the bottom undo bar (recurring-series exceptions and carve-outs restore with it)
+- **Reminders** — SSE push + a dedicated always-on-top reminder window + sound cues; or use system notifications — Windows actionable toasts let you complete or snooze right on the toast ("10 min / 1 hour later" **postpones only the reminder, never the schedule**)
+- **Meeting buffers** — virtual pre/post-meeting buffer blocks appear automatically so back-to-back meetings are obvious at a glance (can be turned off globally)
 - **Desktop widget** — a compact today-at-a-glance panel that stays on your desktop, synced with the main window
 - **Global shortcuts** — 16 actions, all customizable, reachable from any application
 - **Unified search** — press `Ctrl+K` to search tasks and projects by title, notes, pinyin initials, or natural time phrases ("meetings next Wednesday")
@@ -83,8 +85,10 @@ A three-column layout: sidebar navigation, calendar in the middle, inbox and pro
 - **Overview band** — health radar, total-score trend line, six KPI tiles (period-over-period / baseline / personal-baseline alerts)
 - **Where time went** — trend lines, time per project, priority distribution (honestly labeled as planned-duration accounting)
 - **AI insights** — memory profile and personal percentile baselines feed pattern inference (important-task avoidance, optimistic estimation, …), applied only when evidence is strong
+- **Energy profile** — hourly energy peaks and valleys measured from your actual completion / reschedule behavior (white-box curve plus learned rhythm rules), fed back into the scheduling engine so high-drain tasks land at your peaks
 - **Periodic review** — a completion / abandoned / converted-to-todo checklist leads the review, and conclusions are distilled into facts that feed back into the scheduling assistant
 - **StatsChatPanel** — a dedicated AI chat inside the reports page, with a guided-review mode for your week
+- **Export & transparency** — one-click full-page PNG export of any report; per-device AI usage (calls / tokens by day and model) visible in settings
 
 ### Data Ingestion
 
@@ -98,6 +102,15 @@ Four ingestion pipelines with incremental cursors and item-level settlement:
 - **CLI tools** — a safety-gated executor for custom read-only commands
 - **.ics import** — one-click calendar file import with fingerprint-based dedup
 - Structured sources map directly with zero LLM calls; high-confidence items pass straight through, and the AI only refines when it genuinely adds value — saving tokens and guesswork
+
+### Sync & Backup
+
+Data sovereignty is more than "stored locally" — it's **portable and recoverable**:
+
+- **WebDAV cross-device sync** — works with any WebDAV service (Jianguoyun, Nextcloud, …). Multi-device incremental sync with row-level three-way merging and last-writer-wins; changes are visible on the other end within 30 seconds. Triple guards prevent a wiped local database from emptying the cloud, and cold starts merge automatically with no confirmation dialogs
+- **Automatic backups** — full backup zips three times a day (morning / noon / evening) on a rolling 7-day retention, so mistakes are always one step from undo
+- **Restore & merge import** — one-click overwrite restore (device identity and WebDAV credentials are reconciled intelligently, so disaster recovery on a new machine needs no reconfiguration); or merge-import a backup — every conflict is listed and you choose "keep local" or "backup wins"
+- **Data export** — export tasks to CSV / .ics anytime, free to come and go
 
 ### Remote Channels
 
@@ -118,6 +131,7 @@ Morning briefing, pre-meeting prep, hard-task support, the nightly three-in-one 
 | Data ownership | Local SQLite — yours, truly | Vendor servers | Local / vendor |
 | Model lock-in | Any provider, switch anytime; local models welcome | Tied to one model | No AI |
 | Personal memory | Two-tier memory + behavioral learning, compounds over time | Generic memory, hard to migrate | None |
+| Multi-device sync | Any WebDAV (Jianguoyun / self-hosted) — the data stays yours | Vendor cloud | Vendor cloud |
 | Privacy | Keys and data never leave your machine | Full cloud pipeline | Varies |
 | Cost | Pay-per-token for your own model usage | Subscription | Free / subscription |
 
@@ -137,6 +151,7 @@ flowchart LR
         AGENT["LangGraph Agents<br/>Scheduler · Chief-of-staff"]
         MEM["Memory System<br/>Rule slots + Episodic facts"]
         ING["Ingestion<br/>Composio · MCP · CLI · .ics"]
+        SYNC["Sync & Backup<br/>WebDAV 3-way merge · Auto backup"]
         DB[("SQLite<br/>Local storage")]
     end
     UI -->|"HTTP RESTful<br/>Commands & data"| API
@@ -146,6 +161,7 @@ flowchart LR
     AGENT --> ING
     API --> DB
     MEM --> DB
+    SYNC --> DB
 ```
 
 | Layer | Technology |
@@ -155,8 +171,9 @@ flowchart LR
 | Backend | Python · FastAPI · SQLAlchemy 2.0 · SQLite (WAL) · PyInstaller sidecar |
 | AI | LangGraph · LiteLLM · SSE streaming · dual-subgraph agents |
 | Ingestion | Composio · MCP · CLI executor · icalendar |
+| Sync & backup | WebDAV (Jianguoyun / Nextcloud) · row-level three-way merge · zip backup slots |
 | Messaging | Feishu lark-oapi · DingTalk dingtalk-stream · WeCom SDK · WeChat iLink |
-| Quality | 1300+ pytest cases · zero-error frontend tsc |
+| Quality | 1500+ pytest cases · zero-error frontend tsc |
 
 ## Getting Started
 
@@ -164,7 +181,7 @@ flowchart LR
 
 1. Download the latest `Clara_<version>_x64-setup.exe` from [Releases](https://github.com/HatBoy/Clara/releases)
 2. Run the NSIS installer and launch
-3. On first run, configure your model under **Settings → Model Providers**
+3. A 30-second onboarding interview asks three questions about your rhythm and preferences; afterwards configure your model under **Settings → Model Providers**
 
 ### Configure a Model
 
@@ -199,7 +216,7 @@ npm install
 npm run tauri dev
 ```
 
-The dev database lives at `backend/data/clara.db` — delete it to reseed fresh data (`data/config_snapshot.json` is your user-config snapshot; don't delete that).
+The dev database lives at `backend/data/clara.db` (startup never seeds test data; run `python gen_test_data.py` manually if you need some. `data/config_snapshot.json` is your user-config snapshot — don't delete that).
 
 ### Tests
 
@@ -225,7 +242,7 @@ Output: `src-tauri/target/release/bundle/nsis/Clara_<version>_x64-setup.exe`. **
 │   ├── services/         # Business logic layer (agents never query the DB directly)
 │   ├── routers/          # Thin HTTP shell (decoding and status codes only)
 │   ├── agents/           # LangGraph: dual subgraphs + unified scheduling engine + prompts
-│   └── tests/            # 1300+ pytest cases
+│   └── tests/            # 1500+ pytest cases
 └── brand/                # Brand assets
 ```
 
