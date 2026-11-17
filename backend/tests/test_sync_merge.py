@@ -190,3 +190,70 @@ def test_apply_sync_zip_json_not_double_encoded(tmp_path):
         assert out["inserted"] >= 1
         row = db.execute(Task.__table__.select().where(Task.id == "j1")).mappings().first()
         assert row["cancelled_dates"] == ["2026-11-21"]
+
+
+# —— 自然键撞车 strategy/LWW 与预检（2026-11-17 二轮批 1）———————————————————
+
+
+def _proj_row(pid, name, ts, color="#111111"):
+    return {"id": pid, "name": name, "color": color, "sort_order": 0,
+            "starred": False, "is_deleted": False,
+            "created_at": ts, "updated_at": ts}
+
+
+def _add_project(pid, name, ts, color="#111111"):
+    from datetime import datetime as _dt
+
+    from models import Project
+
+    with TestingSessionLocal() as db:
+        db.add(Project(id=pid, name=name, color=color,
+                       created_at=_dt.fromisoformat(ts),
+                       updated_at=_dt.fromisoformat(ts)))
+        db.commit()
+
+
+def test_analyze_natural_key_collision_counts_as_conflict(tmp_path):
+    """撞自然键且内容不同 → conflicts 而非 new（「无冲突直通」据此收紧）；
+    撞键同内容零操作两侧都不计。"""
+    _add_project("local-1", "工作", "2026-11-17T12:00:00")
+    _add_project("same-1", "同内容", "2026-11-15T09:00:00")
+    z = _sync_zip(tmp_path, {"projects": [
+        _proj_row("peer-9", "工作", "2026-11-15T09:00:00", color="#ff0000"),
+        _proj_row("same-9", "同内容", "2026-11-15T09:00:00"),
+    ]})
+    with TestingSessionLocal() as db:
+        out = sync_merge.analyze_merge(db, str(z))
+    assert out["new_count"] == 0  # 撞键行不再计入 new
+    assert out["updated_count"] == 1
+    assert out["conflicts"][0]["table"] == "projects"
+
+
+def test_apply_skip_keeps_newer_local_on_collision(tmp_path):
+    """skip 策略撞键保留本地较新内容（旧版撞键绕过 strategy 无条件覆盖）。"""
+    _add_project("local-1", "工作", "2026-11-17T12:00:00", color="#00ff00")
+    z = _sync_zip(tmp_path, {"projects": [
+        _proj_row("peer-9", "工作", "2026-11-15T09:00:00", color="#ff0000")]})
+    with TestingSessionLocal() as db:
+        from models import Project as _P
+
+        out = sync_merge.apply_merge(db, str(z), "skip")
+        assert out["updated"] == 0 and out["skipped"] == 1
+        row = db.get(_P, "local-1")
+        assert row.color == "#00ff00"  # 本地较新：备份让位
+        assert db.query(_P).count() == 1  # 不双插
+
+
+def test_apply_overwrite_backup_newer_lands_on_local_pk(tmp_path):
+    """overwrite + 备份较新：备份内容落在本地 pk 上（行 id 不漂移）。"""
+    _add_project("local-1", "工作", "2026-11-14T08:00:00", color="#00ff00")
+    z = _sync_zip(tmp_path, {"projects": [
+        _proj_row("peer-9", "工作", "2026-11-16T09:00:00", color="#ff0000")]})
+    with TestingSessionLocal() as db:
+        from models import Project as _P
+
+        out = sync_merge.apply_merge(db, str(z), "overwrite")
+        assert out["updated"] == 1 and out["skipped"] == 0
+        row = db.get(_P, "local-1")
+        assert row.color == "#ff0000"  # 备份较新：覆盖内容
+        assert db.query(_P).count() == 1  # 仍是一行（本地 pk）

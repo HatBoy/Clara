@@ -179,8 +179,15 @@ def _iso_norm(value, col_type) -> str:
 
 
 def analyze_merge(db: Session, path: str) -> dict:
-    """第一阶段（dry-run，零写入）：统计新增/更新/冲突明细（前 50 条）。"""
-    from services.sync_engine import _rows_equal, _table_meta, table_rows
+    """第一阶段（dry-run，零写入）：统计新增/更新/冲突明细（前 50 条）。
+
+    自然键预检（2026-11-17 二轮批 1）：本地无此 pk 但撞自然键（备份来自另一
+    设备、同名项目/规则）且内容不同的行计入 conflicts 而非 new——「无冲突
+    直通」以 conflicts 空为准，此前撞键行藏进 new_count 让 skip 直通静默
+    覆盖本地新改动。撞键同内容 = 合并零操作，两侧都不计。"""
+    from services.sync_engine import (
+        NATURAL_KEYS, _find_by_natural_key, _rows_equal, _table_meta, table_rows,
+    )
 
     tables = load_zip_tables(path)
     new_count = updated_count = 0
@@ -190,15 +197,23 @@ def analyze_merge(db: Session, path: str) -> dict:
         rows = tables.get(name) or []
         if not rows:
             continue
-        _, pk = _table_meta(name)
+        table, pk = _table_meta(name)
+        cols = table.columns.keys()
+        body_cols = [c for c in cols if c != pk]  # 内容比对剔除主键：撞键两行 pk 必不同
         local = {r[pk]: r for r in table_rows(db, name)}
         t_new = t_upd = 0
         for row in rows:
             key = row.get(pk)
             local_row = local.get(key)
+            if local_row is None and name in NATURAL_KEYS:
+                hit = _find_by_natural_key(db, name, row)
+                if hit is not None:
+                    if _rows_equal(row, hit, body_cols):
+                        continue
+                    local_row = hit  # 撞键视同本地已有行（apply 同口径）
             if local_row is None:
                 t_new += 1
-            elif not _rows_equal(row, local_row, _table_meta(name)[0].columns.keys()):
+            elif not _rows_equal(row, local_row, cols):
                 t_upd += 1
                 if len(conflicts) < 50:
                     conflicts.append({
@@ -218,9 +233,15 @@ def analyze_merge(db: Session, path: str) -> dict:
 def apply_merge(db: Session, path: str, strategy: str) -> dict:
     """第二阶段：按 strategy（overwrite=冲突用备份覆盖 / skip=保留本地）合并写入。
     单事务 + defer FK；插入撞自然键唯一约束回退定位（同 sync_engine 撞车语义）；
-    不删除本地行（模块头语义说明）。"""
+    不删除本地行（模块头语义说明）。
+
+    撞键 LWW（2026-11-17 二轮批 1）：此前撞自然键后直接落入无条件 UPDATE——
+    strategy 检查与 LWW 比较全部旁路（跳过 pk 相等路径的 elif 链），备份内容
+    必然覆盖且 updated_at=now 让它在后续同步强制胜出；「无冲突直通」（skip）
+    会静默覆盖本地新改动。现与 sync_engine._write_local 同款：撞键视同本地
+    已有行，过 strategy 与 LWW 再写。"""
     from services.sync_engine import (
-        _find_by_natural_key, _revive_row, _rows_equal, _table_meta,
+        _find_by_natural_key, _revive_row, _row_ts, _rows_equal, _table_meta,
         mark_tables_dirty, schedule_now, table_rows,
     )
 
@@ -235,10 +256,12 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
                 continue
             table, pk = _table_meta(name)
             cols = table.columns.keys()
+            body_cols = [c for c in cols if c != pk]  # 撞键两行 pk 必不同，内容比对剔除
             local = {r[pk]: r for r in table_rows(db, name)}
             for row in rows:
                 key = row.get(pk)
                 local_row = local.get(key)
+                collided = False
                 if local_row is None:
                     values = _revive_row(table, row)
                     if "updated_at" in cols:
@@ -252,12 +275,17 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
                         if hit is None:
                             skipped += 1
                             continue
-                        key = hit[pk]
-                elif _rows_equal(row, local_row, cols):
+                        key, local_row, collided = hit[pk], hit, True
+                if _rows_equal(row, local_row, body_cols):
                     continue
-                elif strategy != "overwrite":
+                if strategy != "overwrite":
                     skipped += 1
                     continue
+                if collided:
+                    lt, rt = _row_ts(local_row), _row_ts(row)
+                    if lt is not None and rt is not None and lt >= rt:
+                        skipped += 1  # 本地较新：备份让位（LWW）
+                        continue
                 # overwrite：备份内容落本地（自然键撞车场景落在本地 pk 上）
                 values = _revive_row(table, row)
                 values[pk] = key
