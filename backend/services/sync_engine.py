@@ -477,8 +477,9 @@ def _write_local(db: Session, name: str, merged: list[dict],
                 if canonical != hit[pk]:
                     # 本地 pk 败：子表外键改指 canonical → 删本地行 → 插胜者行。
                     # 中间态（子表先指新 pk、新父行后落）在 immediate FK 下必炸
-                    # ——defer_foreign_keys 把检查推到事务提交（run_sync 阶段 2
-                    # 已设，此处兜底直调/单测场景）
+                    # ——defer_foreign_keys 把检查推到事务提交（run_sync/apply_merge
+                    # 经 writing() 已设；此处保留为 _write_local 直调场景的兜底，
+                    # test_sync_engine 的 pk 收敛直测依赖）
                     db.execute(text("PRAGMA defer_foreign_keys=ON"))
                     _repoint_children(db, name, hit[pk], canonical)
                     db.execute(delete(table).where(getattr(table.c, pk) == hit[pk]))
@@ -542,9 +543,15 @@ def _repoint_children(db: Session, parent_name: str, old_pk: str, new_pk: str) -
                 ).values({fk.parent.name: new_pk}))
 
 
-def _find_by_natural_key(db: Session, name: str, row: dict) -> dict | None:
-    """按自然键唯一约束查本地行（撞车回退定位）。"""
-    keys = NATURAL_KEYS.get(name)
+def find_by_natural_key(db: Session, name: str, row: dict,
+                        *, keys=None) -> dict | None:
+    """按自然键唯一约束查本地行（撞车回退定位，2026-11-17 架构批 5 公有化——
+    sync_merge 的最后一个私有名伸手退役）。
+
+    keys 缺省取 NATURAL_KEYS[name]（策略常量单源）；显式传入供未来消费方
+    覆盖键域。"""
+    if keys is None:
+        keys = NATURAL_KEYS.get(name)
     if not keys:
         return None
     table, _ = _table_meta(name)
@@ -554,6 +561,49 @@ def _find_by_natural_key(db: Session, name: str, row: dict) -> dict | None:
         return None
     cols = table.columns.keys()
     return {c: _ser(v) for c, v in zip(cols, hit)}
+
+
+# 内部旧名兼容锚点（_write_local 撞车回退定位沿用）
+_find_by_natural_key = find_by_natural_key
+
+
+class _Writer:
+    """writing(db) 的登记面：删除延迟到事务退出时逆拓扑统一执行。"""
+
+    __slots__ = ("_deletes",)
+
+    def __init__(self):
+        self._deletes: list[tuple[str, str, set]] = []
+
+    def delete(self, name: str, pk: str, keys: set) -> None:
+        """登记待删键集（子先父后由 writing 退出序保证）。"""
+        if keys:
+            self._deletes.append((name, pk, keys))
+
+
+@contextmanager
+def writing(db: Session):
+    """同步域写事务（2026-11-17 架构批 5：三处 PRAGMA + commit/rollback 收编单源）。
+
+    进入执行 PRAGMA defer_foreign_keys=ON（immediate FK 语句级检查推迟到提交
+    ——撞自然键 pk 收敛的中间态「子表先指新 pk、新父行后落」依赖它）；正常
+    退出按登记逆序（子先父后）统一执行删除再 commit——父表删除时子表的对端
+    删除行必须已清（2026-11-17 真机批教训：每表内联删在父先处理时撞 FK、
+    defer_foreign_keys 与后台线程共用连接池时可能不落在执行连接——逆拓扑
+    统一执行 + 本上下文的确定性时序根治）；异常 rollback + 重抛。
+    事务内零网络 IO 由调用方保证（写库顺序铁律）。
+    """
+    w = _Writer()
+    db.execute(text("PRAGMA defer_foreign_keys=ON"))
+    try:
+        yield w
+        for name, pk, doomed in reversed(w._deletes):
+            table, _ = _table_meta(name)
+            db.execute(delete(table).where(getattr(table.c, pk).in_(doomed)))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 # —— 主流程 ——————————————————————————————————————————————————————————
@@ -745,33 +795,21 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
     # 写锁——阶段 1 的网络等待会变成整库锁等待）
     db.rollback()
 
-    # —— 阶段 2：单事务写本地（零网络 IO，短事务）———————————————
-    # 插入/更新按父前子后；删除收集后逆序（子先父后）统一执行——同事务内
-    # 删父行时子表的对端删除行必须已清，immediate FK 才不炸（2026-11-17 真机
-    # 批：此前每表内联删，父表先处理即撞 FK；defer_foreign_keys 在与后台线程
-    # 共用连接池时可能不落在执行连接上，实测偶发 IntegrityError 卡死整轮）
-    pending_deletes: list[tuple[str, str, set]] = []
-    try:
-        db.execute(text("PRAGMA defer_foreign_keys=ON"))
+    # —— 阶段 2：单事务写本地（零网络 IO，短事务；写序铁律收编 writing）—————
+    # 插入/更新按父前子后；删除经 writer 登记后由 writing 退出时逆拓扑（子先
+    # 父后）统一执行——2026-11-17 真机批教训的结构化吸收（详见 writing docstring）
+    with writing(db) as w:
         for p in plans:
             name, pk = p["name"], p["pk"]
             fresh = {r[pk]: r for r in table_rows(db, name)}
             actual, ins, upd, doomed = _write_local(db, name, p["merged"], fresh,
                                                     deletable=p["planned_keys"])
             p["actual"] = actual
-            if doomed:
-                pending_deletes.append((name, pk, doomed))
+            w.delete(name, pk, doomed)
             stats["inserted"] += ins
             stats["updated"] += upd
             if ins or upd or doomed:
                 stats["tables_changed"] += 1
-        for name, pk, doomed in reversed(pending_deletes):  # plans 序=父前子后
-            table, _ = _table_meta(name)
-            db.execute(delete(table).where(getattr(table.c, pk).in_(doomed)))
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
 
     # —— 阶段 3：推送（网络；本地已提交——推送失败不回滚用户数据）—————————
     for p in plans:

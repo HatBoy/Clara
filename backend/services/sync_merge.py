@@ -27,7 +27,6 @@ import zipfile
 from datetime import date, datetime, time
 from pathlib import Path
 
-from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -140,7 +139,7 @@ def analyze_merge(db: Session, path: str) -> dict:
     直通」以 conflicts 空为准，此前撞键行藏进 new_count 让 skip 直通静默
     覆盖本地新改动。撞键同内容 = 合并零操作，两侧都不计。"""
     from services import row_codec
-    from services.sync_engine import NATURAL_KEYS, _find_by_natural_key
+    from services.sync_engine import NATURAL_KEYS, find_by_natural_key
 
     tables = load_zip_tables(path)
     new_count = updated_count = 0
@@ -159,7 +158,7 @@ def analyze_merge(db: Session, path: str) -> dict:
             key = row.get(pk)
             local_row = local.get(key)
             if local_row is None and name in NATURAL_KEYS:
-                hit = _find_by_natural_key(db, name, row)
+                hit = find_by_natural_key(db, name, row)
                 if hit is not None:
                     if row_codec.rows_equal(row, hit, body_cols):
                         continue
@@ -194,12 +193,14 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
     会静默覆盖本地新改动。现与 sync_engine._write_local 同款：撞键视同本地
     已有行，过 strategy 与 LWW 再写。"""
     from services import row_codec
-    from services.sync_engine import _find_by_natural_key, mark_tables_dirty, schedule_now
+    from services.sync_engine import (find_by_natural_key, mark_tables_dirty,
+                                      schedule_now, writing)
 
     tables = load_zip_tables(path)
     inserted = updated = skipped = 0
-    try:
-        db.execute(text("PRAGMA defer_foreign_keys=ON"))
+    # 写事务收编 sync_engine.writing（2026-11-17 架构批 5）：PRAGMA defer FK +
+    # commit/rollback 单源；合并导入不删本地行（writer 不登记即零删除执行）
+    with writing(db):
         now = datetime.now()
         for name in SYNC_TABLES:  # 父表在前
             rows = tables.get(name) or []
@@ -222,7 +223,7 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
                         inserted += 1
                         continue
                     except IntegrityError:
-                        hit = _find_by_natural_key(db, name, row)
+                        hit = find_by_natural_key(db, name, row)
                         if hit is None:
                             skipped += 1
                             continue
@@ -245,10 +246,6 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
                 db.execute(table.update().where(
                     getattr(table.c, pk) == key).values(**values))
                 updated += 1
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
     if inserted or updated:
         mark_tables_dirty([n for n in tables if tables[n]])
         schedule_now()  # 合并结果防抖推上远端
