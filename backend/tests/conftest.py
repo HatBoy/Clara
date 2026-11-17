@@ -66,6 +66,9 @@ def fresh_db(monkeypatch):
     llm_svc._init_cache = None  # init_llm 微缓存（2026-10-26 提速批 3）防跨用例吃到上例激活模型
     sync_engine._reset_for_tests()  # 脏表/唤醒信号/锁复位（2026-11-14 同步备份）
     undo.reset_for_tests()  # 撤销栈（2026-11-17 批 1）：跨用例隔离
+    from agents.strategist import context_fetcher
+
+    context_fetcher._reset_for_tests()  # 回源探测 TTL 缓存（2026-11-17 二轮批 1）
     monkeypatch.setattr(database, "SessionLocal", TestingSessionLocal)
     # episodic FTS 虚表（2026-11-03 记忆重构）：create_all 不认识虚表、drop_all
     # 也不删它——主表重建后虚表残留上例 rowid 索引会串台，须先 DROP 再随 create_all

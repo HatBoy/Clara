@@ -236,6 +236,23 @@ def test_source_context_probe_once_and_scenario_gate(monkeypatch, fresh_db):
     assert ctx2["source_context"] and "probe" not in ctx2["source_context"][0]
 
 
+def test_probe_result_cached_within_ttl(monkeypatch, fresh_db):
+    """探测命中 10 分钟进程内缓存（2026-11-17 二轮批 1）：连续深挖同一任务
+    零网络往返；缓存命中不进 probe_source（每日帽不受影响）。"""
+    calls = []
+    monkeypatch.setattr(
+        "services.data_ingest.probe_source",
+        lambda db, key, q: calls.append((key, q)) or "回源素材")
+    with TestingSessionLocal() as db:
+        _add_task(db, title="发布会物料设计", duration_mins=45,
+                  source_key="cli:fake", source_evidence="静态摘录")
+    ctx1 = _run(monkeypatch, "task_breakdown")
+    ctx2 = _run(monkeypatch, "task_breakdown")
+    assert len(calls) == 1  # 第二轮缓存命中，零外部调用
+    assert ctx1["source_context"][-1]["probe"] == "回源素材"
+    assert ctx2["source_context"][-1]["probe"] == "回源素材"
+
+
 # —— 优化批 7（2026-11-01）：主动关怀键（滞留点名/前夜压力/周回顾） ——————————
 
 

@@ -26,12 +26,24 @@ source_context 键——相关任务命中里带 Task.source_evidence 的前 3 �
 
 import logging
 import re
+import time
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 
 from database import SessionLocal
 
 from .state import StrategistState
+
+# 回源探测 TTL 缓存（二轮批 1）：(source_key, title) → (monotonic 时刻, 素材文本)。
+# 进程内即可——缓存目标是同会话短窗的重复深挖轮，跨进程不共享无碍
+_PROBE_TTL_S = 600
+_PROBE_CACHE_MAX = 50
+_probe_cache: dict[tuple[str, str], tuple[float, str]] = {}
+
+
+def _reset_for_tests() -> None:
+    """conftest 跨用例隔离（模块级缓存的既有惯例）。"""
+    _probe_cache.clear()
 
 logger = logging.getLogger(__name__)
 
@@ -263,7 +275,11 @@ def _source_context(db, query: str, day0: datetime, probe: bool) -> list[dict]:
     探测段（probe=True 仅 task_breakdown/execution）：首个带 source_key 的命中
     任务回源搜更多素材（data_ingest.probe_source：补采硬闸全在、每源每日帽、
     本函数每轮至多 1 次），命中 → {"task", "source_key", "probe"}；无工具/
-    超帽/失败一律静默跳过（静态段兜底不缺席）。"""
+    超帽/失败一律静默跳过（静态段兜底不缺席）。
+
+    二轮批 1（2026-11-17）：探测前推 status 帧过程反馈（60s 限时网络往返
+    此前完全静默）；命中结果 10 分钟进程内 TTL 缓存——连续教练对话对同一
+    任务短窗重复探测零网络成本（缓存命中不进 probe_source，每日帽不受影响）。"""
     from services.data_ingest import probe_source
 
     q = _norm(query)[:_RELATED_QUERY_CHARS]
@@ -284,12 +300,24 @@ def _source_context(db, query: str, day0: datetime, probe: bool) -> list[dict]:
         # 默认只试首个带源任务；coach_probe_deep 开时扩到至多 2 个目标（第二
         # 跳——首个空手时换下一个相关任务再探）。每源每日帽与既有补采共享
         # （probe_source 硬闸全在），失败静默降级静态摘录兜底不缺席
+        from agents.nodes import _status_emitter
         from services.settings import get_settings
 
-        n_targets = 2 if getattr(
-            get_settings(db), "coach_probe_deep", False) else 1
-        for target in [t for t in rows if t.source_key][:n_targets]:
-            text = probe_source(db, target.source_key, target.title)
+        targets = [t for t in rows if t.source_key][
+            :2 if getattr(get_settings(db), "coach_probe_deep", False) else 1]
+        if targets:
+            _status_emitter()("正在回源检索相关素材…")
+        for target in targets:
+            ckey = (target.source_key, target.title)
+            hit = _probe_cache.get(ckey)
+            if hit is not None and time.monotonic() - hit[0] < _PROBE_TTL_S:
+                text = hit[1]
+            else:
+                text = probe_source(db, target.source_key, target.title) or ""
+                if text:
+                    if len(_probe_cache) >= _PROBE_CACHE_MAX:
+                        _probe_cache.pop(next(iter(_probe_cache)))  # FIFO 淘汰
+                    _probe_cache[ckey] = (time.monotonic(), text)
             if text:
                 out.append({"task": target.title, "source_key": target.source_key,
                             "probe": text})
