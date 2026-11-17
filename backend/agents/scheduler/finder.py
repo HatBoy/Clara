@@ -25,7 +25,7 @@ Node4 裁决器（批 6），SLOT_REFINE 单次微调随旧统一轮退役（收
 import logging
 from datetime import date, datetime, timedelta
 
-from agents.nodes import _status_emitter
+from agents.common import status_emitter
 from services.preference_slots import parse_avoid_windows
 from services.tasks import (
     candidate_slots,
@@ -218,7 +218,7 @@ def finder_node(state: SchedulerState) -> dict:
 
     # —— 约束 9：频率防呆（先于找槽——防呆成立时无需找槽）——
     if conflict_queue or agent_entries:  # 零 LLM 毫秒级，但有活干时推一帧
-        _status_emitter()("正在检索日历与空档…")  # 过程反馈（提速批 2）
+        status_emitter()("正在检索日历与空档…")  # 过程反馈（提速批 2）
     for e in agent_entries:
         if e.get("_freq_ok"):
             continue  # 用户已确认重排（resolution 消费轮置位）——再拦就是死循环

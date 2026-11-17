@@ -300,13 +300,13 @@ def _source_context(db, query: str, day0: datetime, probe: bool) -> list[dict]:
         # 默认只试首个带源任务；coach_probe_deep 开时扩到至多 2 个目标（第二
         # 跳——首个空手时换下一个相关任务再探）。每源每日帽与既有补采共享
         # （probe_source 硬闸全在），失败静默降级静态摘录兜底不缺席
-        from agents.nodes import _status_emitter
+        from agents.common import status_emitter
         from services.settings import get_settings
 
         targets = [t for t in rows if t.source_key][
             :2 if getattr(get_settings(db), "coach_probe_deep", False) else 1]
         if targets:
-            _status_emitter()("正在回源检索相关素材…")
+            status_emitter()("正在回源检索相关素材…")
         for target in targets:
             ckey = (target.source_key, target.title)
             hit = _probe_cache.get(ckey)

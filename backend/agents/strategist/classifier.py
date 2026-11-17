@@ -26,7 +26,7 @@ import logging
 import re
 from datetime import datetime
 
-from agents.nodes import _status_emitter
+from agents.common import status_emitter
 from agents.parsing import loads_obj
 
 from .prompts import CLASSIFIER_PROMPT, PENDING_JUDGE_PROMPT, SCENARIOS
@@ -89,7 +89,7 @@ def classifier_node(state: StrategistState) -> dict:
         return {"trigger_input": user_input, "scenario_type": "crisis", "now": now}
 
     # ⑤ LLM 七场景分类 + clarify 追问挂起
-    _status_emitter()("幕僚长正在梳理场景…")  # 过程反馈（提速批 2；短路①-④零帧）
+    status_emitter()("幕僚长正在梳理场景…")  # 过程反馈（提速批 2；短路①-④零帧）
     scenario, ask = _classify(user_input)
     if ask:
         logger.info("[strategist] classifier：LLM 判定 scenario=%s，信息不足追问挂起", scenario)

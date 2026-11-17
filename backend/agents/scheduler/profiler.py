@@ -13,13 +13,13 @@ import re
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 
-from agents.nodes import (
-    _clock_from_text,
-    _clean_draft_entry,
-    _find_similar,
-    _normalize_title,
-    _status_emitter,
+from agents.common import (
+    clock_from_text,
+    clean_draft_entry,
+    find_similar,
+    normalize_title,
     rel_minutes_from_text,
+    status_emitter,
 )
 from agents.parsing import call_llm_json, is_int
 from agents.prompts import clip_rules
@@ -151,7 +151,7 @@ def _hint_to_not_before(hint: str, now: datetime) -> datetime | None:
         return None
     day = (now + timedelta(days=days)).replace(
         hour=0, minute=0, second=0, microsecond=0)
-    clock = _clock_from_text(hint)
+    clock = clock_from_text(hint)
     if clock is None:
         return day  # 只有日期 → 当天零点起（引擎在日窗内自挑）
     h, m = clock
@@ -210,7 +210,7 @@ def profiler_node(state: SchedulerState) -> dict:
         # 不足时 intake 不落键，提示词零变化）——估时/类别判断的个性化证据
         "energy": ctx.get("energy"),
     }
-    _status_emitter()("正在剖析任务画像…")  # LLM① 过程反馈（提速批 2）
+    status_emitter()("正在剖析任务画像…")  # LLM① 过程反馈（提速批 2）
     # insisted 确定性短路（2026-11-01 真机批）：「还是坚持安排」类变体 LLM
     # 判定不稳（glm 曾把「还是坚持安排」当新 fuzzy 请求重新剖析——no_slot
     # 问询消费失败死循环）。pending 活跃 + 词形完全匹配 → 零 LLM 直判
@@ -352,7 +352,7 @@ def profiler_node(state: SchedulerState) -> dict:
                                             m["start"], m["end"])][:2]
             conflict_queue.append(entry)
         else:
-            hit = _find_similar(entry["title"], similar_pool)
+            hit = find_similar(entry["title"], similar_pool)
             if hit:
                 raise_question("similar", [entry], similar_to=hit[0])
             else:
@@ -374,7 +374,7 @@ def profiler_node(state: SchedulerState) -> dict:
         explicit = entry.get("explicit_time")
         if not (isinstance(explicit, str) and explicit.strip()):
             return False
-        clock = _clock_from_text(explicit)
+        clock = clock_from_text(explicit)
         start = datetime.fromisoformat(entry["start"])
         # 相对分钟形态（2026-11-05 真机批）：「两分钟后」无绝对钟点，一致性
         # 改为对照 now+N（调用方已把 start 确定性换算成该值，LLM 原猜时刻被覆盖）
@@ -386,11 +386,11 @@ def profiler_node(state: SchedulerState) -> dict:
         if rel is not None and abs(
                 (start - (now + timedelta(minutes=rel[0]))).total_seconds()) > 180:
             return False
-        n_title = _normalize_title(entry["title"])
+        n_title = normalize_title(entry["title"])
         for raw in raw_texts:
             if not raw or explicit.strip() not in raw:
                 continue
-            n_input = _normalize_title(raw)
+            n_input = normalize_title(raw)
             if n_title and (n_title in n_input or n_input in n_title):
                 return True
             # 补全式扩写（2026-11-01 真机批）：LLM 常把口语补成规范标题
@@ -507,7 +507,7 @@ def profiler_node(state: SchedulerState) -> dict:
                         # 单条目问询标题以快照为准：事项本身没变，变的只是时间
                         title = (p_entries[0].get("title") if len(p_entries) == 1
                                  else r["title"].strip())
-                        entry, _why = _clean_draft_entry(
+                        entry, _why = clean_draft_entry(
                             {**r, "task_id": None, "title": title}, valid_ids, origin="user")
                         if entry is not None:
                             prof = prof_by_title.get(r["title"].strip())
@@ -568,7 +568,7 @@ def profiler_node(state: SchedulerState) -> dict:
                     # 相似检查优先于缺钟点——"X 日安排体检"若未来一周已有同款，
                     # 先提醒重排/确认（非高频活动撞名大概率是忘了已安排，
                     # 2026-10-18 真机教训），再谈几点
-                    hit = _find_similar(title, similar_pool)
+                    hit = find_similar(title, similar_pool)
                     if hit:
                         raise_question("similar", [entry0], similar_to=hit[0])
                     else:
@@ -587,7 +587,7 @@ def profiler_node(state: SchedulerState) -> dict:
                                        date_hint=hint if isinstance(hint, str) and hint.strip() else None,
                                        weekend_note=wk_note)
                 continue
-            entry, why = _clean_draft_entry(d, valid_ids, origin=origin)
+            entry, why = clean_draft_entry(d, valid_ids, origin=origin)
             if entry is None:
                 dropped.append(why)
                 continue
@@ -619,7 +619,7 @@ def profiler_node(state: SchedulerState) -> dict:
                 # confirmed 后 apply_plan_entries 对 task_id 草案卡由用户手动
                 # 确认（语义雷区）。问询条目不占 busy（用户没确认）；旧版
                 # "重叠/午休丢弃"门退役——引擎校验层等价替代（2026-10-20）
-                hit = (_find_similar(entry["title"], similar_pool)
+                hit = (find_similar(entry["title"], similar_pool)
                        if entry.get("task_id") is None else None)
                 if hit and _RESCHED_VERB_RE.search(state.get("user_input") or ""):
                     # 改期语义兜底（2026-11-01 真机批）：「把X改到Y」LLM 常产

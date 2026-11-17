@@ -18,7 +18,7 @@ pos 1163 戛然而止）；②改走 call_llm_json 站进解析失败回喂重�
 
 import logging
 
-from agents.nodes import _status_emitter
+from agents.common import status_emitter
 from agents.parsing import call_llm_json
 
 from .prompts import build_strategist_prompt
@@ -41,7 +41,7 @@ def brain_node(state: StrategistState) -> dict:
     system, user = build_strategist_prompt(
         scenario, state.get("trigger_input") or "",
         deep_context, state.get("memory_rules") or [])
-    _status_emitter()("正在组织思路…")  # 单次 LLM 大头过程反馈
+    status_emitter()("正在组织思路…")  # 单次 LLM 大头过程反馈
     data = call_llm_json(system, user, max_tokens=_BRAIN_MAX_TOKENS)
     if not isinstance(data, dict):
         # 兜底轮 checklist 恒空：dispatcher 据此零卡纯文字（cron 轮由 headline

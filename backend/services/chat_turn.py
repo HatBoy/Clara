@@ -12,7 +12,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from agents.nodes import QUESTION_KINDS
+from agents.common import QUESTION_KINDS
 from services import ai_data, data_ingest, sse_kit
 from services.settings import get_settings
 

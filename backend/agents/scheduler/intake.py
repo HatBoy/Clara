@@ -9,13 +9,13 @@
 import logging
 from datetime import datetime, timedelta
 
-from agents.nodes import (
-    _PLANNER_HISTORY_CHARS,
-    _PLANNER_HISTORY_K,
-    _PLANNER_MAX_CANDIDATES,
-    _PLANNER_MAX_SCHEDULED,
-    _PLANNER_NOTES_CHARS,
-    _SIMILAR_WINDOW_DAYS,
+from agents.common import (
+    PLANNER_HISTORY_CHARS,
+    PLANNER_HISTORY_K,
+    PLANNER_MAX_CANDIDATES,
+    PLANNER_MAX_SCHEDULED,
+    PLANNER_NOTES_CHARS,
+    SIMILAR_WINDOW_DAYS,
     settings_payload,
     task_intensity,
 )
@@ -58,14 +58,14 @@ def intake_node(state: SchedulerState) -> dict:
         # 量化对照；后者是用户上周明确拒绝过的时间/理由——同类建议当场避开
         rhythm = execution_rhythm(db)
         recent_rejects = recent_reject_reasons(db)
-        # 近期对话（窄窗取舍见 nodes._PLANNER_HISTORY_K 注释）：exclude 本轮
+        # 近期对话（窄窗取舍见 nodes.PLANNER_HISTORY_K 注释）：exclude 本轮
         # 原话防重复注入（壳在图运行前已落库）；滚动摘要一并带出（2026-10-26
         # 增——排期分支此前丢弃摘要，上午闲聊交代的偏好下午排期接不住）
-        chat_summary, recent_msgs = chat_context(db, recent_k=_PLANNER_HISTORY_K,
+        chat_summary, recent_msgs = chat_context(db, recent_k=PLANNER_HISTORY_K,
                                                  exclude=state["user_input"])
         # 下方两查询一并进会话作用域（二轮批 1）：此前在 with 块外用已关闭的
         # Session 隐式重连——能跑但违反会话纪律，对测试替身/会话策略零防御
-        candidates = unscheduled[:_PLANNER_MAX_CANDIDATES]
+        candidates = unscheduled[:PLANNER_MAX_CANDIDATES]
         est_hints = {t.id: similar_done_durations(db, t.title) for t in candidates}
         recent_done_rows = recent_done(db)
         # 精力峰谷（2026-11-17 二轮批 1）：排期轮一次取数，子图内零重复读库；
@@ -90,7 +90,7 @@ def intake_node(state: SchedulerState) -> dict:
                               "end": occ + timedelta(minutes=dur),
                               "recur": bool(t.recurrence_rule),
                               "priority": t.priority})  # 负荷聚合消费（批 3 双产）
-            if now <= occ <= now + timedelta(days=_SIMILAR_WINDOW_DAYS):
+            if now <= occ <= now + timedelta(days=SIMILAR_WINDOW_DAYS):
                 similar_pool.append((t.title, occ))
 
     # 单查询双产（2026-11-01 优化批 3）：日负荷从 busy_meta 本地聚合——旧版
@@ -128,7 +128,7 @@ def intake_node(state: SchedulerState) -> dict:
             # 同类历史耗时（2026-10-26 批 5）：近 90 天相似已完成任务时长均值
             # ——剖析估时的个性化证据（PROFILER §四.5 历史值优先于经验值）
             "est_hint": est_hints.get(t.id),
-            "notes": (t.notes or "").strip()[:_PLANNER_NOTES_CHARS],
+            "notes": (t.notes or "").strip()[:PLANNER_NOTES_CHARS],
         } for t in candidates],
         "valid_ids": sorted({t.id for t in candidates}),
         "prio_by_id": {t.id: (t.priority or 2) for t in candidates},
@@ -137,7 +137,7 @@ def intake_node(state: SchedulerState) -> dict:
             "start": t.start_time.isoformat() if t.start_time else None,
             "end": t.end_time.isoformat() if t.end_time else None,
             "priority": t.priority,
-        } for t in scheduled[:_PLANNER_MAX_SCHEDULED]],
+        } for t in scheduled[:PLANNER_MAX_SCHEDULED]],
         # 完成节奏（2026-10-26 批 4 补键）：近 7 天 done 前 10——真实产能与
         # 节奏的证据（"上周完成了 X Y Z"），剖析估时/精力判断的对照源
         "recent_done": recent_done_rows,
@@ -151,7 +151,7 @@ def intake_node(state: SchedulerState) -> dict:
         "day_budget": s.work_minutes_per_day,
         "load_summary": load_summary,
         "recent_chat": [{"role": m.role,
-                          "content": (m.content or "")[:_PLANNER_HISTORY_CHARS]}
+                          "content": (m.content or "")[:PLANNER_HISTORY_CHARS]}
                          for m in recent_msgs],
         # 更早对话的滚动摘要（None=尚未压缩；跨天偏好/久前话题线索供剖析参考）
         "chat_summary": chat_summary,

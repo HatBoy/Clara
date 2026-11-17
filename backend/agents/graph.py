@@ -319,10 +319,10 @@ def _assemble_structured(cands: list[dict], existing_titles: list[str],
     其他形态落库的同一源条目，重复同步不做——时间升级自动化登记 tech-debt）；
     ③优先级映射：源 raw 值（滴答 0/1/3/5）→ 1高/2中/3低，无优先级默认低
     （用户定案）。"""
-    from agents.nodes import _normalize_title
+    from agents.common import normalize_title
     from services.data_ingest import mapped_priority
 
-    seen = {_normalize_title(t) for t in existing_titles if isinstance(t, str)}
+    seen = {normalize_title(t) for t in existing_titles if isinstance(t, str)}
     known_fps: set[str] = set()
     if db is not None:
         from sqlalchemy import select as _sa_select
@@ -346,12 +346,12 @@ def _assemble_structured(cands: list[dict], existing_titles: list[str],
             logger.info("[ingest] 直映射跳过「%s」（指纹已有落库任务，防重复同步）",
                         title[:20])
             continue
-        if not title or _normalize_title(title) in seen:
+        if not title or normalize_title(title) in seen:
             if title:
                 dropped.append(title)
                 logger.info("[ingest] 直映射查重丢弃「%s」（与既有任务同名）", title[:20])
             continue
-        seen.add(_normalize_title(title))
+        seen.add(normalize_title(title))
         start = None
         raw = c.get("time")
         if isinstance(raw, str):

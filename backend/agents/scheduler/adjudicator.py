@@ -11,7 +11,7 @@ build_adjudicator_prompt 动态组 Prompt（精力/哲学/天气/通勤按画像
 import logging
 from datetime import datetime, timedelta
 
-from agents.nodes import _fmt_when, _question_text, _status_emitter
+from agents.common import fmt_when, question_text, status_emitter
 from agents.parsing import call_llm_json
 
 from .state import SchedulerState
@@ -43,7 +43,7 @@ def adjudicator_node(state: SchedulerState) -> dict:
     explanation: str | None = None
 
     if slots and (clean or (question is not None and question.get("kind") == "conflict")):
-        _status_emitter()("正在权衡最佳时刻…")  # LLM② 过程反馈（提速批 2）
+        status_emitter()("正在权衡最佳时刻…")  # LLM② 过程反馈（提速批 2）
         explanation = _adjudicate(state, clean, conflict_queue, slots, question,
                                   final_decision)
         _insert_commute_blocks(clean)
@@ -66,20 +66,20 @@ def adjudicator_node(state: SchedulerState) -> dict:
         bits = []
         for e in applied:
             if e.get("start"):
-                bits.append(f"「{e['title']}」{_fmt_when(datetime.fromisoformat(e['start']))}")
+                bits.append(f"「{e['title']}」{fmt_when(datetime.fromisoformat(e['start']))}")
             else:
                 bits.append(f"「{e['title']}」进待办")
         parts.append("已安排：" + "、".join(bits) + "。")
     if displace:
-        bits = [f"「{e['title']}」调整到 {_fmt_when(datetime.fromisoformat(e['start']))}"
+        bits = [f"「{e['title']}」调整到 {fmt_when(datetime.fromisoformat(e['start']))}"
                 for e in displace]
         parts.append("已把挡路的挪开：" + "、".join(bits) + "，确认后完成改期。")
     for note in state.get("displace_notes") or []:
         parts.append(f"（{note}）")
     if question is not None:
-        parts.append(_question_text(question))
+        parts.append(question_text(question))
     if clean:
-        bits = [f"「{e['title']}」{_fmt_when(datetime.fromisoformat(e['start']))}" for e in clean]
+        bits = [f"「{e['title']}」{fmt_when(datetime.fromisoformat(e['start']))}" for e in clean]
         parts.append("已出草案：" + "、".join(bits) + "，确认后写入日历。")
         if explanation:  # 裁决器秘书口吻"为何此时段"附注（一句话说人话）
             parts.append(f"（{explanation}）")
