@@ -25,7 +25,12 @@ Node4 裁决器（批 6），SLOT_REFINE 单次微调随旧统一轮退役（收
 import logging
 from datetime import date, datetime, timedelta
 
-from agents.common import status_emitter
+from agents.common import bump_day_load, status_emitter
+from agents.engine import (
+    CHAIN_TAIL_BUFFER_MIN,
+    MEETING_HEAD_MIN,
+    MEETING_TAIL_MIN,
+)
 from services.preference_slots import parse_avoid_windows
 from services.tasks import (
     candidate_slots,
@@ -40,9 +45,6 @@ logger = logging.getLogger(__name__)
 
 # —— 常量表（批 5；跨城通勤/实时路况登记技术债，不接地图 API）——
 COMMUTE_MINUTES = 30          # 差旅/外出条目前置通勤块（市内口径）
-BUFFER_MIN = 30               # 长会链尾/差旅落地后的缓冲（分钟）
-MEETING_TAIL_MIN = 15         # 单场会议尾缓冲（2026-10-22 批 5 场景用例泛化）
-MEETING_HEAD_MIN = 10         # 单场会议会前缓冲（2026-11-17 批 2：与前端虚拟块同口径）
 RAINY_PRECIP = 60             # 降水概率 ≥ 此值整日剔除（户外类，%）
 DEEP_BLOCK_MIN = 120          # deep-work 哲学下深度条目连续块下限（分钟）
 GARBAGE_DUR_MAX = 30          # 垃圾时间锚定的短任务上限（分钟）
@@ -64,7 +66,7 @@ def _extend_busy_buffers(busy: list, long_chain_ends: list[datetime],
     （重叠区间对避让判定无差）。"""
     out = list(busy)
     for end in long_chain_ends:
-        out.append((end, end + timedelta(minutes=BUFFER_MIN)))
+        out.append((end, end + timedelta(minutes=CHAIN_TAIL_BUFFER_MIN)))
     if busy_meta:
         from services.job_rules import MEETING_KEYWORDS_RE
 
@@ -297,8 +299,7 @@ def finder_node(state: SchedulerState) -> dict:
                 entry["_commute"] = COMMUTE_MINUTES
             clean.append(entry)
             busy_acc.append((slot, slot + timedelta(minutes=duration)))
-            if day_load is not None:
-                day_load[slot.date()] = day_load.get(slot.date(), 0) + duration
+            bump_day_load(day_load, slot.date(), duration)
 
     logger.info("[scheduler] finder：十约束后 clean %d 条 / 候选槽 %d / 问询 %s / "
                 "丢弃 %d", len(clean), len(slots_out),

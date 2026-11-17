@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 
 from agents.scheduler.context import _long_chain_ends
 from agents.scheduler.finder import (
-    BUFFER_MIN,
+    CHAIN_TAIL_BUFFER_MIN,
     _commute_needed,
     _eff_duration,
     _extend_busy_buffers,
@@ -72,7 +72,7 @@ def test_extend_busy_buffers_appends_tail_block():
     ends = [datetime(2026, 10, 17, 12, 0)]
     out = _extend_busy_buffers([], ends)
     assert out == [(datetime(2026, 10, 17, 12, 0),
-                    datetime(2026, 10, 17, 12, 0 + BUFFER_MIN))]
+                    datetime(2026, 10, 17, 12, 0 + CHAIN_TAIL_BUFFER_MIN))]
 
 
 def test_extend_busy_buffers_meeting_tail_15min():

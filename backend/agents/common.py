@@ -334,3 +334,17 @@ def question_text(q: dict) -> str:
     # 不等用户答完时间才在直落附注里说（真机「这周六办护照」问几点零提示）
     note = f"另外提醒：{q['weekend_note']}。" if q.get("weekend_note") else ""
     return f"{head}{note}也可以回复“加待办”先收进收件箱。{extra}"
+
+
+# —— 同批互斥的预算回填（2026-11-17 架构批 5 低风险子集：4 处拷贝单源）————————
+
+
+def bump_day_load(day_load: dict | None, day, minutes: int) -> None:
+    """已分配条目按日累计工时的回填（同批互斥口径单源）。
+
+    day_load 为 None 时零操作（调用方未启用预算跟踪）；minutes 为负即腾退
+    （条目从规则槽搬到微调槽时原日先减）。原先此 8 行模式散在 engine ×2 /
+    finder / graph 共四处，各配一段「对齐引擎同批互斥口径」注释靠人肉同步。
+    """
+    if day_load is not None:
+        day_load[day] = day_load.get(day, 0) + minutes

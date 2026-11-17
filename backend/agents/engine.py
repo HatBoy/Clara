@@ -27,6 +27,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 
+from agents.common import bump_day_load
 from agents.parsing import loads_obj
 from agents.prompts import SLOT_REFINE_PROMPT
 from services.preference_slots import parse_avoid_windows
@@ -41,6 +42,17 @@ from services.tasks import (
 )
 
 logger = logging.getLogger(__name__)
+
+# —— 排期缓冲口径单源（2026-11-17 架构批 5 低风险子集）———————————————————
+# 原先两套常量并存：引擎级 _BUFFER_MIN=15（函数局部）与 finder 常量表
+# （BUFFER_MIN=30 / MEETING_TAIL_MIN=15 / MEETING_HEAD_MIN=10）——四个名字
+# 三处语义、无一处能看见全貌。归一至引擎（时间决策的宣称单点），值零变化
+# 仅归位；「改一处缓冲口径全入口一致」的判据自此成立。改值 = 排期行为面
+# 变化，须评估全入口（finder 十约束 / engine 批内虚拟延长 / 前端虚拟块）。
+TAIL_BUFFER_MIN = 15          # 决策层：≥90min/高优条目的批内尾随虚拟延长
+CHAIN_TAIL_BUFFER_MIN = 30    # 硬约束层：长会链尾/差旅落地后的缓冲
+MEETING_TAIL_MIN = 15         # 硬约束层：单场会议尾缓冲
+MEETING_HEAD_MIN = 10         # 硬约束层：单场会议会前缓冲（与前端虚拟块同口径）
 
 
 def plan_slots(*, entries: list[dict], busy: list[tuple[datetime, datetime]],
@@ -74,10 +86,9 @@ def plan_slots(*, entries: list[dict], busy: list[tuple[datetime, datetime]],
     # （硬闸）——「周五下午别排事」不再只靠模型自觉
     avoid = parse_avoid_windows(list(rules or []))
     # 尾随缓冲（2026-11-01 优化批 6 收口引擎）：长会/高强度条目（≥90 分钟或
-    # priority≤1）后 +15 分钟虚拟延长——同批后续条目不再贴身排（finder 会议尾
-    # 缓冲的引擎级统一，夜间预排/单卡/批量全入口继承；PRD §7.2）。缓冲不进
-    # day_load（休息不是工时，finder 先例）；AI 微调槽生效时缓冲随条目搬移
-    _BUFFER_MIN = 15
+    # priority≤1）后 +TAIL_BUFFER_MIN 虚拟延长——同批后续条目不再贴身排（finder
+    # 会议尾缓冲的引擎级统一，夜间预排/单卡/批量全入口继承；PRD §7.2）。缓冲
+    # 不进 day_load（休息不是工时，finder 先例）；AI 微调槽生效时缓冲随条目搬移
     tails: dict[str, int] = {}
     rule_slots: dict[str, datetime | None] = {}
     for e in entries:
@@ -89,13 +100,12 @@ def plan_slots(*, entries: list[dict], busy: list[tuple[datetime, datetime]],
             day_load=day_load, day_budget=day_budget, avoid_windows=avoid)
         rule_slots[e["key"]] = slot
         if slot is not None:
-            tail = (_BUFFER_MIN if e["duration"] >= 90
+            tail = (TAIL_BUFFER_MIN if e["duration"] >= 90
                     or (e.get("priority") or 2) <= 1 else 0)
             tails[e["key"]] = tail
             busy_acc.append((slot, slot + timedelta(
                 minutes=e["duration"] + tail)))
-            if day_load is not None:
-                day_load[slot.date()] = day_load.get(slot.date(), 0) + e["duration"]
+            bump_day_load(day_load, slot.date(), e["duration"])
 
     finals: dict[str, datetime | None] = dict(rule_slots)
     candidates = {e["key"]: e for e in entries if rule_slots[e["key"]] is not None}
@@ -125,7 +135,7 @@ def plan_slots(*, entries: list[dict], busy: list[tuple[datetime, datetime]],
                 day_eff = None
                 if day_load is not None:  # 每日负荷同步剔除自身旧位置贡献
                     day_eff = dict(day_load)
-                    day_eff[rule.date()] = day_eff.get(rule.date(), 0) - e["duration"]
+                    bump_day_load(day_eff, rule.date(), -e["duration"])
                 if is_valid_slot(
                         cand, e["duration"], busy_eff, now=now,
                         day_start_min=day_start_min, day_end_min=day_end_min,
@@ -139,9 +149,8 @@ def plan_slots(*, entries: list[dict], busy: list[tuple[datetime, datetime]],
                     # 建槽段刚 append 过；缓冲区间随条目一起搬移）
                     busy_acc.remove((rule, rule + timedelta(minutes=dur_total)))
                     busy_acc.append((cand, cand + timedelta(minutes=dur_total)))
-                    if day_load is not None:
-                        day_load[rule.date()] = day_load.get(rule.date(), 0) - e["duration"]
-                        day_load[cand.date()] = day_load.get(cand.date(), 0) + e["duration"]
+                    bump_day_load(day_load, rule.date(), -e["duration"])
+                    bump_day_load(day_load, cand.date(), e["duration"])
     return finals
 
 
