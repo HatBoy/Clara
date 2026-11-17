@@ -198,6 +198,8 @@ html[data-theme="dark"] body {
    · model-btn（模型接入表单：primary/ghost/ghost-accent）
    · data-btn（数据接入/聊天通讯弹窗：primary/ghost/ghost-accent）
    · schedule-detail-minutes-cancel/-submit（日历浮层纪要双钮）
+   · empty-state-btn（统一空态/失败态：primary / 无修饰=描边次操作，
+     2026-11-17 真机批桥接——旧自造样式紫色回退与全局扁平风格脱节）
    设计语言（用户定稿）：简洁低调现代扁平——零渐变、零内高光、
    零 text-shadow、零多层投影；primary 用 accent 浅淡底 + 深字，
    hover 底色加深一档；描边档透明底细线框，hover 微灰底。
@@ -208,7 +210,8 @@ html[data-theme="dark"] body {
 .model-btn,
 .data-btn,
 .schedule-detail-minutes-cancel,
-.schedule-detail-minutes-submit {
+.schedule-detail-minutes-submit,
+.empty-state-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -232,7 +235,8 @@ html[data-theme="dark"] body {
 .model-btn:focus-visible,
 .data-btn:focus-visible,
 .schedule-detail-minutes-cancel:focus-visible,
-.schedule-detail-minutes-submit:focus-visible {
+.schedule-detail-minutes-submit:focus-visible,
+.empty-state-btn:focus-visible {
   outline: 2px solid var(--accent-border);
   outline-offset: 2px;
 }
@@ -241,17 +245,19 @@ html[data-theme="dark"] body {
 .model-btn:disabled,
 .data-btn:disabled,
 .schedule-detail-minutes-cancel:disabled,
-.schedule-detail-minutes-submit:disabled {
+.schedule-detail-minutes-submit:disabled,
+.empty-state-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
   filter: none;
 }
 
-/* —— 主操作（采纳 / 保存配置 / 确认 / 提炼行动项）：accent 浅淡底 + 深字 —— */
+/* —— 主操作（采纳 / 保存配置 / 确认 / 提炼行动项 / 空态引导）：accent 浅淡底 + 深字 —— */
 .copilot-prop-btn.primary,
 .model-btn.primary,
 .data-btn.primary,
-.schedule-detail-minutes-submit {
+.schedule-detail-minutes-submit,
+.empty-state-btn.primary {
   border: 1px solid transparent;
   background: var(--accent-softer);
   color: var(--accent-deep);
@@ -260,22 +266,25 @@ html[data-theme="dark"] body {
 .copilot-prop-btn.primary:hover:not(:disabled),
 .model-btn.primary:hover:not(:disabled),
 .data-btn.primary:hover:not(:disabled),
-.schedule-detail-minutes-submit:hover:not(:disabled) {
+.schedule-detail-minutes-submit:hover:not(:disabled),
+.empty-state-btn.primary:hover:not(:disabled) {
   background: var(--accent-border);
 }
 
 .copilot-prop-btn.primary:active:not(:disabled),
 .model-btn.primary:active:not(:disabled),
 .data-btn.primary:active:not(:disabled),
-.schedule-detail-minutes-submit:active:not(:disabled) {
+.schedule-detail-minutes-submit:active:not(:disabled),
+.empty-state-btn.primary:active:not(:disabled) {
   background: color-mix(in srgb, var(--accent-border) 80%, var(--accent));
 }
 
-/* —— 描边次操作（取消 / 编辑）：透明底细线框，hover 微灰底 —— */
+/* —— 描边次操作（取消 / 编辑 / 空态次按钮）：透明底细线框，hover 微灰底 —— */
 .copilot-prop-btn.secondary,
 .model-btn.ghost,
 .data-btn.ghost,
-.schedule-detail-minutes-cancel {
+.schedule-detail-minutes-cancel,
+.empty-state-btn {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-body);
@@ -284,14 +293,16 @@ html[data-theme="dark"] body {
 .copilot-prop-btn.secondary:hover:not(:disabled),
 .model-btn.ghost:hover:not(:disabled),
 .data-btn.ghost:hover:not(:disabled),
-.schedule-detail-minutes-cancel:hover:not(:disabled) {
+.schedule-detail-minutes-cancel:hover:not(:disabled),
+.empty-state-btn:hover:not(:disabled) {
   background: var(--grid-line);
 }
 
 .copilot-prop-btn.secondary:active:not(:disabled),
 .model-btn.ghost:active:not(:disabled),
 .data-btn.ghost:active:not(:disabled),
-.schedule-detail-minutes-cancel:active:not(:disabled) {
+.schedule-detail-minutes-cancel:active:not(:disabled),
+.empty-state-btn:active:not(:disabled) {
   filter: brightness(0.96);
 }
 

@@ -41,22 +41,7 @@
   margin-top: 6px;
 }
 
-.empty-state-btn {
-  padding: 5px 11px;
-  border-radius: 7px;
-  border: 1px solid var(--border-1, rgba(0, 0, 0, 0.12));
-  background: var(--surface-2, #fff);
-  color: var(--text-2, #444);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.empty-state-btn.primary {
-  background: var(--accent, #6c63ff);
-  border-color: transparent;
-  color: #fff;
-}
-
-.empty-state-btn:hover {
-  filter: brightness(0.98);
-}
+/* 按钮不自持样式——empty-state-btn 类名桥接进 tokens.css「全局文字按钮族」
+   （primary=accent 浅淡底深字 / 无修饰=描边次操作；2026-11-17 真机批：
+   旧自造样式用不存在的 --border-1/--surface-2 与紫色回退 --accent(#6c63ff)，
+   数据源页空态「去配置数据源」等按钮与全局扁平风格脱节） */
