@@ -269,6 +269,11 @@ def _ensure_episodic_fts(eng) -> None:
     - capability probe：trigram 不可用时 OperationalError 捕获 → _FTS_TRIGRAM_OK
       = False + ERROR 日志（启动日志即打包抽查锚点），检索层自动 LIKE 回落。
     - 全部 IF NOT EXISTS 幂等；主表 drop 重建时触发器随表删除、本函数重建。
+    - 索引自愈 rebuild（2026-11-17 二轮批 1）：external-content 模式对建触发器
+      之前已物理存在的主表行不建索引——覆盖恢复（整库文件替换）后全部既有
+      事实零命中、Tier-2 检索静默降级只剩兜底路径。行数不一致才 rebuild
+      （幂等，正常路径零成本；大表仅异常时付一次重建成本），老库首次挂载
+      顺带补齐历史索引。
     """
     global _FTS_TRIGRAM_OK
     from sqlalchemy import inspect, text
@@ -294,6 +299,18 @@ def _ensure_episodic_fts(eng) -> None:
         with eng.begin() as conn:
             for stmt in ddl:
                 conn.execute(text(stmt))
+            main_n = conn.execute(text("SELECT count(*) FROM episodic_facts")).scalar()
+            fts_n = conn.execute(text(
+                "SELECT count(*) FROM episodic_facts_fts")).scalar()
+            if main_n != fts_n:
+                conn.execute(text(
+                    "INSERT INTO episodic_facts_fts(episodic_facts_fts) "
+                    "VALUES ('rebuild')"))
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "episodic FTS 索引行数与主表不一致（索引 %s / 主表 %s），已 rebuild 自愈",
+                    fts_n, main_n)
     except Exception as exc:  # OperationalError：sqlite 无 fts5/trigram 编译单元
         _FTS_TRIGRAM_OK = False
         import logging

@@ -342,3 +342,30 @@ def test_migrate_reminder_columns_backfills_auto():
     _migrate_reminder_columns(engine)  # 幂等
 
 
+
+
+def test_ensure_episodic_fts_rebuilds_preexisting_rows():
+    """覆盖恢复形态的 FTS 自愈（2026-11-17 二轮批 1）：主表行先于虚表/触发器
+    物理存在（整库文件替换）——external-content 模式不回填历史行，MATCH 零
+    命中、Tier-2 检索静默降级；行数核对不一致即 rebuild。"""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import models as _models  # noqa: F401——注册元数据
+    from database import Base, _ensure_episodic_fts
+    from models import EpisodicFact
+    from services.episodic import search_facts
+
+    eng = create_engine("sqlite://")
+    Base.metadata.create_all(eng)  # 主表 + 行，虚表/触发器尚不存在
+    S = sessionmaker(bind=eng)
+    with S() as db:
+        db.add(EpisodicFact(topic="健康", fact="这周感冒需要多休息", source="chat"))
+        db.commit()
+
+    _ensure_episodic_fts(eng)  # 行数不一致（1/0）→ rebuild 自愈
+    with S() as db:
+        hits = search_facts(db, "感冒了怎么办")
+    assert hits and "感冒" in hits[0].fact
+
+    _ensure_episodic_fts(eng)  # 幂等：一致后零动作不炸
