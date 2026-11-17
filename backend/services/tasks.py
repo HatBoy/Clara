@@ -1437,30 +1437,17 @@ def suggest_slot(start: datetime, duration: int, busy: list[tuple[datetime, date
     同一天（真机教训：最早优先会把十条任务全塞进今天）。空日豁免：当日尚无
     占用则放行（超大任务不至于因预算无处可排）。纯函数不读库，AI 微调层
     （engine.plan_slots）与校验层（is_valid_slot）共用同一套时间轴参数。
+
+    2026-11-17 架构批 6：重复扫描循环收编——本函数与 candidate_slots 原是
+    两份同构网格扫描，现收编为 candidate_slots(k=1) 薄包装；无 anchor/allowed
+    维度时严格等价（首候选 = 唯一候选，对拍用例 test_scheduler_services 锁定）。
     """
-    cap_min = MORNING_END_MIN if morning_only else day_end_min
-
-    def fits(t: datetime) -> bool:
-        return _gates_ok(t, duration, busy, day_start_min=day_start_min, cap_min=cap_min,
-                         lunch=lunch, day_load=day_load, day_budget=day_budget,
-                         avoid_windows=avoid_windows)
-
-    if same_clock_first:
-        for i in range(1, SLOT_MAX_DAYS + 1):  # ① 同钟点跨日优先
-            cand = ceil_step(start + timedelta(days=i), SLOT_STEP_MIN)
-            if fits(cand):
-                return cand
-    for i in range(SLOT_MAX_DAYS + 1):  # ② 网格顺延兜底
-        day = start + timedelta(days=i)
-        day0 = day.replace(hour=0, minute=0, second=0, microsecond=0)
-        lo = day0 + timedelta(minutes=day_start_min)
-        hi = day0 + timedelta(minutes=cap_min)
-        t = ceil_step(max(start, lo) if i == 0 else lo, SLOT_STEP_MIN)
-        while t + timedelta(minutes=duration) <= hi:
-            if fits(t):
-                return t
-            t += timedelta(minutes=SLOT_STEP_MIN)
-    return None
+    slots = candidate_slots(start, duration, busy,
+                            day_start_min=day_start_min, day_end_min=day_end_min,
+                            lunch=lunch, morning_only=morning_only,
+                            same_clock_first=same_clock_first, day_load=day_load,
+                            day_budget=day_budget, avoid_windows=avoid_windows, k=1)
+    return slots[0] if slots else None
 
 
 def is_valid_slot(start: datetime, duration: int, busy: list[tuple[datetime, datetime]],

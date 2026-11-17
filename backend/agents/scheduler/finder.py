@@ -138,6 +138,64 @@ def _eff_duration(e: dict, philosophy: set[str]) -> int:
     return duration
 
 
+def pick_candidate(e: dict, *, now: datetime, philosophy: set, rainy: set,
+               busy_acc: list, ctx: dict, day_load: dict | None,
+               avoid: list | None, same_clock: bool,
+               user_will: bool = False) -> datetime | None:
+    """单条目约束组装（1/2/3/4/7/8）+ 多候选取首个过通勤闸（6）的槽。
+
+    2026-11-17 架构批 6：由 finder_node 内嵌闭包提升为具名模块函数——十约束
+    组装点显式可测（原闭包捕获 9 个外层变量，参数化后契约自明）。
+    user_will（2026-11-05 真机批）：条目钟点是用户原话（_from_user 降级），
+    午休/日预算/偏好避让按用户直落同口径豁免（照排草案待确认）——只有
+    busy 是硬边界（撞了走 conflict 问询，由调用方先行转换）。"""
+    profile = e.get("profile") if isinstance(e.get("profile"), dict) else {}
+    duration = _eff_duration(e, philosophy)
+    # 约束 1/3：日期白名单（工作日限定为底、雨日从中剔除）
+    horizon = {now.date() + timedelta(days=i) for i in range(8)}
+    allowed = {d for d in horizon if d.weekday() < 5} \
+        if (_needs_weekday(profile) and not user_will) else None
+    if ((profile.get("category") in _OUTDOOR_CATS
+            or "需要好天气" in (profile.get("env_deps") or []))
+            and rainy & (allowed or horizon)):
+        allowed = (allowed or horizon) - rainy
+    # 约束 2：就医上午闸（标题关键词 + 医疗类画像常识"上午"并入）；
+    # insisted（"坚持安排"）连本闸一并豁免——上午被 daily 系列切碎时
+    # 2h 医疗项在上午域永远零候选，重找仍 no_slot 死循环（2026-11-01
+    # 真机教训：insisted 后原样重复"回复坚持安排"文案）；豁免后引擎可
+    # 荐下午槽，adjudicator 附注仍会提醒就医建议上午
+    morning = None if (user_will or e.get("_no_budget")) else _entry_morning_only(e)
+    # 约束 8：低能耗短任务垃圾时间锚定（午休末与日末前 60 分钟优先）
+    anchors = None
+    if (not user_will and profile.get("energy_drain") == "低"
+            and duration <= GARBAGE_DUR_MAX):
+        anchors = [a for a in (ctx["lunch"][1] if ctx["lunch"] else None,
+                               ctx["day_end_min"] - 60) if a is not None] or None
+    # 约束 7 + 预算豁免（no_slot"坚持安排"的回落通路）
+    budget = None if (user_will or e.get("_no_budget")) else ctx["day_budget"]
+    from_raw = e.get("_from") or e.get("start") or e.get("not_before")
+    start_from = datetime.fromisoformat(from_raw) if from_raw else now
+    if start_from <= now:
+        start_from = now
+    cands = candidate_slots(
+        start_from, duration, busy_acc,
+        day_start_min=ctx["day_start_min"], day_end_min=ctx["day_end_min"],
+        lunch=None if user_will else ctx["lunch"], morning_only=morning,
+        same_clock_first=same_clock,
+        day_load=dict(day_load) if (day_load is not None and not user_will) else None,
+        day_budget=budget, allowed_dates=allowed, anchor_mins=anchors,
+        avoid_windows=None if user_will else avoid, k=5)
+    # 约束 6：通勤前置（槽前 30 分钟须空闲——含同批已占与缓冲区）
+    commute = _commute_needed(profile)
+    for s in cands:
+        if commute and any(
+                overlaps(s - timedelta(minutes=COMMUTE_MINUTES), s, b0, b1)
+                for b0, b1 in busy_acc):
+            continue
+        return s
+    return None
+
+
 def finder_node(state: SchedulerState) -> dict:
     """初筛节点：逐条目组装约束参数 → candidate_slots 取 k 候选 → 通勤后滤
     → 首个存活槽为主荐；频率防呆与零候选转问询（first-wins 跨节点延续）。
@@ -167,57 +225,6 @@ def finder_node(state: SchedulerState) -> dict:
         if question is None:
             question = {"kind": kind, "entries": entries, **extra}
 
-    def pick_slot(e: dict, *, same_clock: bool, user_will: bool = False) -> datetime | None:
-        """单条目约束组装（1/2/3/4/7/8）+ 多候选取首个过通勤闸（6）的槽。
-        user_will（2026-11-05 真机批）：条目钟点是用户原话（_from_user 降级），
-        午休/日预算/偏好避让按用户直落同口径豁免（照排草案待确认）——只有
-        busy 是硬边界（撞了走 conflict 问询，由调用方先行转换）。"""
-        profile = e.get("profile") if isinstance(e.get("profile"), dict) else {}
-        duration = _eff_duration(e, philosophy)
-        # 约束 1/3：日期白名单（工作日限定为底、雨日从中剔除）
-        horizon = {now.date() + timedelta(days=i) for i in range(8)}
-        allowed = {d for d in horizon if d.weekday() < 5} \
-            if (_needs_weekday(profile) and not user_will) else None
-        if ((profile.get("category") in _OUTDOOR_CATS
-                or "需要好天气" in (profile.get("env_deps") or []))
-                and rainy & (allowed or horizon)):
-            allowed = (allowed or horizon) - rainy
-        # 约束 2：就医上午闸（标题关键词 + 医疗类画像常识"上午"并入）；
-        # insisted（"坚持安排"）连本闸一并豁免——上午被 daily 系列切碎时
-        # 2h 医疗项在上午域永远零候选，重找仍 no_slot 死循环（2026-11-01
-        # 真机教训：insisted 后原样重复"回复坚持安排"文案）；豁免后引擎可
-        # 荐下午槽，adjudicator 附注仍会提醒就医建议上午
-        morning = None if (user_will or e.get("_no_budget")) else _entry_morning_only(e)
-        # 约束 8：低能耗短任务垃圾时间锚定（午休末与日末前 60 分钟优先）
-        anchors = None
-        if (not user_will and profile.get("energy_drain") == "低"
-                and duration <= GARBAGE_DUR_MAX):
-            anchors = [a for a in (ctx["lunch"][1] if ctx["lunch"] else None,
-                                   ctx["day_end_min"] - 60) if a is not None] or None
-        # 约束 7 + 预算豁免（no_slot"坚持安排"的回落通路）
-        budget = None if (user_will or e.get("_no_budget")) else ctx["day_budget"]
-        from_raw = e.get("_from") or e.get("start") or e.get("not_before")
-        start_from = datetime.fromisoformat(from_raw) if from_raw else now
-        if start_from <= now:
-            start_from = now
-        cands = candidate_slots(
-            start_from, duration, busy_acc,
-            day_start_min=ctx["day_start_min"], day_end_min=ctx["day_end_min"],
-            lunch=None if user_will else ctx["lunch"], morning_only=morning,
-            same_clock_first=same_clock,
-            day_load=dict(day_load) if (day_load is not None and not user_will) else None,
-            day_budget=budget, allowed_dates=allowed, anchor_mins=anchors,
-            avoid_windows=None if user_will else avoid, k=5)
-        # 约束 6：通勤前置（槽前 30 分钟须空闲——含同批已占与缓冲区）
-        commute = _commute_needed(profile)
-        for s in cands:
-            if commute and any(
-                    overlaps(s - timedelta(minutes=COMMUTE_MINUTES), s, b0, b1)
-                    for b0, b1 in busy_acc):
-                continue
-            return s
-        return None
-
     # —— 约束 9：频率防呆（先于找槽——防呆成立时无需找槽）——
     if conflict_queue or agent_entries:  # 零 LLM 毫秒级，但有活干时推一帧
         status_emitter()("正在检索日历与空档…")  # 过程反馈（提速批 2）
@@ -240,7 +247,7 @@ def finder_node(state: SchedulerState) -> dict:
     # title 未过降级 agent，但钟点来自用户原话——钟点即意志：撞既有 busy 转
     # conflict 问询（绝不静默挪槽，真机「明天下午三点开个会」曾被挪到后天
     # 早上 8 点、长口述"明天上午复诊"被顺延到周六）；past 仍拦（物理不可落）。
-    # 不撞 busy 的留在 agent 走草案（pick_slot user_will 豁免软闸，落原钟点）
+    # 不撞 busy 的留在 agent 走草案（pick_candidate user_will 豁免软闸，落原钟点）
     for e in list(agent_entries):
         if not (e.get("_from_user") and e.get("_from")):
             continue
@@ -263,7 +270,9 @@ def finder_node(state: SchedulerState) -> dict:
     # —— conflict 条目：主荐即改期建议（不占 busy、不进草案——用户没确认）——
     sugg: datetime | None = None
     for i, e in enumerate(conflict_queue):
-        slot = pick_slot(e, same_clock=True)
+        slot = pick_candidate(e, now=now, philosophy=philosophy, rainy=rainy,
+                              busy_acc=busy_acc, ctx=ctx, day_load=day_load,
+                              avoid=avoid, same_clock=True)
         if i == 0:
             sugg = slot
         if slot is not None:
@@ -284,7 +293,10 @@ def finder_node(state: SchedulerState) -> dict:
     for e in agent_entries:
         if e.get("_freq_blocked"):
             continue
-        slot = pick_slot(e, same_clock=False, user_will=bool(e.get("_from_user")))
+        slot = pick_candidate(e, now=now, philosophy=philosophy, rainy=rainy,
+                              busy_acc=busy_acc, ctx=ctx, day_load=day_load,
+                              avoid=avoid, same_clock=False,
+                              user_will=bool(e.get("_from_user")))
         if slot is None:
             raise_question("no_slot", [e])
             dropped.append(f"「{e['title']}」未来 7 天没有可用空档")
