@@ -7,7 +7,6 @@
 """
 
 import asyncio
-import json
 import logging
 from typing import Literal
 
@@ -18,27 +17,13 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from schemas import StatsImageExportIn, StatsMessageIn, StatsMessageOut, StatsReportOut
-from services import stats as stats_service
+from services import sse_kit, stats as stats_service
 from services.llm import (AI_NO_MODEL_SHORT_MSG, NoActiveModelError,
                           call_llm_stream, check_ai)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/stats", tags=["stats"])
-
-
-class _StreamDone:
-    """工作线程正常收尾哨兵（携带聚合全文）。"""
-
-    def __init__(self, text: str):
-        self.text = text
-
-
-class _StreamFailure:
-    """工作线程异常哨兵（消费侧翻译为 error 帧）。"""
-
-    def __init__(self, exc: BaseException):
-        self.exc = exc
 
 
 class ReportCreate(BaseModel):
@@ -91,10 +76,6 @@ class StatsFactIn(BaseModel):
 
     topic: str = Field(min_length=1, max_length=60)
     fact: str = Field(min_length=1, max_length=200)
-
-
-def _event_bytes(event: dict) -> str:
-    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 @router.get("/summary")
@@ -181,9 +162,9 @@ async def ask_stats(body: StatsAskIn, db: Session = Depends(get_db)):
         yield ": connected\n\n"
         gate = check_ai(db)
         if gate is not None:
-            yield _event_bytes({"type": "error", "code": gate.reason,
+            yield sse_kit.sse_frame({"type": "error", "code": gate.reason,
                                 "message": gate.message})
-            yield _event_bytes({"type": "done"})
+            yield sse_kit.sse_frame({"type": "done"})
             return
 
         # 消息构建移入工作线程（2026-11-16 优化批 2）：90 天范围的
@@ -198,60 +179,38 @@ async def ask_stats(body: StatsAskIn, db: Session = Depends(get_db)):
         except Exception as exc:
             logger.exception("统计问答上下文构建失败")
             from services.model_providers import describe_llm_error
-            yield _event_bytes({"type": "error", "code": "agent_error",
+            yield sse_kit.sse_frame({"type": "error", "code": "agent_error",
                                 "message": describe_llm_error(exc)})
-            yield _event_bytes({"type": "done"})
+            yield sse_kit.sse_frame({"type": "done"})
             return
 
-        queue: asyncio.Queue = asyncio.Queue()
-        loop = asyncio.get_running_loop()
-
-        def _run_llm() -> None:
-            """工作线程：call_llm_stream 同步驱动，增量经 call_soon_threadsafe
-            投回事件循环（asyncio.Queue 非线程安全——桥接同 ai_coach.chat）。"""
-            try:
-                text = call_llm_stream(
-                    messages,
-                    on_chunk=lambda t: loop.call_soon_threadsafe(
-                        queue.put_nowait, {"type": "delta", "text": t}),
-                )
-            except BaseException as exc:  # 消费侧 raise 后落入下方翻译分支
-                try:
-                    loop.call_soon_threadsafe(queue.put_nowait, _StreamFailure(exc))
-                except RuntimeError:
-                    pass  # 事件循环先关的极端窗口：静默退出
-            else:
-                try:
-                    loop.call_soon_threadsafe(queue.put_nowait, _StreamDone(text))
-                except RuntimeError:
-                    pass
-
-        task = asyncio.create_task(asyncio.to_thread(_run_llm))
-        try:
-            while True:
-                item = await queue.get()
-                if isinstance(item, _StreamDone):
-                    # 复盘引导总结轮可能带结构化尾部：剥离后 reply 发正文、
-                    # facts 帧带候选（前端确认条消费；普通模式无块零影响）
-                    reply, facts = stats_service.split_ask_reply(item.text)
-                    yield _event_bytes({"type": "reply", "content": reply})
-                    if facts:
-                        yield _event_bytes({"type": "facts", "candidates": facts})
-                    break
-                if isinstance(item, _StreamFailure):
-                    if isinstance(item.exc, NoActiveModelError):
-                        yield _event_bytes({"type": "error", "code": "no_model",
-                                            "message": AI_NO_MODEL_SHORT_MSG})
-                    else:
-                        logger.exception("统计问答异常：%s", body.question[:50])
-                        from services.model_providers import describe_llm_error
-                        yield _event_bytes({"type": "error", "code": "agent_error",
-                                            "message": describe_llm_error(item.exc)})
-                    break
-                yield _event_bytes(item)
-        finally:
-            task.cancel()  # 正常路径任务已结束；故障路径防泄漏（线程不可中断，自然跑完丢弃）
-        yield _event_bytes({"type": "done"})
+        # 线程桥收敛 sse_kit.stream_worker（2026-11-17 架构批 1）：增量经 deliver
+        # 投递，收尾信封 StreamDone/StreamFailure 由 kit 统一投尾——消费循环只按
+        # 信封分拣；线程不可中断自然跑完，任务由强引用池托管无需 cancel 句柄
+        queue = sse_kit.stream_worker(lambda deliver: call_llm_stream(
+            messages, on_chunk=lambda t: deliver({"type": "delta", "text": t})))
+        while True:
+            item = await queue.get()
+            if isinstance(item, sse_kit.StreamDone):
+                # 复盘引导总结轮可能带结构化尾部：剥离后 reply 发正文、
+                # facts 帧带候选（前端确认条消费；普通模式无块零影响）
+                reply, facts = stats_service.split_ask_reply(item.payload)
+                yield sse_kit.sse_frame({"type": "reply", "content": reply})
+                if facts:
+                    yield sse_kit.sse_frame({"type": "facts", "candidates": facts})
+                break
+            if isinstance(item, sse_kit.StreamFailure):
+                if isinstance(item.exc, NoActiveModelError):
+                    yield sse_kit.sse_frame({"type": "error", "code": "no_model",
+                                        "message": AI_NO_MODEL_SHORT_MSG})
+                else:
+                    logger.exception("统计问答异常：%s", body.question[:50])
+                    from services.model_providers import describe_llm_error
+                    yield sse_kit.sse_frame({"type": "error", "code": "agent_error",
+                                        "message": describe_llm_error(item.exc)})
+                break
+            yield sse_kit.sse_frame(item)
+        yield sse_kit.sse_frame({"type": "done"})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

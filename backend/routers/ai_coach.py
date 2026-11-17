@@ -27,7 +27,6 @@ POST /api/ai/chat 事件协议（data 载荷 type 字段）：
 """
 
 import asyncio
-import json
 import logging
 from datetime import datetime
 
@@ -61,54 +60,21 @@ from services.chat_turn import (
     finalize_turn as _finalize_turn,
     compact_history_async as _compact_history_async,
 )
+from services import sse_kit
 from services.llm import AI_NO_MODEL_SHORT_MSG, NoActiveModelError, check_ai
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ai", tags=["ai"])
 
-# 工作流事件流的无事件保活间隔（秒，同 reminders 先例）
-_PING_SECONDS = 30
-
-
-class _StreamFailure:
-    """工作线程 → 消费循环的失败信封：图执行异常原样包装入队，消费侧 raise 后
-    落入 chat 端点既有的异常翻译分支（no_model / not_ready / agent_error）。"""
-
-    __slots__ = ("exc",)
-
-    def __init__(self, exc: BaseException):
-        self.exc = exc
-
-
-class _StreamDone:
-    """完成哨兵：携带图末个 values 帧（终态全量 state，与 invoke 返回值同源同值）。
-    图零 values 帧（理论不发生——qa/smalltalk 必写 final_reply）时 final 为 None，
-    _finalize_turn 的 `final or {}` 兜底。"""
-
-    __slots__ = ("final",)
-
-    def __init__(self, final):
-        self.final = final
-
-
 # 轮次任务出队哨兵（2026-10-23 批 3）：轮次体全部事件已投递完毕——身份比较用
 _TURN_END = object()
-
-# 轮次任务强引用池（2026-10-23 批 3）：断连后轮次继续跑（锁自释、消息照落），
-# asyncio 只持任务弱引用，无人引用可能在完成前被 GC 静默蒸发——同
-# _bg_compact_tasks 教训
-_turn_tasks: set[asyncio.Task] = set()
 
 
 def _load_graph():
     """兼容再导出（2026-10-23 轮次内核下沉 services/chat_turn.py）：测试 monkeypatch
     锚点 ai_coach._load_graph 保留——本模块内调用点写裸名，打模块属性即生效。"""
     return chat_turn.load_graph()
-
-
-def _event_bytes(event: dict) -> str:
-    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 @router.post("/chat")
@@ -126,17 +92,17 @@ async def chat(body: ChatIn, db: Session = Depends(get_db)):
         # 前置快查（纯读库毫秒级，留在事件循环线程；秒回路径不进锁）
         gate = check_ai(db)
         if gate is not None:
-            yield _event_bytes({"type": "error", "code": gate.reason,
+            yield sse_kit.sse_frame({"type": "error", "code": gate.reason,
                                 "message": gate.message})
-            yield _event_bytes({"type": "done"})
+            yield sse_kit.sse_frame({"type": "done"})
             return
         try:
             graph = _load_graph()
         except (ImportError, AttributeError):
             graph = None
         if graph is None:
-            yield _event_bytes({"type": "error", "code": "not_ready", "message": "智能体尚未就绪（agents/graph.py 手写区未实现）"})
-            yield _event_bytes({"type": "done"})
+            yield sse_kit.sse_frame({"type": "error", "code": "not_ready", "message": "智能体尚未就绪（agents/graph.py 手写区未实现）"})
+            yield sse_kit.sse_frame({"type": "done"})
             return
 
         out: asyncio.Queue = asyncio.Queue()
@@ -168,48 +134,33 @@ async def chat(body: ChatIn, db: Session = Depends(get_db)):
                         #   且逐 token 实时到达（custom 模式的 waiter 机制，不积压到 superstep 末）；
                         # - "values"：每 superstep 后的全量 state，末帧 == invoke 返回值同源同值，
                         #   记为 final 交 _finalize_turn。
-                        # 桥接：asyncio.Queue 非线程安全——工作线程经 call_soon_threadsafe 投递；
-                        # 事件循环先关的极端窗口投递失败（RuntimeError）静默吞，工作线程自然退出。
-                        # turn_db 全程只在事件循环线程使用（线程隔离铁律）。
-                        queue: asyncio.Queue = asyncio.Queue()
-                        loop = asyncio.get_running_loop()
-
-                        def _drain() -> None:
+                        # 桥接/收尾信封 2026-11-17 架构批 1 收敛 sse_kit.stream_worker
+                        # （deliver + StreamDone/StreamFailure + 强引用池托管，线程不可中断
+                        # 自然跑完出池——不再需要 cancel 句柄）。turn_db 全程只在事件循环
+                        # 线程使用（线程隔离铁律）。
+                        def _consume_graph(deliver):
                             final_local = None
-                            try:
-                                for mode, payload in graph().stream(state, stream_mode=["custom", "values"]):
-                                    if mode == "custom":
-                                        loop.call_soon_threadsafe(queue.put_nowait, payload)
-                                    else:
-                                        final_local = payload
-                            except BaseException as exc:  # 消费侧 raise 后落入下方翻译分支
-                                try:
-                                    loop.call_soon_threadsafe(queue.put_nowait, _StreamFailure(exc))
-                                except RuntimeError:
-                                    pass
-                            else:
-                                try:
-                                    loop.call_soon_threadsafe(queue.put_nowait, _StreamDone(final_local))
-                                except RuntimeError:
-                                    pass
+                            for mode, payload in graph().stream(state, stream_mode=["custom", "values"]):
+                                if mode == "custom":
+                                    deliver(payload)
+                                else:
+                                    final_local = payload
+                            return final_local
 
-                        producer = asyncio.create_task(asyncio.to_thread(_drain))
+                        queue = sse_kit.stream_worker(_consume_graph)
                         graph_exc: BaseException | None = None
                         final = None
-                        try:
-                            while True:
-                                item = await queue.get()
-                                if isinstance(item, _StreamFailure):
-                                    graph_exc = item.exc
-                                    break
-                                if isinstance(item, _StreamDone):
-                                    final = item.final
-                                    break
-                                out.put_nowait(item)  # custom 帧 = delta 事件
-                            if graph_exc is not None:
-                                raise graph_exc
-                        finally:
-                            producer.cancel()  # 图故障防任务泄漏；图线程不可中断，自然跑完丢弃
+                        while True:
+                            item = await queue.get()
+                            if isinstance(item, sse_kit.StreamFailure):
+                                graph_exc = item.exc
+                                break
+                            if isinstance(item, sse_kit.StreamDone):
+                                final = item.payload
+                                break
+                            out.put_nowait(item)  # custom 帧 = delta 事件
+                        if graph_exc is not None:
+                            raise graph_exc
                     except NoActiveModelError:
                         out.put_nowait({"type": "error", "code": "no_model",
                                         "message": AI_NO_MODEL_SHORT_MSG})
@@ -246,19 +197,18 @@ async def chat(body: ChatIn, db: Session = Depends(get_db)):
                 lock.release()
                 out.put_nowait(_TURN_END)
 
-        task = asyncio.create_task(_turn())
-        _turn_tasks.add(task)
-        task.add_done_callback(_turn_tasks.discard)
+        # 强引用池托管（sse_kit.spawn）：断连后轮次继续跑（锁自释、消息照落）
+        sse_kit.spawn(asyncio.create_task(_turn()))
         try:
             while True:
                 item = await out.get()
                 if item is _TURN_END:
                     break
-                yield _event_bytes(item)
+                yield sse_kit.sse_frame(item)
         finally:
             # 断连（GeneratorExit）或正常退出：轮次任务不取消——跑完落库、锁自释
             pass
-        yield _event_bytes({"type": "done"})
+        yield sse_kit.sse_frame({"type": "done"})
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -478,20 +428,9 @@ def delete_fact(fact_id: str, db: Session = Depends(get_db)):
 
 @router.get("/stream")
 async def stream_workflow_events():
-    """工作流事件流（晨间对齐 / 夜间整理 / 负荷熔断），协议同提醒流。"""
+    """工作流事件流（晨间对齐 / 夜间整理 / 负荷熔断），协议同提醒流
+    （帧与退订时序收在 sse_kit.subscribe_stream 单源）。"""
     q = workflows.subscribe()
-
-    async def event_stream():
-        try:
-            yield ": connected\n\n"
-            while True:
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=_PING_SECONDS)
-                except asyncio.TimeoutError:
-                    yield ": ping\n\n"
-                    continue
-                yield _event_bytes(event)
-        finally:
-            workflows.unsubscribe(q)
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        sse_kit.subscribe_stream(q, unsubscribe=workflows.unsubscribe),
+        media_type="text/event-stream")

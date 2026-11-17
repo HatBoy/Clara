@@ -13,7 +13,7 @@ import logging
 from sqlalchemy.orm import Session
 
 from agents.nodes import QUESTION_KINDS
-from services import ai_data, data_ingest
+from services import ai_data, data_ingest, sse_kit
 from services.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -318,19 +318,13 @@ def compact_history_async() -> None:
         logger.warning("对话上下文压缩失败（静默降级，下轮重试）", exc_info=True)
 
 
-# 后台压缩任务引用池（2026-10-21 复查批 C 增）：asyncio 只持任务弱引用，裸
-# create_task 无人引用时可能在完成前被 GC 静默蒸发——强引用挂池 + done 回调移除
-_bg_compact_tasks: set[asyncio.Task] = set()
-
-
 def schedule_compaction() -> None:
     """轮次结束后调度后台压缩（须在事件循环协程内调用；远程渠道轮复用同款）。
 
-    fire-and-forget 不占对话时延；任务挂引用池防 GC（见 _bg_compact_tasks 注释）。
+    fire-and-forget 不占对话时延；强引用池托管（sse_kit.spawn 单源，
+    2026-10-21 复查批 C 的 GC 坑修法收编）。
     """
-    bg = asyncio.create_task(asyncio.to_thread(compact_history_async))
-    _bg_compact_tasks.add(bg)
-    bg.add_done_callback(_bg_compact_tasks.discard)
+    sse_kit.spawn(asyncio.create_task(asyncio.to_thread(compact_history_async)))
 
 
 # —— 轮次串行锁（2026-10-23 聊天通讯批 3 增）—————————————————————————————

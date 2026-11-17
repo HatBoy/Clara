@@ -15,11 +15,9 @@ from sqlalchemy.orm import Session
 from database import get_db
 from schemas import IcsImportOut, IcsImportRequest, IngestSourceOut, IngestSourceUpdate
 from services import data_ingest, ics_import, workflows
+from services import sse_kit
 from services.llm import check_ai
 from services.settings import get_settings
-
-# 手动采集后台任务引用池（asyncio 弱引用语义，见 run 端点注释）
-_bg_tasks: set[asyncio.Task] = set()
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +46,9 @@ async def run_ingest_now(wait: bool = False, db: Session = Depends(get_db)):
         logger.info("手动触发数据采集（等待完成）")
         summary = await workflows.run_ingest_now(manual=True)
         return summary
-    # 强引用池（2026-11-16 优化批 2，照 routers/sync.py 先例）：asyncio 只持
-    # 弱引用，无引用的长任务可能在跑完前被 GC，表现为「手动采集偶发无后续」。
-    task = asyncio.create_task(workflows.run_ingest_now(manual=True))
-    _bg_tasks.add(task)
-    task.add_done_callback(_bg_tasks.discard)
+    # 强引用池托管（sse_kit.spawn 单源：asyncio 弱引用 GC 坑，
+    # 旧「手动采集偶发无后续」的真身）
+    sse_kit.spawn(asyncio.create_task(workflows.run_ingest_now(manual=True)))
     logger.info("手动触发数据采集")
     return {"started": True}
 

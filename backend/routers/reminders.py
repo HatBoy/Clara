@@ -7,9 +7,6 @@
 - 事件为 "data: {json}\\n\\n"，载荷字段见 services.reminders.claim_due
 """
 
-import asyncio
-import json
-
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -17,32 +14,19 @@ from sqlalchemy.orm import Session
 from database import get_db
 from schemas import ReminderSnoozeIn, ReminderSnoozeOut
 from services import reminders as reminders_service
+from services import sse_kit
 
 router = APIRouter(prefix="/api/reminders", tags=["reminders"])
-
-# 无事件保活间隔（秒）
-_PING_SECONDS = 30
 
 
 @router.get("/stream")
 async def stream_reminders():
-    """提醒事件流。客户端断开时 FastAPI 取消生成器，finally 退订防队列泄漏。"""
+    """提醒事件流。客户端断开时 FastAPI 取消生成器，finally 退订防队列泄漏
+    （connected/ping/data 帧与退订时序收在 sse_kit.subscribe_stream 单源）。"""
     q = reminders_service.subscribe()
-
-    async def event_stream():
-        try:
-            yield ": connected\n\n"
-            while True:
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=_PING_SECONDS)
-                except asyncio.TimeoutError:
-                    yield ": ping\n\n"
-                    continue
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-        finally:
-            reminders_service.unsubscribe(q)
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        sse_kit.subscribe_stream(q, unsubscribe=reminders_service.unsubscribe),
+        media_type="text/event-stream")
 
 
 @router.post("/{task_id}/snooze", response_model=ReminderSnoozeOut)
