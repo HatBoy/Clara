@@ -29,6 +29,7 @@ import logging
 import os
 import time
 from collections.abc import Callable
+from typing import NamedTuple
 
 # 必须发生在 import litellm 之前（同 services/model_providers.py 先例）：
 # 跳过联网拉取模型价格表（离线/代理环境下阻塞导入）
@@ -75,6 +76,38 @@ class NoActiveModelError(Exception):
 
 class ContextOverflowError(Exception):
     """输入估算 token 超出激活模型 context_length 档位（前置拦截）。"""
+
+
+# —— AI 可用性闸门（2026-11-17 架构批 1：三态判定 + 规范文案单源）————————
+# 原先 13 处调用点各写一遍「ai_enabled 判定 + 零激活判定 + 中文文案」，口径与
+# 文案靠人肉对齐；收敛后响应机制（SSE 帧 / HTTPException / 静默跳过 / 渠道
+# hint）仍是各调用方的合法差异——闸门只单源「判定顺序 + reason 域 + 文案」。
+AI_DISABLED_MSG = "AI 功能已在设置中关闭"
+AI_NO_MODEL_MSG = "未激活任何模型，请到设置 → 模型接入中激活"
+AI_NO_MODEL_SHORT_MSG = "未激活任何模型"  # 流中断态（异常路径）用短文案
+
+
+class AiGate(NamedTuple):
+    """闸门拦截结果：reason ∈ {"disabled", "no_model"} + 该态规范文案。"""
+
+    reason: str
+    message: str
+
+
+def check_ai(db, *, settings=None) -> AiGate | None:
+    """AI 可用性三态判定单源：None = 可用（开 AI 且有激活模型）。
+
+    settings=None 时走 get_settings（get_or_create 语义）；并行只读段传自有
+    settings 防竞态（同 ai_data.injected_rules 形态）。
+    """
+    from services.settings import get_settings
+
+    s = settings if settings is not None else get_settings(db)
+    if not s.ai_enabled:
+        return AiGate("disabled", AI_DISABLED_MSG)
+    if get_active_model(db) is None:
+        return AiGate("no_model", AI_NO_MODEL_MSG)
+    return None
 
 
 def estimate_tokens(messages: list) -> int:
@@ -340,7 +373,7 @@ def init_llm(
 
             model = get_aux_model(db) or model
     if model is None:
-        raise NoActiveModelError("未激活任何模型，请到设置 → 模型接入中激活")
+        raise NoActiveModelError(AI_NO_MODEL_MSG)
 
     thinking = _thinking_params(model.model_name, model.thinking_mode, max_tokens,
                                 json_mode=json_mode)

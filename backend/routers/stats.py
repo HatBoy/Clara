@@ -19,9 +19,8 @@ from sqlalchemy.orm import Session
 from database import get_db
 from schemas import StatsImageExportIn, StatsMessageIn, StatsMessageOut, StatsReportOut
 from services import stats as stats_service
-from services.llm import NoActiveModelError, call_llm_stream
-from services.model_providers import get_active_model
-from services.settings import get_settings
+from services.llm import (AI_NO_MODEL_SHORT_MSG, NoActiveModelError,
+                          call_llm_stream, check_ai)
 
 logger = logging.getLogger(__name__)
 
@@ -180,14 +179,10 @@ async def ask_stats(body: StatsAskIn, db: Session = Depends(get_db)):
     """
     async def event_stream():
         yield ": connected\n\n"
-        if not get_settings(db).ai_enabled:
-            yield _event_bytes({"type": "error", "code": "disabled",
-                                "message": "AI 功能已在设置中关闭"})
-            yield _event_bytes({"type": "done"})
-            return
-        if get_active_model(db) is None:
-            yield _event_bytes({"type": "error", "code": "no_model",
-                                "message": "未激活任何模型，请到设置 → 模型接入中激活"})
+        gate = check_ai(db)
+        if gate is not None:
+            yield _event_bytes({"type": "error", "code": gate.reason,
+                                "message": gate.message})
             yield _event_bytes({"type": "done"})
             return
 
@@ -246,7 +241,7 @@ async def ask_stats(body: StatsAskIn, db: Session = Depends(get_db)):
                 if isinstance(item, _StreamFailure):
                     if isinstance(item.exc, NoActiveModelError):
                         yield _event_bytes({"type": "error", "code": "no_model",
-                                            "message": "未激活任何模型"})
+                                            "message": AI_NO_MODEL_SHORT_MSG})
                     else:
                         logger.exception("统计问答异常：%s", body.question[:50])
                         from services.model_providers import describe_llm_error

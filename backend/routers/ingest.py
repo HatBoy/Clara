@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from schemas import IcsImportOut, IcsImportRequest, IngestSourceOut, IngestSourceUpdate
 from services import data_ingest, ics_import, workflows
-from services.model_providers import get_active_model
+from services.llm import check_ai
 from services.settings import get_settings
 
 # 手动采集后台任务引用池（asyncio 弱引用语义，见 run 端点注释）
@@ -39,10 +39,9 @@ async def run_ingest_now(wait: bool = False, db: Session = Depends(get_db)):
     settings = get_settings(db)
     if not settings.ingest_enabled:
         raise HTTPException(status_code=422, detail="每日数据采集未开启（设置 → 定时任务）")
-    if not settings.ai_enabled:
-        raise HTTPException(status_code=422, detail="AI 功能已在设置中关闭")
-    if get_active_model(db) is None:
-        raise HTTPException(status_code=422, detail="未激活任何模型，请到设置 → 模型接入中激活")
+    gate = check_ai(db, settings=settings)
+    if gate is not None:
+        raise HTTPException(status_code=422, detail=gate.message)
     if workflows.ingest_in_flight():
         raise HTTPException(status_code=409, detail="上一轮采集仍在进行中，请稍后再试")
     if wait:

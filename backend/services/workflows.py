@@ -37,6 +37,7 @@ from services.ai_data import append_message, create_proposal, expire_stale_propo
 from services.model_providers import get_active_model
 from services.reminders import _cancelled_dates, _parse_rule
 from services import stats as stats_service
+from services.llm import check_ai
 from services.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -523,10 +524,9 @@ async def _run_morning() -> None:
     try:
         with SessionLocal() as db:
             settings = get_settings(db)
-            if not settings.ai_enabled:
-                return
-            if get_active_model(db) is None:
-                logger.info("晨间对齐：零激活模型，静默跳过（降级矩阵）")
+            gate = check_ai(db, settings=settings)
+            if gate is not None:
+                logger.info("晨间对齐：%s，静默跳过（降级矩阵）", gate.message)
                 return
             report_min = settings.morning_brief_min  # 补账静默判定的报点
             preflight_fn = _load_agent("agents.graph", "run_preflight")
@@ -571,10 +571,9 @@ async def _run_prep() -> None:
     try:
         with SessionLocal() as db:
             settings = get_settings(db)
-            if not settings.ai_enabled:
-                return
-            if get_active_model(db) is None:
-                logger.info("会前准备：零激活模型，静默跳过（降级矩阵）")
+            gate = check_ai(db, settings=settings)
+            if gate is not None:
+                logger.info("会前准备：%s，静默跳过（降级矩阵）", gate.message)
                 return
             # 低介入档跳过（优化批 5 信任闸）：近 14 天采纳率 <30% 时主动清单
             # 不再生成——明日会议提醒照常走 Reminder 通道（低介入≠静默）
@@ -623,10 +622,9 @@ async def _run_minutes_invite() -> None:
     try:
         with SessionLocal() as db:
             settings = get_settings(db)
-            if not settings.ai_enabled:
-                return
-            if get_active_model(db) is None:
-                logger.info("会后纪要邀请：零激活模型，静默跳过（降级矩阵）")
+            gate = check_ai(db, settings=settings)
+            if gate is not None:
+                logger.info("会后纪要邀请：%s，静默跳过（降级矩阵）", gate.message)
                 return
             from services.ai_data import trust_tier
 
@@ -665,10 +663,9 @@ async def _run_hardtask() -> None:
     try:
         with SessionLocal() as db:
             settings = get_settings(db)
-            if not settings.ai_enabled:
-                return
-            if get_active_model(db) is None:
-                logger.info("高难协助：零激活模型，静默跳过（降级矩阵）")
+            gate = check_ai(db, settings=settings)
+            if gate is not None:
+                logger.info("高难协助：%s，静默跳过（降级矩阵）", gate.message)
                 return
             report_min = settings.nightly_start_min  # 报点（与夜间整理共用门槛）
             fn = _load_agent("agents.graph", "run_hard_task")
@@ -733,10 +730,9 @@ async def _run_weekly_report(anchor: datetime | None = None) -> None:
     try:
         with SessionLocal() as db:
             settings = get_settings(db)
-            if not settings.ai_enabled:
-                return
-            if get_active_model(db) is None:
-                logger.info("周报自动生成：零激活模型，静默跳过（降级矩阵）")
+            gate = check_ai(db, settings=settings)
+            if gate is not None:
+                logger.info("周报自动生成：%s，静默跳过（降级矩阵）", gate.message)
                 return
             report_min = settings.nightly_start_min  # 补账静默判定的报点
             # LLM + 全量聚合在 stats_service.generate_report（同步秒级）——铁律 to_thread
@@ -767,10 +763,9 @@ async def _run_custom_brief(brief_id: str) -> None:
     优先于补账）；降级矩阵同会前准备。补账轮静默（2026-10-25 启动收敛）。"""
     try:
         with SessionLocal() as db:
-            if not get_settings(db).ai_enabled:
-                return
-            if get_active_model(db) is None:
-                logger.info("定时简报 %s：零激活模型，静默跳过", brief_id)
+            gate = check_ai(db)
+            if gate is not None:
+                logger.info("定时简报 %s：%s，静默跳过", brief_id, gate.message)
                 return
             from services.jobs import list_briefs
 
@@ -871,10 +866,13 @@ async def _run_ingest(manual: bool = False) -> None:
     try:
         with SessionLocal() as db:
             settings = get_settings(db)
-            if not settings.ai_enabled:
-                return _summary(skipped="ai_off")
-            if get_active_model(db) is None:
-                logger.info("数据采集：零激活模型，静默跳过（降级矩阵）")
+            gate = check_ai(db, settings=settings)
+            if gate is not None:
+                # skipped 值是前端消费的既有契约（ai_off / no_model）——与闸门
+                # reason 域的映射在此单点
+                if gate.reason == "disabled":
+                    return _summary(skipped="ai_off")
+                logger.info("数据采集：%s，静默跳过（降级矩阵）", gate.message)
                 return _summary(skipped="no_model")
             # 补账静默报点 = 最近一个已过槽的时刻（认领谓词保证至少首槽已过；
             # cur 与槽分钟同当日口径无跨天回绕）。default 回落首槽：午夜至首槽
@@ -1046,7 +1044,7 @@ def _collect_priority_plan(db: Session, now: datetime) -> dict | None:
     from services.ai_data import injected_rules
 
     rules = injected_rules(db, settings=s, with_personality=False).all
-    ai_on = bool(s.ai_enabled and get_active_model(db) is not None)
+    ai_on = check_ai(db, settings=s) is None
     entries = [{
         "key": t.id, "title": t.title, "priority": t.priority or 2,
         # 未估时先查同类历史均值（优化批 5——旧版一刀切 30 分钟），无记录才落

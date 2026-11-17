@@ -664,7 +664,7 @@ async def handle_incoming(provider: str, text: str, reply, epoch: int | None = N
     """
     from database import SessionLocal
     from services import chat_turn, workflows
-    from services.model_providers import get_active_model
+    from services.llm import check_ai
     from services.settings import get_settings
 
     if epoch is not None and epoch != _epoch:
@@ -672,11 +672,10 @@ async def handle_incoming(provider: str, text: str, reply, epoch: int | None = N
 
     # 快查三连（同桌面端 /chat 前置闸，毫秒级不进锁）
     with SessionLocal() as db:
-        if not get_settings(db).ai_enabled:
-            await asyncio.to_thread(reply, _DISABLED_HINT)
-            return
-        if get_active_model(db) is None:
-            await asyncio.to_thread(reply, _NO_MODEL_HINT)
+        gate = check_ai(db)
+        if gate is not None:
+            hint = _DISABLED_HINT if gate.reason == "disabled" else _NO_MODEL_HINT
+            await asyncio.to_thread(reply, hint)
             return
     try:
         graph = chat_turn.load_graph()

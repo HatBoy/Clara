@@ -87,10 +87,12 @@ def test_parse_minutes_over_eight_items_truncated():
 
 def test_minutes_endpoint_disabled_ai_503(client, monkeypatch):
     import routers.ai_coach as ai_coach
+    from services.llm import AI_DISABLED_MSG, AiGate
 
-    class _S:  # 最小设置替身（仅端点前置快查读 ai_enabled）
-        ai_enabled = False
-    monkeypatch.setattr(ai_coach, "get_settings", lambda db: _S())
+    # 2026-11-17 架构批 1：前置快查收敛 check_ai 闸门，替身改打新 seam
+    monkeypatch.setattr(
+        ai_coach, "check_ai",
+        lambda db, *, settings=None: AiGate("disabled", AI_DISABLED_MSG))
     resp = client.post("/api/ai/meeting-minutes",
                        json={"text": "会中决定整理反馈并发给组内"})
     assert resp.status_code == 503

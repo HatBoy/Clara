@@ -735,3 +735,49 @@ def test_call_llm_aux_falls_back_to_main_on_failure(monkeypatch):
                         lambda **kw: FakeModel(kw.get("role", "main")))
     out = llm.call_llm_aux([{"role": "user", "content": "u"}], json_mode=True)
     assert out == "main-ok"
+
+
+# —— check_ai 闸门单源（2026-11-17 架构批 1）————————————————————————
+
+
+def _gate_ai_enabled(on: bool) -> None:
+    with TestingSessionLocal() as db:
+        from services.settings import get_settings
+
+        s = get_settings(db)
+        s.ai_enabled = on
+        db.commit()
+
+
+def test_check_ai_disabled_and_no_model_states():
+    """三态判定：关 AI → disabled；开 AI 零激活 → no_model；文案单源。"""
+    _gate_ai_enabled(False)
+    with TestingSessionLocal() as db:
+        gate = llm.check_ai(db)
+    assert gate is not None and gate.reason == "disabled"
+    assert gate.message == llm.AI_DISABLED_MSG
+
+    _gate_ai_enabled(True)
+    with TestingSessionLocal() as db:
+        gate = llm.check_ai(db)
+    assert gate is not None and gate.reason == "no_model"
+    assert gate.message == llm.AI_NO_MODEL_MSG
+
+
+def test_check_ai_available_with_active_model():
+    """开 AI + 有激活模型 → None（可用）。"""
+    _gate_ai_enabled(True)
+    _activate()
+    with TestingSessionLocal() as db:
+        assert llm.check_ai(db) is None
+
+
+def test_check_ai_settings_param_skips_db_read():
+    """settings=传入时不再走 get_settings（并行只读段防竞态形态）。"""
+
+    class _S:
+        ai_enabled = False
+
+    with TestingSessionLocal() as db:
+        gate = llm.check_ai(db, settings=_S())
+    assert gate is not None and gate.reason == "disabled"

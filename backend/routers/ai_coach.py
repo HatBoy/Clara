@@ -61,9 +61,7 @@ from services.chat_turn import (
     finalize_turn as _finalize_turn,
     compact_history_async as _compact_history_async,
 )
-from services.llm import NoActiveModelError
-from services.model_providers import get_active_model
-from services.settings import get_settings
+from services.llm import AI_NO_MODEL_SHORT_MSG, NoActiveModelError, check_ai
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +124,10 @@ async def chat(body: ChatIn, db: Session = Depends(get_db)):
     async def event_stream():
         yield ": connected\n\n"
         # 前置快查（纯读库毫秒级，留在事件循环线程；秒回路径不进锁）
-        if not get_settings(db).ai_enabled:
-            yield _event_bytes({"type": "error", "code": "disabled", "message": "AI 功能已在设置中关闭"})
-            yield _event_bytes({"type": "done"})
-            return
-        if get_active_model(db) is None:
-            yield _event_bytes({"type": "error", "code": "no_model", "message": "未激活任何模型，请到设置 → 模型接入中激活"})
+        gate = check_ai(db)
+        if gate is not None:
+            yield _event_bytes({"type": "error", "code": gate.reason,
+                                "message": gate.message})
             yield _event_bytes({"type": "done"})
             return
         try:
@@ -215,7 +211,8 @@ async def chat(body: ChatIn, db: Session = Depends(get_db)):
                         finally:
                             producer.cancel()  # 图故障防任务泄漏；图线程不可中断，自然跑完丢弃
                     except NoActiveModelError:
-                        out.put_nowait({"type": "error", "code": "no_model", "message": "未激活任何模型"})
+                        out.put_nowait({"type": "error", "code": "no_model",
+                                        "message": AI_NO_MODEL_SHORT_MSG})
                     except NotImplementedError:
                         out.put_nowait({"type": "error", "code": "not_ready", "message": "智能体尚未就绪（build_graph 未实现）"})
                     except Exception as exc:
@@ -273,11 +270,9 @@ def meeting_minutes(body: MinutesIn, db: Session = Depends(get_db)):
     线程池不卡事件循环，同 QuickAdd 复核同步先例）；浮层 / 聊天入口共用。
     AI 关 / 零激活 / 提炼失败（解析全空）→ 503；会议 id 无效 → 404。
     items 空仍建卡（"未识别出行动项"也是有效回执）。"""
-    s = get_settings(db)
-    if not s.ai_enabled:
-        raise HTTPException(503, "AI 功能已在设置中关闭")
-    if get_active_model(db) is None:
-        raise HTTPException(503, "未激活任何模型，请到设置 → 模型接入中激活")
+    gate = check_ai(db)
+    if gate is not None:
+        raise HTTPException(503, gate.message)
     if body.task_id:
         from models import Task
 
@@ -359,10 +354,9 @@ async def compact_session(db: Session = Depends(get_db)):
     落库，再执行从游标断点续压），其余异常翻译 error。"""
     from services.ai_data import CompactPartialError
 
-    if not get_settings(db).ai_enabled:
-        return SessionCompactOut(compacted=0, reason="disabled")
-    if get_active_model(db) is None:
-        return SessionCompactOut(compacted=0, reason="no_model")
+    gate = check_ai(db)
+    if gate is not None:
+        return SessionCompactOut(compacted=0, reason=gate.reason)
 
     async with chat_turn.get_turn_lock():
         try:
