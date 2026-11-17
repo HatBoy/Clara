@@ -1,6 +1,7 @@
 // 后端 FastAPI 数据接入与形状转换层：所有"后端形状 ↔ 前端形状"的适配收敛于此，
 // 组件继续消费 src/data/tasks.ts 的相对时间体系（dateOffset + start/end 小时小数），UI 零改动。
 // 读路径按窗口增量拉取（窗口状态在 App.tsx）；写路径（增删改）的请求体构造也收敛在此。
+import { streamSsePost } from "./sse";
 import type { Project, Task } from "../data/tasks";
 import { durationText } from "../data/tasks";
 import { parseRrule, toRrule } from "./rrule";
@@ -548,37 +549,10 @@ export async function askStats(
   signal?: AbortSignal,
   mode: "ask" | "review" = "ask",
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/stats/ask`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ days, question, history, mode }),
-    signal,
-  });
-  if (!res.ok || !res.body) throw new Error(`统计问答请求失败: ${res.status}`);
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let sep: number;
-    while ((sep = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
-      const data = frame
-        .split("\n")
-        .filter((l) => l.startsWith("data: "))
-        .map((l) => l.slice(6))
-        .join("\n");
-      if (!data) continue; // ": connected" 注释帧
-      try {
-        onEvent(JSON.parse(data) as StatsAskEvent);
-      } catch {
-        // 坏帧丢弃
-      }
-    }
-  }
+  // 分帧解析单源 lib/sse.ts（2026-11-17 架构批 4，原与 streamChat 逐字重复）
+  await streamSsePost<StatsAskEvent>(
+    `${API_BASE}/api/stats/ask`, { days, question, history, mode },
+    "统计问答", onEvent, signal);
 }
 
 /**

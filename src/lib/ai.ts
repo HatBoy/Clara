@@ -4,6 +4,7 @@
 // 流（EventSource 不支持 POST），fetch + ReadableStream 手解析（协议见后端
 // routers/ai_coach.py 模块头：": connected" 注释行 + "data: {json}\n\n" 帧）。
 import { API_BASE, ApiTask, epochDayOf, getJson, request } from "./api";
+import { streamSsePost } from "./sse";
 import type { Recurrence } from "../data/tasks";
 
 // —— 会话历史（GET /messages，时间正序）——
@@ -323,38 +324,9 @@ export async function streamChat(
   onEvent: (ev: ChatEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/ai/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
-    signal,
-  });
-  if (!res.ok || !res.body) throw new Error(`AI 对话请求失败: ${res.status}`);
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    // SSE 帧以空行（\n\n）分隔；帧内取 "data: " 前缀行拼载荷（本协议恒单行）
-    let sep: number;
-    while ((sep = buffer.indexOf("\n\n")) !== -1) {
-      const frame = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
-      const data = frame
-        .split("\n")
-        .filter((l) => l.startsWith("data: "))
-        .map((l) => l.slice(6))
-        .join("\n");
-      if (!data) continue; // ": connected" / ": ping" 注释帧
-      try {
-        onEvent(JSON.parse(data) as ChatEvent);
-      } catch {
-        // 坏帧丢弃
-      }
-    }
-  }
+  // 分帧解析单源 lib/sse.ts（2026-11-17 架构批 4，原与 askStats 逐字重复）
+  await streamSsePost<ChatEvent>(
+    `${API_BASE}/api/ai/chat`, { message }, "AI 对话", onEvent, signal);
 }
 
 // —— 幽灵方块（draft 条目 → 中栏时间线几何；口径同 toFrontendTask）——
