@@ -58,6 +58,30 @@ def test_load_sync_format_zip(tmp_path):
     assert "sync_settings" not in tables  # 凭证域过滤
 
 
+def test_load_allows_excluded_table_members(tmp_path):
+    # 2026-11-17 二轮批 1：旧同步目录残留的排除表成员（workflow_runs 等）放行、
+    # 数据丢弃——README 指引的「下载目录压 zip 合并导入」灾备路径此前直接 422；
+    # 真未知表仍拒
+    z = _sync_zip(tmp_path, {
+        "tasks": [_task_row("a", "A")],
+        "workflow_runs": [{"id": "w1"}],   # 2026-11-16 前同步范围的远端残留
+        "ai_usage_events": [{"id": "u1"}],  # 设备本地遥测（恒排除）
+        "bogus_table": [{"id": "?"}],
+    })
+    try:
+        sync_merge.load_zip_tables(str(z))
+        raise AssertionError("真未知表应拒绝")
+    except ValueError as e:
+        assert "bogus_table" in str(e)
+    z2 = _sync_zip(tmp_path, {
+        "tasks": [_task_row("a", "A")],
+        "workflow_runs": [{"id": "w1"}],
+        "ai_usage_events": [{"id": "u1"}],
+    }, name="sync2.zip")
+    tables = sync_merge.load_zip_tables(str(z2))
+    assert set(tables) == {"tasks"}  # 排除表成员放行但数据丢弃
+
+
 def test_load_backup_format_zip(tmp_path):
     z = _backup_zip(tmp_path, [("a", "A")])
     tables = sync_merge.load_zip_tables(str(z))

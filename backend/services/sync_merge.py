@@ -59,14 +59,22 @@ def load_zip_tables(path: str) -> dict[str, list[dict]]:
         tables: dict[str, list[dict]] = {}
         if app == "clara-sync":
             # 同步格式：tables/<t>.json 散文件
+            from services.sync_engine import SYNC_EXCLUDED_TABLES
+
             member_map = {}
             for norm_name, orig in norm.items():
                 if norm_name.startswith("tables/") and norm_name.endswith(".json"):
                     member_map[norm_name[len("tables/"):-len(".json")]] = orig
-            unknown = set(member_map) - set(SYNC_TABLES)
+            # 排除表成员放行、数据丢弃（2026-11-17 二轮批 1）：2026-11-16 前同步过的
+            # 远端目录必含 workflow_runs.json（当时在同步范围、排除后远端文件无人
+            # 清理）——README 指引的「下载目录压 zip 合并导入」灾备路径此前直接
+            # 422。与覆盖恢复 _materialize_sync_zip 的白名单口径对齐（真未知表仍拒）。
+            unknown = set(member_map) - set(SYNC_TABLES) - set(SYNC_EXCLUDED_TABLES)
             if unknown:
                 raise ValueError(f"备份包含未知表文件：{sorted(unknown)[:3]}")
             for name, orig in member_map.items():
+                if name in SYNC_EXCLUDED_TABLES:
+                    continue  # 设备本地表账本：不解析不导入（省大文件解析开销）
                 try:
                     data = json.loads(zf.read(orig))
                 except ValueError as e:
