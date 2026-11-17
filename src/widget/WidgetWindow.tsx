@@ -37,7 +37,6 @@ import {
   RECURRENCE_WEEKDAY_LABELS,
   recurrenceText,
   setRecurrenceFreq,
-  shiftDateKey,
   TITLE_MAX_LEN,
   toggleWeekday,
   type Project,
@@ -64,6 +63,7 @@ import { applyTheme, DEFAULT_SETTINGS, type Settings } from "../lib/settings";
 import { notifyPeer, onPeerSync } from "../lib/sync";
 import type { ParsedInput } from "../lib/syntax";
 import { fetchWidgetVisible, hideWidgetPersisted, isTauri } from "../lib/tauri";
+import { applyScheduleTime, carveSeriesRow, dropOrCarveTask, mergeTaskPatch } from "../lib/taskWrites";
 import QuickAdd from "../components/QuickAdd";
 import ConfirmPopover from "../components/ConfirmPopover";
 import {
@@ -548,15 +548,7 @@ function WidgetWindow() {
   ) => {
     const src = tasks.find((t) => t.id === taskId);
     if (!src || !isScheduled(src)) return;
-    const minutes = end !== undefined ? Math.round((end - start) * 60) : undefined;
-    const apply = (t: Task): Task => ({
-      ...t,
-      start,
-      end,
-      ...(minutes !== undefined
-        ? { minutes, duration: durationText(minutes) }
-        : {}),
-    });
+    const apply = (t: Task): Task => applyScheduleTime(t, start, end);
     setTasks((list) => list.map((t) => (t.id === taskId ? apply(t) : t)));
     notifyPeer("widget", { kind: "upsert", tasks: [apply(src)] });
     const body = {
@@ -578,23 +570,13 @@ function WidgetWindow() {
     opts?: { mode: "this" | "following" | "all"; date: string },
   ) => {
     setTasks((list) =>
-      list.map((t) => {
-        if (t.id !== taskId) return t;
-        if (opts?.mode === "this") {
-          return { ...t, cancelledDates: [...(t.cancelledDates ?? []), opts.date] };
-        }
-        if (opts?.mode === "following") {
-          return t.recurrence
-            ? { ...t, recurrence: { ...t.recurrence, until: shiftDateKey(opts.date, -1) } }
-            : t;
-        }
-        // 显式清空重复规则时连带清挖空日期——否则已排期任务会被 occursOn 挖空在
-        // 唯一实例日（全隐身），口径同 App
-        if ("recurrence" in patch && patch.recurrence === undefined) {
-          return { ...t, ...patch, cancelledDates: undefined };
-        }
-        return { ...t, ...patch };
-      }),
+      list.map((t) =>
+        t.id === taskId
+          ? (opts?.mode === "this" || opts?.mode === "following")
+            ? carveSeriesRow(t, opts)
+            : mergeTaskPatch(t, patch)
+          : t,
+      ),
     );
     if (opts?.mode === "this" || opts?.mode === "following") {
       // 派生变化（挖空/截断 + 新行）让主界面整窗重拉最简，取舍同 App
@@ -607,11 +589,7 @@ function WidgetWindow() {
     // all/无 opts：乐观合并后的整任务同步给主界面（清空重复规则连带清挖空，口径同上）
     const src = tasks.find((t) => t.id === taskId);
     if (src) {
-      const merged: Task =
-        "recurrence" in patch && patch.recurrence === undefined
-          ? { ...src, ...patch, cancelledDates: undefined }
-          : { ...src, ...patch };
-      notifyPeer("widget", { kind: "upsert", tasks: [merged] });
+      notifyPeer("widget", { kind: "upsert", tasks: [mergeTaskPatch(src, patch)] });
     }
     updateTask(taskId, toTaskPatch(patch)).catch((e) =>
       recoverFromWriteError("任务编辑写回后端失败", e),
@@ -626,19 +604,7 @@ function WidgetWindow() {
     opts?: { mode: "this" | "following" | "all"; date: string },
   ) => {
     const keepRow = opts?.mode === "this" || opts?.mode === "following";
-    setTasks((list) =>
-      keepRow
-        ? list.map((t) => {
-            if (t.id !== taskId || !opts) return t;
-            if (opts.mode === "this") {
-              return { ...t, cancelledDates: [...(t.cancelledDates ?? []), opts.date] };
-            }
-            return t.recurrence
-              ? { ...t, recurrence: { ...t.recurrence, until: shiftDateKey(opts.date, -1) } }
-              : t;
-          })
-        : list.filter((t) => t.id !== taskId),
-    );
+    setTasks((list) => dropOrCarveTask(list, taskId, opts));
     notifyPeer(
       "widget",
       keepRow ? { kind: "reload" } : { kind: "delete", taskIds: [taskId] },

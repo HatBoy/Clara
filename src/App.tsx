@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { Database, Folder, Inbox } from "lucide-react";
 import "./App.css";
+import { applyScheduleTime, carveSeriesRow, dropOrCarveTask, mergeTaskPatch } from "./lib/taskWrites";
 import Sidebar from "./components/Sidebar";
 import ScheduleCanvas from "./components/ScheduleCanvas";
 import SearchModal from "./components/SearchModal";
@@ -22,9 +23,7 @@ import UndoBar from "./components/UndoBar";
 import OnboardingWizard from "./components/OnboardingWizard";
 import {
   PROJECT_COLORS,
-  durationText,
   isScheduled,
-  shiftDateKey,
   type Project,
   type Task,
 } from "./data/tasks";
@@ -776,31 +775,14 @@ function App() {
     // 合并直发（非重复卡与「所有」分支，行为零变化）
     opts?: { mode: "this" | "following"; date: string },
   ) => {
-    const minutes = end !== undefined ? Math.round((end - start) * 60) : undefined;
-    const apply = (t: Task): Task => ({
-      ...t,
-      dateOffset,
-      start,
-      end,
-      ...(minutes !== undefined
-        ? { minutes, duration: durationText(minutes) }
-        : {}),
-    });
+    const apply = (t: Task): Task => applyScheduleTime(t, start, end, dateOffset);
     const body = { start_time: scheduleToISO(dateOffset, start), ...(end !== undefined ? { end_time: scheduleToISO(dateOffset, end) } : {}) };
     if (opts) {
       // 三问 this/following 两步（乐观模式同 handleUpdateTask）：先乐观挖空/
       // 截断主行，PATCH 响应的例外行/新系列行 upsert 回来；widget 整体重拉
       // 最简（同 handleUpdateTask 同分支取舍）
       setTasks((list) =>
-        list.map((t) => {
-          if (t.id !== taskId) return t;
-          if (opts.mode === "this") {
-            return { ...t, cancelledDates: [...(t.cancelledDates ?? []), opts.date] };
-          }
-          return t.recurrence
-            ? { ...t, recurrence: { ...t.recurrence, until: shiftDateKey(opts.date, -1) } }
-            : t;
-        }),
+        list.map((t) => (t.id === taskId ? carveSeriesRow(t, opts) : t)),
       );
       notifyPeer("main", { kind: "reload" });
       updateTask(taskId, body, opts)
@@ -851,23 +833,13 @@ function App() {
     opts?: { mode: "this" | "following" | "all"; date: string },
   ) => {
     setTasks((list) =>
-      list.map((t) => {
-        if (t.id !== taskId) return t;
-        if (opts?.mode === "this") {
-          return { ...t, cancelledDates: [...(t.cancelledDates ?? []), opts.date] };
-        }
-        if (opts?.mode === "following") {
-          return t.recurrence
-            ? { ...t, recurrence: { ...t.recurrence, until: shiftDateKey(opts.date, -1) } }
-            : t;
-        }
-        // 显式清空重复规则时连带清挖空日期——后端聚合只对带规则的行生成
-        // cancelled_dates，保留会让已排期任务被 occursOn 挖空在唯一实例日（全隐身）
-        if ("recurrence" in patch && patch.recurrence === undefined) {
-          return { ...t, ...patch, cancelledDates: undefined };
-        }
-        return { ...t, ...patch };
-      }),
+      list.map((t) =>
+        t.id === taskId
+          ? (opts?.mode === "this" || opts?.mode === "following")
+            ? carveSeriesRow(t, opts)
+            : mergeTaskPatch(t, patch)
+          : t,
+      ),
     );
     if (opts?.mode === "this" || opts?.mode === "following") {
       // Clone & Override 分支牵连主行挖空/截断 + 新行两处派生变化，widget 整体重拉
@@ -885,11 +857,7 @@ function App() {
     // all/无 opts：乐观合并后的整任务同步给 widget（清空重复规则连带清挖空，口径同上面 map 内）
     const src = tasks.find((t) => t.id === taskId);
     if (src) {
-      const merged: Task =
-        "recurrence" in patch && patch.recurrence === undefined
-          ? { ...src, ...patch, cancelledDates: undefined }
-          : { ...src, ...patch };
-      notifyPeer("main", { kind: "upsert", tasks: [merged] });
+      notifyPeer("main", { kind: "upsert", tasks: [mergeTaskPatch(src, patch)] });
     }
     // 纯 done 勾选不刷新撤销条（二轮批 1 回归批 1 原设计）：后端同口径不建撤销
     // 条目——刷条会把上一条旧操作的撤销入口当新操作误弹（收件箱 4 秒局部撤销
@@ -910,19 +878,7 @@ function App() {
     opts?: { mode: "this" | "following" | "all"; date: string },
   ) => {
     const keepRow = opts?.mode === "this" || opts?.mode === "following";
-    setTasks((list) =>
-      keepRow
-        ? list.map((t) => {
-            if (t.id !== taskId || !opts) return t;
-            if (opts.mode === "this") {
-              return { ...t, cancelledDates: [...(t.cancelledDates ?? []), opts.date] };
-            }
-            return t.recurrence
-              ? { ...t, recurrence: { ...t.recurrence, until: shiftDateKey(opts.date, -1) } }
-              : t;
-          })
-        : list.filter((t) => t.id !== taskId),
-    );
+    setTasks((list) => dropOrCarveTask(list, taskId, opts));
     // 整删按 id 通知 widget 移除；this/following 保系列行的派生变化（挖空/截断）
     // 交给 widget 整体重拉
     notifyPeer("main", keepRow ? { kind: "reload" } : { kind: "delete", taskIds: [taskId] });
