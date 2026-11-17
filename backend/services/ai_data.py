@@ -13,6 +13,7 @@
 import logging
 import re
 from datetime import date, datetime, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -147,6 +148,43 @@ def format_memory_lines(db: Session, *, personality: list[str] | None = None
 
     ref = clip_rules([rule_label(r) for r in ref_rows])
     return capped, ref
+
+
+class InjectedRules(NamedTuple):
+    """注入上下文（2026-11-17 架构批 1）：记忆/人格注入配方的 interface。
+
+    core = 铁律段（人格前置 + user_manual/chat + 带锚高置信，assemble_system_prompt
+    的 core_rules / 子图 payload 双消费形态）；ref = 参考段；all = 合并单列表
+    （state["memory_rules"] 的单列表契约，下游零变化）。NamedTuple 保持
+    ``core, ref = ...`` 解包兼容（format_memory_lines 旧调用形态）。"""
+
+    core: list[str]
+    ref: list[str]
+
+    @property
+    def all(self) -> list[str]:
+        return self.core + self.ref
+
+
+def injected_rules(db: Session, *, settings=None,
+                   with_personality: bool = True) -> InjectedRules:
+    """注入配方单源（2026-11-17 架构批 1，收敛 9 处逐字拷贝）：
+    settings 读取 → personality_rules 人格 → format_memory_lines 双段。
+
+    - settings=None：走 get_settings（get_or_create 语义，常规入口）。
+      并行只读段必须传入自有只读 settings——get_or_create 会 INSERT，与主线程
+      在共享连接上竞态（graph._prep_aux / _settings_readonly 先例）。
+    - with_personality=False：人格不入——仅「草案口吻由引擎承载」的夜间预排
+      语义（workflows._collect_priority_plan 2026-11-03 拍板，有意为之非欠账）。
+    """
+    from agents.prompts import personality_rules
+
+    s = settings if settings is not None else get_settings(db)
+    personality = (personality_rules(
+        s.ai_style, s.ai_philosophy, s.ai_philosophy_custom)
+        if with_personality else None)
+    core, ref = format_memory_lines(db, personality=personality)
+    return InjectedRules(core, ref)
 
 
 def find_rule_conflicts(db: Session, *, category: str, content: str,

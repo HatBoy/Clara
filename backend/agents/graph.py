@@ -600,7 +600,7 @@ def run_ingest(db: Session, day: date) -> dict:
         from database import SessionLocal as _SL
 
         from models import AppSettings
-        from services.ai_data import format_memory_lines, get_chat_state
+        from services.ai_data import get_chat_state, injected_rules
         from services.settings import DEFAULTS, SETTINGS_ROW_ID
 
         def _settings_readonly(db2):
@@ -614,10 +614,13 @@ def run_ingest(db: Session, day: date) -> dict:
             return AppSettings(id=SETTINGS_ROW_ID, **DEFAULTS)
 
         with _SL() as db2:
-            _core, _ref = format_memory_lines(db2)  # 无人格（tech-debt 登记）
+            s_ro = _settings_readonly(db2)
+            # 注入上下文单源（2026-11-17 架构批 1）：传入只读 settings 防竞态，
+            # 采集并行段自此补上人格注入（tech-debt「无人格」欠账闭环）
+            inj = injected_rules(db2, settings=s_ro)
             return (dedup_context(db2),
-                    _core + _ref,
-                    _settings_readonly(db2), calendar_load_summary(db2),
+                    inj.all,
+                    s_ro, calendar_load_summary(db2),
                     get_chat_state(db2).summary or None)
 
     with ThreadPoolExecutor(max_workers=1) as _pool:
@@ -763,18 +766,11 @@ def run_preflight(db: Session, day: date) -> dict:
         return {"preflight": {"headline": f"{quiet}～", "checklist": []},
                 "final_reply": f"{quiet}的一天，无需特别准备。{birthday_note}".rstrip()}
 
-    # 双段注入单源（2026-11-03 批 3）：分级格式统一（旧版此处无置信分级）；
-    # 人格前置保持（2026-10-20 晨/夜简报同受回复风格与管理哲学引导）
-    from services.settings import get_settings
+    # 注入上下文单源（2026-11-17 架构批 1）：人格前置保持（2026-10-20 晨/夜简报
+    # 同受回复风格与管理哲学引导）；分级格式与顺序约束收在 ai_data.injected_rules
+    from services.ai_data import injected_rules
 
-    s = get_settings(db)
-    from agents.prompts import personality_rules
-    from services.ai_data import format_memory_lines
-
-    core, ref = format_memory_lines(
-        db, personality=personality_rules(
-            s.ai_style, s.ai_philosophy, s.ai_philosophy_custom))
-    rules = core + ref
+    rules = injected_rules(db).all
     from agents.strategist import strategist_app
 
     result = strategist_app.invoke({
@@ -867,18 +863,13 @@ def run_meeting_prep(db: Session, day: date) -> dict:
         if carry:
             entry["minutes_carryover"] = carry
         payload.append(entry)
-    # 双段注入单源（2026-11-03 批 3）：分级格式统一 + core 传 build 双段渲染
-    from services.settings import get_settings
+    # 注入上下文单源（2026-11-17 架构批 1）：core 传 build 双段渲染，
+    # 顺序约束收在 ai_data.injected_rules（原 9 处配方逐字拷贝收敛）
+    from services.ai_data import injected_rules
 
-    s = get_settings(db)
-    from agents.prompts import personality_rules
-    from services.ai_data import format_memory_lines
-
-    core, ref = format_memory_lines(
-        db, personality=personality_rules(
-            s.ai_style, s.ai_philosophy, s.ai_philosophy_custom))
-    parsed, reply = nodes.build_prep_brief(payload, core + ref, day.isoformat(),
-                                           core_rules=core)
+    inj = injected_rules(db)
+    parsed, reply = nodes.build_prep_brief(payload, inj.all, day.isoformat(),
+                                           core_rules=inj.core)
     by_id = {p["task_id"]: p for p in payload}
     meetings_out = [
         {
@@ -917,21 +908,15 @@ def run_meeting_minutes(db: Session, task_id: str | None, text: str) -> dict:
             }
             meeting_out = {"task_id": t.id, "title": t.title,
                            "start": meeting_payload["start"]}
-    # 双段注入单源（同 run_meeting_prep）+ 去重对照（批 2：收件箱既有未完成待办）
-    from services.settings import get_settings
+    # 注入上下文单源（同 run_meeting_prep）+ 去重对照（批 2：收件箱既有未完成待办）
+    from services.ai_data import injected_rules
 
-    s = get_settings(db)
-    from agents.prompts import personality_rules
-    from services.ai_data import format_memory_lines
-
-    core, ref = format_memory_lines(
-        db, personality=personality_rules(
-            s.ai_style, s.ai_philosophy, s.ai_philosophy_custom))
+    inj = injected_rules(db)
     from services import tasks as tasks_svc
 
     existing = [t.title for t in tasks_svc.list_tasks(db, unscheduled=True)[:20]]
     headline, items, reply = nodes.build_minutes_brief(
-        meeting_payload, text, core + ref, core_rules=core,
+        meeting_payload, text, inj.all, core_rules=inj.core,
         existing_titles=existing)
     return {"headline": headline, "items": items, "final_reply": reply,
             "meeting": meeting_out}
@@ -1179,17 +1164,13 @@ def run_hard_task(db: Session, task_id: str) -> dict | None:
         "created_at": task.created_at.date().isoformat(),
         "reschedule_count": task.reschedule_count,
     }
-    # 双段注入单源（2026-11-03 批 3）：分级格式统一 + core 传 build 双段渲染
-    from services.settings import get_settings
-    from agents.prompts import personality_rules
-    from services.ai_data import format_memory_lines
+    # 注入上下文单源（2026-11-17 架构批 1）：core 传 build 双段渲染，
+    # 顺序约束收在 ai_data.injected_rules（原 9 处配方逐字拷贝收敛）
+    from services.ai_data import injected_rules
 
-    s = get_settings(db)
-    core, ref = format_memory_lines(
-        db, personality=personality_rules(
-            s.ai_style, s.ai_philosophy, s.ai_philosophy_custom))
-    parsed = nodes.build_hardtask_brief(payload, core + ref, _dt.now().date().isoformat(),
-                                        core_rules=core)
+    inj = injected_rules(db)
+    parsed = nodes.build_hardtask_brief(payload, inj.all, _dt.now().date().isoformat(),
+                                        core_rules=inj.core)
     if parsed is None:
         return None
     return {
@@ -1206,10 +1187,8 @@ def run_custom_brief(db: Session, brief_id: str) -> dict | None:
     单次调用 → 解析失败 None。LLM 调用数 1。
     """
     from models import CustomBrief
-    from services.settings import get_settings
     from services.workflows import load_ratio
     from services.tasks import list_tasks
-    from agents.prompts import personality_rules
 
     brief = db.get(CustomBrief, brief_id)
     if brief is None or not brief.enabled:
@@ -1226,16 +1205,14 @@ def run_custom_brief(db: Session, brief_id: str) -> dict | None:
         }
         for t in tasks_today
     ]
-    s = get_settings(db)
-    # 双段注入单源（2026-11-03 批 3）：分级格式统一 + core 传 build 双段渲染
-    from services.ai_data import format_memory_lines
+    # 注入上下文单源（2026-11-17 架构批 1）：core 传 build 双段渲染，
+    # 顺序约束收在 ai_data.injected_rules（原 9 处配方逐字拷贝收敛）
+    from services.ai_data import injected_rules
 
-    core, ref = format_memory_lines(
-        db, personality=personality_rules(
-            s.ai_style, s.ai_philosophy, s.ai_philosophy_custom))
+    inj = injected_rules(db)
     parsed = nodes.build_custom_brief(
         brief.instruction, tasks_payload, load_ratio(db, date.today()),
-        len(unscheduled), core + ref, date.today().isoformat(), core_rules=core)
+        len(unscheduled), inj.all, date.today().isoformat(), core_rules=inj.core)
     if parsed is None:
         return None
     return {"headline": parsed["headline"], "body": parsed["body"]}

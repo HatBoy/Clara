@@ -36,24 +36,13 @@ def build_initial_state(db: Session, user_input: str) -> dict:
     问询快照（ai_data.active_pending，无则 None——"可以"这类确认回复靠它关联上
     一轮，2026-10-17 增）。节点需要读库时自行 with SessionLocal() as db（只调
     services，禁摸 ORM / 禁 import router）。"""
-    # 人格规则前置（2026-10-20）：回复风格 + 管理哲学排最前——比记忆规则优先级高，
-    # balanced 且全空时 personality_rules 返回 []，拼接后形状与旧版逐项一致
-    settings = get_settings(db)
-    from agents.prompts import personality_rules
-
-    personality = personality_rules(
-        settings.ai_style, settings.ai_philosophy, settings.ai_philosophy_custom
-    )
-    # 双段单源（2026-11-03 批 3）：core=铁律段（人格前置+user_manual/chat+带锚高
-    # 置信，slot 分组序）/ ref=参考段（低置信 ai_reflect 头部切片）——格式收敛自
-    # 此函数旧内联与 workflows._collect_priority_plan 两处（rule_label 单源）
-    from services.ai_data import format_memory_lines
-
-    core, ref = format_memory_lines(db, personality=personality)
+    # 注入上下文单源（2026-11-17 架构批 1）：人格前置 + 双段分流（core=铁律段 /
+    # ref=参考段）的顺序约束收在 ai_data.injected_rules（原 9 处配方逐字拷贝收敛）
+    inj = ai_data.injected_rules(db)
     return {
         "user_input": user_input,
-        "memory_rules": core + ref,
-        "core_memory": core,
+        "memory_rules": inj.all,
+        "core_memory": inj.core,
         "pending": ai_data.active_pending(db),
     }
 

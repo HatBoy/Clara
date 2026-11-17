@@ -8,7 +8,7 @@ from datetime import datetime
 from conftest import TestingSessionLocal
 from models import MemoryRule
 from services import llm
-from services.ai_data import format_memory_lines
+from services.ai_data import format_memory_lines, injected_rules
 
 from agents.engine import _refine_with_llm
 from agents.prompts import assemble_system_prompt
@@ -146,6 +146,44 @@ def test_refine_with_llm_clips_rules_payload():
                          now=datetime(2026, 11, 4, 8, 0),
                          load_summary=None, weather=None, rules=long_rules)
     assert len(captured["payload"]["memory_rules"]) <= 40
+
+
+# —— injected_rules 配方单源（2026-11-17 架构批 1）—————————————————————
+
+
+class _SettingsStub:
+    """注入配方只读三属性的 settings 替身（接口测试不落库）。"""
+
+    ai_style = "balanced"
+    ai_philosophy = None
+    ai_philosophy_custom = "每天进步一点点"
+
+
+def test_injected_rules_personality_via_settings():
+    """settings=传入时人格从该对象推导（并行只读段的防竞态形态）。"""
+    _rule("晚十一点睡", source="user_manual", confidence=1.0, category="作息规律")
+    with TestingSessionLocal() as db:
+        inj = injected_rules(db, settings=_SettingsStub())
+    assert inj.core[0] == "[自定义哲学] 每天进步一点点"
+    assert any("晚十一点睡" in r for r in inj.core)
+
+
+def test_injected_rules_without_personality():
+    """with_personality=False：零人格行（夜间预排「口吻由引擎承载」语义）。"""
+    with TestingSessionLocal() as db:
+        inj = injected_rules(db, settings=_SettingsStub(), with_personality=False)
+    assert not any(r.startswith(("[回复风格]", "[管理哲学]", "[自定义哲学]"))
+                   for r in inj.all)
+
+
+def test_injected_rules_merge_and_unpack():
+    """all = core + ref 合并单列表；NamedTuple 保持 core, ref 解包兼容。"""
+    _rule("弱假设", source="ai_reflect", confidence=0.4)
+    with TestingSessionLocal() as db:
+        inj = injected_rules(db, settings=_SettingsStub())
+    assert inj.all == inj.core + inj.ref
+    core, ref = inj
+    assert core is inj.core and ref is inj.ref
 
 
 # —— run_preflight 分级格式统一（跨入口一致）——————————————————————

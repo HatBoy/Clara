@@ -1041,12 +1041,11 @@ def _collect_priority_plan(db: Session, now: datetime) -> dict | None:
     if len(tasks) < 2:
         return None
     s = get_settings(db)
-    # 双段注入单源（2026-11-03 批 3 收敛自此处内联格式）——偏好硬闸
-    # parse_avoid_windows 消费带分级标签文本；人格不入（草案口吻由引擎承载）
-    from services.ai_data import format_memory_lines
+    # 注入上下文单源（2026-11-17 架构批 1）——偏好硬闸 parse_avoid_windows 消费
+    # 带分级标签文本；人格不入（草案口吻由引擎承载，2026-11-03 拍板语义保留）
+    from services.ai_data import injected_rules
 
-    _core, _ref = format_memory_lines(db)
-    rules = _core + _ref
+    rules = injected_rules(db, settings=s, with_personality=False).all
     ai_on = bool(s.ai_enabled and get_active_model(db) is not None)
     entries = [{
         "key": t.id, "title": t.title, "priority": t.priority or 2,

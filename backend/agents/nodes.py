@@ -1122,22 +1122,17 @@ def minutes_extractor(state: AgentState) -> dict:
     kind=minutes 卡，payload 契约同浮层端点）+ final_reply。聊天入口不关联
     会议（meeting 恒 None——自动匹配最近结束会议有误关联风险，宁缺勿滥，
     关联诉求走日程浮层入口）。解析失败只回提示不建卡。LLM 调用数 1。"""
-    from agents.prompts import personality_rules
     from database import SessionLocal
     from services import tasks as tasks_svc
-    from services.ai_data import format_memory_lines
-    from services.settings import get_settings
+    from services.ai_data import injected_rules
 
     raw = (state.get("user_input") or "").strip()
     with SessionLocal() as db:
-        s = get_settings(db)
-        core, ref = format_memory_lines(
-            db, personality=personality_rules(
-                s.ai_style, s.ai_philosophy, s.ai_philosophy_custom))
+        inj = injected_rules(db)
         # 去重对照：收件箱未完成待办标题（list_tasks unscheduled 口径，≤20 条）
         existing = [t.title for t in tasks_svc.list_tasks(db, unscheduled=True)[:20]]
     headline, items, reply = build_minutes_brief(
-        None, raw, core + ref, core_rules=core, existing_titles=existing)
+        None, raw, inj.all, core_rules=inj.core, existing_titles=existing)
     if not headline and not items and not reply:
         return {"final_reply": "纪要提炼失败了，请稍后重试或换个格式再发。"}
     return {
