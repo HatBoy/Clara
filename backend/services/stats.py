@@ -588,9 +588,12 @@ def stats_summary(db: Session, *, days: int = 30, lo: datetime | None = None,
             prev_scheduled_minutes += dur
             held_prev += 1
 
+    # 口径对齐收件箱视图（2026-11-17 修复）：未排期未完成且**未归属项目**——
+    # 与侧栏「收件箱」徽标/收件箱页一致（归属项目的待办在项目页，不算收件箱）
     inbox_backlog = db.scalar(select(func.count()).select_from(Task).where(
         Task.is_deleted.is_(False),
         Task.start_time.is_(None), Task.done_at.is_(None),
+        Task.project_id.is_(None),
     )) or 0
 
     # 每日动态：完成待办（done_at 落日）+ 发生日程（实例开始日落日）+ 当日
@@ -983,7 +986,7 @@ _REPORT_INSTRUCTION = """你是日程助手的统计分析师。基于下面的 
 - 数据含 health（健康度五维评分）、habits_text（习惯分析文字）与 deviations（行为偏差聚类）——行为洞察节优先引用；patterns（行为模式推断）是有数据依据的确定性观察，行为洞察节优先解读成用户能察觉的行为模式（不牵强才提）；有 growth 字段（与上一周期对比）时，概述与行为洞察优先引用对比结论（用百分比说明变化）；baseline_quantiles 是用户近 8 期个人分位基线（P25/P50/P75），本期值越出 P25~P75 区间时点名对比（相对于自己的常态）；用户画像与改进目标是个性化判断依据不是统计数据，不要原文复述
 - 正文结束后另起一行输出结构化块（系统留档供下期对照追踪与长期记忆，不计入正文长度）：
 ```json
-{{"advice_items": ["「## 建议」节每条建议的原文"], "keep_habits": ["本期数据中值得保持的好习惯"], "fact_candidates": [{{"topic": "主题词", "fact": "本期数据发现的稳定习惯规律", "expires_days": 90}}]}}
+{{"advice_items": ["「## 建议」节每条建议的原文，开头保留 [高优]/[中优]/[低优] 标签"], "keep_habits": ["本期数据中值得保持的好习惯"], "fact_candidates": [{{"topic": "主题词", "fact": "本期数据发现的稳定习惯规律", "expires_days": 90}}]}}
 ```
 （advice_items 2-3 条；keep_habits 0-3 条；fact_candidates 0-3 条——与用户画像重复的规律不选，没有则空数组）
 - 中文，总长 300-500 字，语气务实不煽情；数据里没有的维度不要提
@@ -1003,7 +1006,7 @@ _GROWTH_REPORT_INSTRUCTION = """你是日程助手的成长分析师。基于下
 - 数据含 health（健康度五维评分）、habits_text（习惯分析文字）与 deviations（行为偏差聚类）——行为改善节优先引用；patterns（行为模式推断）是有数据依据的确定性观察，行为改善节优先解读（不牵强才提）；baseline_quantiles 是用户近 8 期个人分位基线（P25/P50/P75），本期值越出 P25~P75 区间时点名对比；用户画像与改进目标是个性化判断依据不是统计数据，不要原文复述
 - 正文结束后另起一行输出结构化块（系统留档供下期对照追踪与长期记忆，不计入正文长度）：
 ```json
-{{"advice_items": ["「## 建议」节每条建议的原文"], "keep_habits": ["本期数据中值得保持的好习惯"], "fact_candidates": [{{"topic": "主题词", "fact": "本期数据发现的稳定习惯规律", "expires_days": 90}}]}}
+{{"advice_items": ["「## 建议」节每条建议的原文，开头保留 [高优]/[中优]/[低优] 标签"], "keep_habits": ["本期数据中值得保持的好习惯"], "fact_candidates": [{{"topic": "主题词", "fact": "本期数据发现的稳定习惯规律", "expires_days": 90}}]}}
 ```
 （advice_items 2-3 条；keep_habits 0-3 条；fact_candidates 0-3 条——与用户画像重复的规律不选，没有则空数组）
 - 中文，总长 400-600 字，语气鼓励但客观，强调数据对比；数据里没有的维度不要提
@@ -1444,7 +1447,12 @@ def export_report_md(db: Session, report_id: str, path: str) -> dict:
     return {"ok": True, "path": str(p), "size_bytes": size}
 
 
-def set_advice_status(db: Session, report_id: str, index: int, status: str) -> StatsReport:
+# todo_id 未传哨兵（区分「不动既有锚点」与「显式置 null 清除」）
+_UNSET = object()
+
+
+def set_advice_status(db: Session, report_id: str, index: int, status: str,
+                      todo_id=_UNSET) -> StatsReport:
     """建议打卡（用户确认执行情况）：payload.advice_items[index].status 更新
     （proposed/completed/dropped/inboxed）——下期生成对照时 completed 标注
     「你确认已完成」、inboxed 标注「已转待办」（行动承接信号）、dropped 不再
@@ -1456,6 +1464,8 @@ def set_advice_status(db: Session, report_id: str, index: int, status: str) -> S
         raise LookupError(f"报告不存在：{report_id}")
     if status not in ("proposed", "completed", "dropped", "inboxed"):
         raise ValueError(f"非法建议状态：{status}")
+    if todo_id is not _UNSET and todo_id is not None and not str(todo_id).strip():
+        raise ValueError("todo_id 不能为空串（null = 清除锚点）")
     items = list((report.payload or {}).get("advice_items") or [])
     if index < 0 or index >= len(items):
         raise ValueError(f"建议序号越界：{index}（共 {len(items)} 条）")
@@ -1463,7 +1473,15 @@ def set_advice_status(db: Session, report_id: str, index: int, status: str) -> S
     for i, it in enumerate(items):
         if i == index:
             text = it if isinstance(it, str) else str(it.get("text") or "").strip()
-            normalized.append({"text": text, "status": status})
+            row = {"text": text, "status": status}
+            if isinstance(it, dict) and it.get("todo_id"):
+                row["todo_id"] = it["todo_id"]  # 既有锚点默认保留
+            if todo_id is not _UNSET:
+                if todo_id is None:
+                    row.pop("todo_id", None)  # 显式 null = 清除（状态离开转待办时）
+                else:
+                    row["todo_id"] = str(todo_id)
+            normalized.append(row)
         elif isinstance(it, dict):
             normalized.append(it)
         else:

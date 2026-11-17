@@ -32,6 +32,7 @@ import EmptyState from "./EmptyState";
 import remarkGfm from "remark-gfm";
 import {
   createTask,
+  deleteTask,
   exportStatsImage,
   exportStatsReport,
   fetchStatsInsight,
@@ -82,15 +83,18 @@ const fmtPeriodRange = (type: "week" | "month", startIso: string) => {
 
 /** 建议打卡条目归一化：旧留档纯字符串 → proposed 形态（打卡时后端顺带升级）。
  *  status 四态：inboxed = 已转待办（落 payload 持久化，2026-11-17——此前只标
- *  前端本地态，切页即丢）。 */
+ *  前端本地态，切页即丢）；todo_id = 转待办建的收件箱任务锚点（状态离开
+ *  inboxed 时前端删任务并清锚点，防重复入箱）。 */
 type AdviceEntry = {
   text: string;
   status: "proposed" | "completed" | "dropped" | "inboxed";
+  todo_id?: string | null;
 };
 
 /** 建议条目开头的优先级标签（与报告正文同格式：[高优]/[中优]/[低优] →
- *  行内 code 由 MdCode 同款 chip 色渲染） */
-const ADVICE_PRIO_TAG = /^\[(高|中|低)优\]\s*/;
+ *  行内 code 由 MdCode 同款 chip 色渲染）。容忍列表记号与加粗包裹——
+ *  LLM 偶发 "- **[高优]** 文本" 形态（2026-11-17 真机反馈补） */
+const ADVICE_PRIO_TAG = /^(?:[-*•]\s*)?(?:\*\*)?\[(高|中|低)优\](?:\*\*)?\s*/;
 
 /** AI 输出重点标记（纯前端渲染层，不改后端产出契约）：
  *  ① 段首【X】→ ## 小节头（accent 竖条样式；报告首行【总评】单独转 blockquote
@@ -144,7 +148,20 @@ function AdviceChecklist({
   const toggle = async (index: number, next: AdviceEntry["status"]) => {
     setBusy(index);
     try {
-      onUpdate(await setStatsAdvice(report.id, index, next));
+      // 离开 inboxed（转完成/放弃）：删掉当时建的收件箱任务并清锚点——
+      // 与收件箱语义一致（2026-11-17：否则再转待办会重复入箱）
+      const cur = items[index];
+      const leavingInbox = cur?.status === "inboxed" && next !== "inboxed";
+      if (leavingInbox && cur.todo_id) {
+        try {
+          await deleteTask(cur.todo_id);
+        } catch {
+          /* 任务可能已在收件箱被处理/删除——清锚点照常继续 */
+        }
+      }
+      onUpdate(
+        await setStatsAdvice(report.id, index, next, leavingInbox ? null : undefined),
+      );
     } catch {
       /* 打卡失败静默（按钮态复位，重试即可） */
     } finally {
@@ -155,10 +172,9 @@ function AdviceChecklist({
   const toTodo = async (index: number, text: string) => {
     setTodoBusy(index);
     try {
-      await createTask({ title: text.slice(0, 30) });
-      // 状态同步落 payload（2026-11-17 修复：此前只标本地态，切页即丢）——
-      // 建任务成功但打卡失败时任务已在收件箱，重按一次幂等可见
-      onUpdate(await setStatsAdvice(report.id, index, "inboxed"));
+      const created = await createTask({ title: text.slice(0, 30) });
+      // 状态 + 任务锚点同步落 payload（2026-11-17 修复：此前只标本地态切页即丢）
+      onUpdate(await setStatsAdvice(report.id, index, "inboxed", created.id));
     } catch {
       /* 转待办失败静默（按钮复位可重试） */
     } finally {
@@ -297,7 +313,7 @@ export default function ReportsPanel({
   days,
   onDaysChange,
   onOpenProject,
-  onOpenInbox,
+  dsPending,
   refreshKey,
   onOpenMemory,
   chatOpen,
@@ -311,8 +327,8 @@ export default function ReportsPanel({
   onOpenMemory?: () => void;
   /** 指标下钻：「时间花费 by 项目」横条点击 → 项目页（「未归类」条不可点） */
   onOpenProject?: (name: string) => void;
-  /** 指标下钻：「收件箱积压」KPI 点击 → 收件箱页 */
-  onOpenInbox?: () => void;
+  /** 数据源页待确认条目数（App 层徽标同源；「收件箱｜数据源」KPI 纯展示） */
+  dsPending?: number;
   /** AI 事件刷新信号（周日晚自动周报生成时驱留页面前插留档；不传则切页重拉） */
   refreshKey?: number;
   /** 右侧统计对话面板是否打开 */
@@ -587,7 +603,7 @@ export default function ReportsPanel({
                     dimensions={summary.health.dimensions}
                     labels={summary.health.labels}
                     total={summary.health.total}
-                    size={188}
+                    size={218}
                   />
                   <HealthTrend
                     history={[...reports]
@@ -666,19 +682,17 @@ export default function ReportsPanel({
                   <span className="report-kpi-label">待办消化率</span>
                 </div>
                 {/* 积压格可下钻：点开收件箱页（button 复用 tile 视觉） */}
-                <button
-                  type="button"
-                  className="report-kpi clickable"
-                  onClick={onOpenInbox}
-                >
-                  <span className="report-kpi-head" title="当前收件箱未完成待办数量（点击打开收件箱）">
+                <div className="report-kpi">
+                  <span className="report-kpi-head" title="左：收件箱未完成待办（与侧栏徽标同口径）；右：数据源页待确认条目">
                     <HelpCircle size={11} className="report-kpi-help" />
                   </span>
                   <span className="report-kpi-value-row">
                     <span className="report-kpi-value">{ov.inbox_backlog}</span>
+                    <span className="report-kpi-sep">｜</span>
+                    <span className="report-kpi-value alt">{dsPending}</span>
                   </span>
-                  <span className="report-kpi-label">收件箱积压</span>
-                </button>
+                  <span className="report-kpi-label">收件箱｜数据源</span>
+                </div>
               </div>
             </div>
 

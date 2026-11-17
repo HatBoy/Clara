@@ -83,6 +83,8 @@ class AdviceStatusIn(BaseModel):
 
     index: int = Field(ge=0)
     status: str = Field(pattern="^(proposed|completed|dropped|inboxed)$")
+    # 转待办任务锚点（可选；显式 null = 清除——状态离开 inboxed 时前端已删任务）
+    todo_id: str | None = None
 
 
 class StatsFactIn(BaseModel):
@@ -149,7 +151,9 @@ def set_report_advice(report_id: str, body: AdviceStatusIn,
     """建议打卡：用户确认上期建议的执行情况（完成/放弃）——下期报告对照点评
     的反馈信号（completed 标注点评、dropped 不再追问）。"""
     try:
-        return stats_service.set_advice_status(db, report_id, body.index, body.status)
+        todo_id = body.todo_id if "todo_id" in body.model_fields_set else stats_service._UNSET
+        return stats_service.set_advice_status(
+            db, report_id, body.index, body.status, todo_id=todo_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except ValueError as e:

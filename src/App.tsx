@@ -1828,10 +1828,7 @@ function App() {
             onDaysChange={setStatsDays}
             onOpenProject={handleSelectProject}
             onOpenMemory={() => handleOpenSettings("memory")}
-            onOpenInbox={() => {
-              setActiveView("inbox");
-              setActiveProject(null);
-            }}
+            dsPending={dsPendingCount}
             refreshKey={aiRefreshKey}
             chatOpen={!rightCollapsed}
             onToggleChat={() => setRightCollapsed(!rightCollapsed)}

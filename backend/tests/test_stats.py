@@ -983,3 +983,50 @@ def test_advice_inboxed_status_persists_and_annotates(client: TestClient, fresh_
     bad = client.post(f"/api/stats/reports/{rid}/advice",
                       json={"index": 0, "status": "bogus"})
     assert bad.status_code == 422
+
+
+def test_advice_todo_id_anchor_roundtrip(client: TestClient, fresh_db):
+    """转待办锚点（2026-11-17）：todo_id 随 inboxed 写入、不传默认保留、显式
+    null 清除（前端删任务后清锚点，防重复入箱）。"""
+    from conftest import TestingSessionLocal
+
+    with TestingSessionLocal() as db:
+        row = StatsReport(
+            period_type="week", period_start=datetime.now() - timedelta(days=1),
+            content="【总评】x",
+            payload={"advice_items": [{"text": "建议一", "status": "proposed"}]})
+        db.add(row)
+        db.commit()
+        rid = row.id
+
+    # 写入锚点
+    res = client.post(f"/api/stats/reports/{rid}/advice",
+                      json={"index": 0, "status": "inboxed", "todo_id": "task-1"})
+    assert res.json()["payload"]["advice_items"][0]["todo_id"] == "task-1"
+
+    # 不带 todo_id 的状态变化：锚点默认保留（前端删任务失败重试等场景）
+    res = client.post(f"/api/stats/reports/{rid}/advice",
+                      json={"index": 0, "status": "proposed"})
+    assert res.json()["payload"]["advice_items"][0]["todo_id"] == "task-1"
+
+    # 显式 null：清除（状态离开转待办）
+    res = client.post(f"/api/stats/reports/{rid}/advice",
+                      json={"index": 0, "status": "completed", "todo_id": None})
+    item = res.json()["payload"]["advice_items"][0]
+    assert item["status"] == "completed" and "todo_id" not in item
+
+
+def test_inbox_backlog_excludes_project_todos(fresh_db):
+    """收件箱积压口径对齐侧栏（2026-11-17）：归属项目的未排期待办不算。"""
+    from conftest import TestingSessionLocal
+    from models import Project, Task
+
+    with TestingSessionLocal() as db:
+        proj = Project(name="工作", color="#111111")
+        db.add(proj)
+        db.flush()
+        db.add(Task(title="收件箱待办"))
+        db.add(Task(title="项目待办", project_id=proj.id))
+        db.commit()
+        out = stats_svc.stats_summary(db, days=7)
+    assert out["overview"]["inbox_backlog"] == 1

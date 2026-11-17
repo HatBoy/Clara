@@ -359,7 +359,8 @@
 /* —— ② 总览带：雷达（定宽）+ KPI 网格（自适应）；窄窗雷达收顶 —— */
 .report-overview-band {
   display: grid;
-  grid-template-columns: minmax(240px, 300px) 1fr;
+  /* 雷达列放宽（2026-11-17）：显示区足够大，健康度是总览带的视觉主角 */
+  grid-template-columns: minmax(320px, 400px) 1fr;
   gap: 16px;
   align-items: stretch;
 }
@@ -377,7 +378,8 @@
 /* KPI 网格：auto-fit 自适应（窄窗两行整齐换行，不设固定列） */
 .report-kpis {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  /* 固定三列两行（2026-11-17）：六格 KPI 整齐双行，随右列宽自适应 */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   align-content: stretch;
 }
@@ -462,6 +464,18 @@
   background: rgba(239, 68, 68, 0.1);
 }
 
+.report-kpi-sep {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-muted);
+  margin: 0 2px;
+}
+
+.report-kpi-value.alt {
+  font-size: 17px;
+  color: var(--text-secondary);
+}
+
 .report-kpi-label {
   font-size: 11px;
   color: var(--text-muted);
@@ -483,15 +497,6 @@
 }
 
 /* 积压格下钻（button 复用 tile 视觉）：字体继承 + hover 边框提示可点 */
-.report-kpi.clickable {
-  cursor: pointer;
-  font-family: inherit;
-}
-
-.report-kpi.clickable:hover {
-  border-color: var(--accent-border);
-}
-
 /* —— 通用卡片 / 网格 —— */
 .report-grid-even {
   display: grid;
@@ -979,6 +984,14 @@
   line-height: 1.6;
   color: var(--text-secondary);
   min-width: 0;
+}
+
+/* 行首圆点（2026-11-17 真机反馈）：与 AI 洞察 Markdown 列表项同视觉 */
+.report-advice-text::before {
+  content: "•";
+  margin-right: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .report-advice-text code {

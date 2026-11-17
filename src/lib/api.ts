@@ -376,7 +376,12 @@ export type StatsSummary = {
 };
 
 /** 建议打卡形态（新留档）；旧留档为纯字符串数组（读侧兼容，打卡时后端顺带升级） */
-export type StatsAdviceItem = { text: string; status: "proposed" | "completed" | "dropped" };
+export type StatsAdviceItem = {
+  text: string;
+  status: "proposed" | "completed" | "dropped" | "inboxed";
+  /** 转待办建的收件箱任务锚点（状态离开 inboxed 时前端删任务并清锚点） */
+  todo_id?: string | null;
+};
 
 export type StatsReportRow = {
   id: string;
@@ -502,9 +507,13 @@ export const setStatsAdvice = (
   id: string,
   index: number,
   status: "proposed" | "completed" | "dropped" | "inboxed",
+  todoId?: string | null,
 ) =>
   request<StatsReportRow>(
-    "POST", `/api/stats/reports/${id}/advice`, { index, status }, 15_000);
+    "POST", `/api/stats/reports/${id}/advice`,
+    // todoId：undefined = 不动既有锚点；null = 显式清除；字符串 = 写入锚点
+    { index, status, ...(todoId !== undefined ? { todo_id: todoId } : {}) },
+    15_000);
 
 /** 沉淀复盘反思结论为情节事实（Tier 2 记忆；同主题同结论印证不堆行）。 */
 export const saveStatsFact = (topic: string, fact: string) =>
