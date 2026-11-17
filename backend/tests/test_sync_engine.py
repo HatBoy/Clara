@@ -791,3 +791,49 @@ def test_json_null_physical_fidelity_on_write():
         assert kind == "null"
         assert db.execute(text(
             "SELECT title FROM tasks WHERE id='json-null-insert'")).scalar() == "拉取行改"
+
+
+def test_natural_key_collision_pk_convergence():
+    """自然键撞车 pk 收敛（2026-11-17 双机真机实证 ping-pong 修复）：双端各建
+    同名自然键行后互同步，旧版各自保留本地 pk——远端 pk 逐轮翻转永不收敛。
+    现规则：canonical = 双方 pk 字典序小者；内容 ts 新者胜；本地 pk 败时
+    子表外键改指胜者、删本地行、插胜者行。"""
+    from datetime import datetime as _dt
+
+    with TestingSessionLocal() as db:
+        # —— 场景 1：本地 pk 字典序败（zzz > aaa）→ 整行迁入 canonical + 子表改指 ——
+        db.add(Project(id="zzz-local", name="撞名专项", color="#111111"))
+        db.commit()
+        db.execute(Project.__table__.update().where(Project.id == "zzz-local")
+                   .values(updated_at=_dt(2026, 11, 16), created_at=_dt(2026, 11, 16)))
+        _add_task(db, "归属旧项目", project_id="zzz-local")
+        remote = {"id": "aaa-remote", "name": "撞名专项", "color": "#222222",
+                  "starred": False, "sort_order": 0,
+                  "created_at": "2026-11-17 10:00:00",
+                  "updated_at": "2026-11-17 12:00:00"}
+        local = {r["id"]: r for r in se.table_rows(db, "projects")}
+        merged = list(local.values()) + [remote]  # 契约：merged=全量并集
+        actual, _, _ = se._write_local(db, "projects", merged, local)
+        db.commit()
+        assert [(r["id"], r["color"]) for r in se.table_rows(db, "projects")] == \
+            [("aaa-remote", "#222222")]  # 本地行删除、远端行完整落位（内容胜）
+        assert actual[0]["id"] == "aaa-remote"
+        assert db.query(Task).filter_by(title="归属旧项目").one().project_id \
+            == "aaa-remote"  # 子表外键已改指 canonical
+
+        # —— 场景 2：本地 pk 字典序胜（aaa < zzz）→ 保留本地 pk、远端内容覆写 ——
+        db.add(Project(id="aaa-keep", name="第二轮撞名", color="#333333"))
+        db.commit()
+        db.execute(Project.__table__.update().where(Project.id == "aaa-keep")
+                   .values(updated_at=_dt(2026, 11, 16), created_at=_dt(2026, 11, 16)))
+        remote2 = {"id": "zzz-remote-2", "name": "第二轮撞名", "color": "#444444",
+                   "starred": False, "sort_order": 0,
+                   "created_at": "2026-11-17 13:00:00",
+                   "updated_at": "2026-11-17 14:00:00"}
+        local2 = {r["id"]: r for r in se.table_rows(db, "projects")}
+        merged2 = list(local2.values()) + [remote2]
+        se._write_local(db, "projects", merged2, local2)
+        db.commit()
+        row = next(r for r in se.table_rows(db, "projects")
+                   if r["name"] == "第二轮撞名")
+        assert (row["id"], row["color"]) == ("aaa-keep", "#444444")

@@ -506,15 +506,17 @@ def _write_local(db: Session, name: str, merged: list[dict],
     """把合并行集写进本地（单事务由调用方统一 commit；本函数只 execute）。
     返回 (实际落库行集, 插入数, 更新数)。
 
-    - 键不在本地 → INSERT；撞自然键唯一约束 → 按自然键定位本地行，LWW 决定
-      UPDATE（用本地 pk 承载远端内容）或跳过（本地赢）；
+    - 键不在本地 → INSERT；撞自然键唯一约束 → pk 收敛（canonical = 双方 pk
+      字典序小者；内容 ts 新者胜、平局行哈希小者；本地 pk 败时子表外键改指
+      canonical——2026-11-17 真机实证旧版双端各持己 pk 互推永不收敛）；
     - 键在本地且内容不同 → UPDATE（显式带 updated_at——触发器 WHEN 守卫不覆盖）；
     - 本地有而 merged 无 → DELETE（调用方逆拓扑序处理跨表）。
-    实际落库行集 = merged 经撞车替换后的形态（保 Base=本地=远端一致）。
+    实际落库行集 = merged 经撞车收敛后的形态，按 pk 规范序（保 Base=本地=远端
+    一致且跨轮 sha1 稳定）。
     """
     table, pk = _table_meta(name)
     cols = table.columns.keys()
-    actual: list[dict] = []
+    actual: dict[str, dict] = {}  # pk → 行（撞车收敛可能重复触达同键，dict 去重）
     inserted = updated = 0
 
     merged_map = {r[pk]: r for r in merged}
@@ -527,9 +529,15 @@ def _write_local(db: Session, name: str, merged: list[dict],
             try:
                 db.execute(table.insert().values(**values))
                 inserted += 1
-                actual.append(row)
+                actual[row[pk]] = row
             except IntegrityError:
-                # 自然键 add-add 撞车（UUID 主键不撞 pk）：定位本地行走 LWW
+                # 自然键 add-add 撞车（UUID 主键不撞 pk）→ pk 收敛（2026-11-17
+                # 双机真机实证修复）：旧版各自保留本地 pk（远端内容落本地 pk /
+                # 平局无条件本地胜），双端各持一版互推——远端 pk 逐轮翻转永不
+                # 收敛，每轮探测白推一次（限频服务持续烧配额）。现规则双端
+                # 对称：canonical pk = 双方 pk 字典序小者；内容 = ts 新者（平局
+                # 取行哈希小者，双端独立计算同一胜者）；本地 pk 败时子表外键
+                # 改指胜者、删本地行、插胜者行。
                 hit = _find_by_natural_key(db, name, row)
                 if hit is None:
                     # 未落库的行绝不能进 actual（优化批 3）：推送它会让远端持有
@@ -538,28 +546,58 @@ def _write_local(db: Session, name: str, merged: list[dict],
                                    name, key)
                     merged_map.pop(key, None)
                     continue
-                local_row = hit
-                local_map[hit[pk]] = hit
-                # 键重定向：merged_map 同步改键，否则末尾 doomed 会把刚处理
-                # 的本地行当"本地删除"删掉（数据彻底丢失级，优化批 3）
+                canonical = min(key, hit[pk])
+                lt, rt = _row_ts(hit), _row_ts(row)
+                if rt is None or (lt is not None and lt > rt):
+                    winner = hit  # 本地内容胜（含远端无 ts）
+                elif lt is None or rt > lt:
+                    winner = row  # 远端内容胜
+                elif _hash_rows([hit]) <= _hash_rows([row]):
+                    winner = hit  # 平局：行哈希小者（确定性、双端对称）
+                else:
+                    winner = row
+                out = {**winner, pk: canonical}
+                if canonical != hit[pk]:
+                    # 本地 pk 败：子表外键改指 canonical → 删本地行 → 插胜者行。
+                    # 中间态（子表先指新 pk、新父行后落）在 immediate FK 下必炸
+                    # ——defer_foreign_keys 把检查推到事务提交（run_sync 阶段 2
+                    # 已设，此处兜底直调/单测场景）
+                    db.execute(text("PRAGMA defer_foreign_keys=ON"))
+                    _repoint_children(db, name, hit[pk], canonical)
+                    db.execute(delete(table).where(getattr(table.c, pk) == hit[pk]))
+                    db.execute(table.insert().values(**_writable_row(table, out)))
+                    updated += 1
+                elif winner is row and not _rows_equal(out, hit, cols):
+                    db.execute(table.update().where(
+                        getattr(table.c, pk) == canonical
+                    ).values(**_writable_row(table, out)))
+                    updated += 1
+                local_map.pop(hit[pk], None)
+                # 键重定向（优化批 3 语义保留）：末尾 doomed 不把已收敛行当
+                # "本地删除"误删（pk 败者已显式删并移出 local_map）；union 里
+                # 败者键（可能已被先行处理进 actual）一并清除，防 actual 残留
+                # 本地已不存在的幽灵行
                 merged_map.pop(key, None)
-                key = hit[pk]
-                merged_map[key] = row
+                merged_map.pop(hit[pk], None)
+                actual.pop(hit[pk], None)
+                merged_map[canonical] = out
+                actual[canonical] = out
+                continue
         if local_row is not None:
             if _rows_equal(row, local_row, cols):
-                actual.append(local_row)  # 内容相同：不写，推送本地形态
+                actual[local_row[pk]] = local_row  # 内容相同：不写，推送本地形态
                 continue
             lt, rt = _row_ts(local_row), _row_ts(row)
             if lt is not None and rt is not None and lt >= rt:
-                actual.append(local_row)  # 本地新（撞车场景 LWW）：保留本地
+                actual[local_row[pk]] = local_row  # 本地新（LWW）：保留本地
                 continue
             values = _writable_row(table, row)
-            values[pk] = key  # 撞车场景：远端内容落在本地 pk 上
+            values[pk] = key
             db.execute(table.update().where(
                 getattr(table.c, pk) == key).values(**values))
             row = {**row, pk: key}
             updated += 1
-            actual.append(row)
+            actual[key] = row
 
     # 删除（本地有而 merged 无）。deletable 限定删除范围（优化批 3）：规划与
     # 写库之间的新写入不在规划键集内，绝不能被"本地删除传播"误删
@@ -567,7 +605,22 @@ def _write_local(db: Session, name: str, merged: list[dict],
     doomed = scope - set(merged_map)
     if doomed:
         db.execute(delete(table).where(getattr(table.c, pk).in_(doomed)))
-    return actual, inserted, updated
+    # 规范序返回（与 table_rows 同序：跨轮 sha1 稳定，推送跳过判定才可靠）
+    ordered = sorted(actual.values(), key=lambda r: str(r.get(pk, "")))
+    return ordered, inserted, updated
+
+
+def _repoint_children(db: Session, parent_name: str, old_pk: str, new_pk: str) -> None:
+    """自然键撞车 pk 收敛的子表外键改指（defer FK 事务内调用，末态自洽）。
+
+    子行 updated_at 会被触发器盖 now——子行确实变了（归属换了主键），语义
+    成立；同步链把它们作为正常变更推给对端。"""
+    for t in Base.metadata.sorted_tables:
+        for fk in t.foreign_keys:
+            if fk.column.table.name == parent_name:
+                db.execute(t.update().where(
+                    getattr(t.c, fk.parent.name) == old_pk
+                ).values({fk.parent.name: new_pk}))
 
 
 def _rows_equal(a: dict, b: dict, cols) -> bool:
