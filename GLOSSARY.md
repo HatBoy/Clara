@@ -37,3 +37,23 @@
   TAIL_BUFFER_MIN（决策层批内虚拟延长）/ CHAIN_TAIL_BUFFER_MIN（长会链尾/
   差旅落地）/ MEETING_TAIL_MIN / MEETING_HEAD_MIN（单场会议前后，会前与
   前端虚拟块同口径）。改值 = 排期行为面变化，须评估全入口。
+
+## 2026-11-18 第二轮增补
+
+- **桌面轮次编排（stream_turn_events）**：`chat_turn.stream_turn_events(message,
+  graph)`——桌面端对话轮次的 SSE 事件编排（轮次锁/信封消费/错误翻译/压缩调度）。
+  graph 由 router 层加载传入（`ai_coach._load_graph` 测试锚点）；帧序契约由语句
+  顺序结构性保证。远程渠道（chat_channels.handle_incoming）是 invoke 非流式
+  形态，与桌面流式编排保持各自。
+- **同步域写事务（writing）**：`sync_engine.writing(db)`——PRAGMA defer FK +
+  登记式删除 + 退出逆拓扑（子先父后）统一执行 + commit/rollback 单源。消费方：
+  run_sync 阶段 2 / apply_merge；`_write_local` 内保留直调兜底 PRAGMA。
+- **任务数据 store（taskStore）**：`src/lib/taskStore.ts`——tasks/projects/
+  loadedFromDay 的两窗单源（每 WebView 窗口一个模块实例，跨窗一致性靠
+  notifyPeer）。变更原语 + reloadPruned/reloadToday（in-flight 守卫）+
+  applyPeer（peer 分派数据半边）。写 handler 的 notifyPeer 时机与撤销编排
+  留在窗口层。
+- **找槽单源（candidate_slots）**：`services/tasks.py`——suggest_slot 是
+  candidate_slots(k=1) 薄包装（无 anchor/allowed 维度严格等价，对拍用例锁定）；
+  finder 的十约束组装在 `agents/scheduler/finder.pick_candidate`（原内嵌闭包
+  提升的具名函数）。
