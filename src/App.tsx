@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { Database, Folder, Inbox } from "lucide-react";
 import "./App.css";
+import * as taskStore from "./lib/taskStore";
+import { INITIAL_LOOKBACK_DAYS } from "./lib/taskStore";
 import { applyScheduleTime, carveSeriesRow, dropOrCarveTask, mergeTaskPatch } from "./lib/taskWrites";
 import Sidebar from "./components/Sidebar";
 import ScheduleCanvas from "./components/ScheduleCanvas";
@@ -105,7 +107,6 @@ const clampPanelWidth = (
 ) => Math.min(range[1], Math.max(range[0], Math.min(width, dynamicMax)));
 
 // 已排期任务的历史窗口：初始回看天数（覆盖月视图近期翻页）与每次向过去扩展的步长（天）
-const INITIAL_LOOKBACK_DAYS = 30;
 const EXTEND_CHUNK_DAYS = 90;
 
 // 当前页面：日程 / 收件箱 / 数据源 / 统计报告 / 项目——左栏与中栏不变，仅右栏内容随页面切换
@@ -150,19 +151,11 @@ function App() {
   // 加载策略（与增长模型对应）：未排期待办与重复系列天然有界恒全量；已排期单次任务仅
   // 历史方向无限增长 → 历史侧滚动窗口按需拉取、未来侧开放（启动只传 start）——未来侧
   // 开放同时保证项目页"已排期"开关能看到全部未来任务
-  const [tasks, setTasks] = useState<Task[]>([]);
-  // 已加载历史窗口的左边界（epoch day 绝对日序号，跨午夜不失准；未来侧开放无右边界）。
-  // 经 useState 初始值同步置位——若等 fetch 完成才置位，StrictMode 挂载双跑的在途
-  // 间隙里日历的首次范围上报会误判未覆盖而触发冗余扩展请求
-  const [loadedFromDay, setLoadedFromDay] = useState(
-    () => epochDayOf(new Date()) - INITIAL_LOOKBACK_DAYS,
-  );
-  // 窗口左边界引用（二轮批 1）：挂载一次的监听 effect（toast 动作等）闭包里的
-  // reloadTasks 读 ref——旧闭包陈旧为首帧初始值，历史扩展后触发的重拉窗口偏窄
-  const loadedFromDayRef = useRef(loadedFromDay);
-  loadedFromDayRef.current = loadedFromDay;
-  // 项目列表（Sidebar 受控；任务 project 字段以 name 引用项目）
-  const [projects, setProjects] = useState<Project[]>([]);
+  // 任务数据单源（2026-11-17 架构批 6）：tasks/projects/loadedFromDay 收进
+  // lib/taskStore（模块级置位早于任何渲染，StrictMode 双跑窗口左边界恒就绪；
+  // 挂载一次的监听闭包经 store 读最新边界——loadedFromDayRef 防陈旧补丁退役）
+  const { tasks, projects, loadedFromDay } = taskStore.useTaskStore();
+  // 项目列表（Sidebar 受控；任务 project 字段以 name 引用项目）——store 同源
   // 项目页当前查看的项目名（activeView === "project" 时有效）
   const [activeProject, setActiveProject] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<ViewId>("schedule");
@@ -222,26 +215,9 @@ function App() {
   // 设置页初始分区（助手面板引导卡直达 "model" 用；打开时消费，关闭回落默认第一项）
   const [settingsMenu, setSettingsMenu] = useState<string | null>(null);
 
-  // 累积式缓存 upsert：Map 按 id 合并（旧保位、新追加）。保序是收件箱"默认排序"
-  //（后端 sort_order 序）的前提——该组只由 unscheduled 批构成，窗口批（start 非空）
-  // 不混入；不淘汰旧数据（翻回已加载窗口秒显，内存增长有界于翻过的范围）
-  const upsertTasks = (incoming: Task[]) =>
-    setTasks((prev) => {
-      if (incoming.length === 0) return prev;
-      const byId = new Map(prev.map((t) => [t.id, t]));
-      for (const t of incoming) byId.set(t.id, t);
-      return [...byId.values()];
-    });
-
-  // 项目累积式 upsert（口径同 upsertTasks）：Map 按标识合并保序（id 缺失回退 name，
-  // 项目均来自后端 id 正常恒在）；桌面小部件同步（widget 侧建项目）入列用
-  const upsertProjects = (incoming: Project[]) =>
-    setProjects((prev) => {
-      if (incoming.length === 0) return prev;
-      const byId = new Map(prev.map((p) => [p.id ?? p.name, p]));
-      for (const p of incoming) byId.set(p.id ?? p.name, p);
-      return [...byId.values()];
-    });
+  // 数据原语直连 taskStore（原与 WidgetWindow 逐字重复的本地实现退役，调用点零改动；
+  // upsertProjects 的 App 侧调用点已全部收敛 setProjects/updateProjects/applyPeer）
+  const upsertTasks = taskStore.upsertTasks;
 
   // 项目 id → name 映射（窗口扩展批的任务转换用）；启动批直接用当次请求的 apiProjects 建
   const projectNameById = useMemo(
@@ -264,7 +240,7 @@ function App() {
           fetchSyncConfig().catch(() => null), // 同步状态独立失败不拖垮启动
         ]);
         if (cancelled) return;
-        setProjects(apiProjects.map(toFrontendProject));
+        taskStore.setProjects(apiProjects.map(toFrontendProject));
         // 设置落位 + 启动副作用对齐（DB 为真源单向同步）：关闭行为同步 Rust（托盘拦截读它）、
         // 开机自启同步注册表；主题由下方 themeMode effect 驱动，无需在此重复调用
         const frontendSettings = toFrontendSettings(apiSettings);
@@ -407,6 +383,7 @@ function App() {
       // 直写库信号（ics 导入等）：只重拉任务，无助手消息——不进未读/刷新/提示音轨
       if (ev.type === "tasks_changed") {
         reloadTasks();
+        notifyPeer("main", { kind: "reload" });
         return;
       }
       // WebDAV 同步完成（2026-11-14 同步备份）：拉入的数据横跨任务/消息/项目等
@@ -414,6 +391,7 @@ function App() {
       // 同属直写库轨：不进未读、不响提示音
       if (ev.type === "sync") {
         reloadTasks();
+        notifyPeer("main", { kind: "reload" });
         setAiRefreshKey((k) => k + 1);
         setSyncBootHint(false);
         return;
@@ -429,7 +407,10 @@ function App() {
       if (!copilotVisibleRef.current) setAiUnread((n) => n + 1);
       // 采集轮直落收件箱的任务实时可见（2026-11-04 真机批）：trusted 直通建的
       // 任务此前只靠用户切页/写操作触发重拉才出现——ingest 事件显式重拉任务
-      if (ev.type === "ingest") reloadTasks();
+      if (ev.type === "ingest") {
+        reloadTasks();
+        notifyPeer("main", { kind: "reload" });
+      }
       const s = settingsRef.current;
       if (ev.type !== "chat_sync" && s.assistantChime && s.sound !== "off") playSound(s.sound);
     };
@@ -489,15 +470,12 @@ function App() {
     let unlisten: () => void = () => {};
     let disposed = false;
     onPeerSync((payload) => {
-      if (payload.kind === "upsert") {
-        if (payload.tasks) upsertTasks(payload.tasks);
-        if (payload.projects) upsertProjects(payload.projects);
-      } else if (payload.kind === "delete") {
-        const ids = new Set(payload.taskIds);
-        setTasks((list) => list.filter((t) => !ids.has(t.id)));
-      } else if (payload.kind === "reload") {
+      // 数据半边收 taskStore.applyPeer（两窗同构分派单源）；reload 是窗口编排
+      if (payload.kind === "reload") {
         reloadTasks();
+        return;
       }
+      taskStore.applyPeer(payload);
     }).then((fn) => {
       if (disposed) fn(); // 等待订阅期间组件已卸载：立即取消本次订阅
       else unlisten = fn;
@@ -602,45 +580,14 @@ function App() {
     const fetchFrom = fromDay - EXTEND_CHUNK_DAYS; // 左侧余量：月视图翻约 3 页才再一次请求
     fetchTasks({ start: dayStartOf(fetchFrom), end: dayStartOf(loadedFromDay) })
       .then((api) => {
-        upsertTasks(api.map((t) => toFrontendTask(t, projectNameById)));
-        setLoadedFromDay(fetchFrom);
+        taskStore.extendWindow(fetchFrom, api.map((t) => toFrontendTask(t, projectNameById)));
       })
       .catch((e) => console.error("扩展历史窗口失败", e));
   };
 
-  // 整窗重拉任务纠偏（自包含：项目名映射用当次请求结果，不依赖组件 state——同步监听
-  // effect 挂载一次，闭包里的 projectNameById 若取组件 state 会陈旧为首帧空映射，把任务
-  // 归属抹成无项目）：unscheduled 全量 + 已加载窗口起点的已排期批，upsert 浅替换整行
-  // （乐观删掉的行也会被后端行复活）。两处消费：widget 推来的 reload 载荷（Clone &
-  // Override 编辑/删除牵连派生变化）、本窗写请求失败自愈。窗口起点读 ref（挂载一次的
-  // 监听闭包不陈旧）。自愈请求失败静默（后端不在时无数据可纠，下次写失败再试）
-  const reloadTasks = () => {
-    const fromDay = loadedFromDayRef.current;
-    fetchProjects()
-      .then((apiProjects) => {
-        const nameById = new Map(apiProjects.map((p) => [p.id, p.name]));
-        // 项目列表同批回填：重命名/删除/星标失败也靠这里纠偏（2026-11-16 优化批 1）
-        setProjects(apiProjects.map(toFrontendProject));
-        return Promise.all([
-          fetchTasks({ unscheduled: true }),
-          fetchTasks({ start: dayStartOf(fromDay) }),
-        ]).then((batches) => batches.flat().map((t) => toFrontendTask(t, nameById)));
-      })
-      .then((fresh) => {
-        // 剪枝式重拉（2026-11-16 优化批 1）：后端已不存在的行必须从本地移除——
-        // 旧实现只 upsert 不删，完成/硬删/改归属后侧栏徽标与幽灵行长期滞留。
-        // 只对"本次请求覆盖范围"剪枝：更早的历史窗口（翻页扩展加载）保留。
-        const freshIds = new Set(fresh.map((t) => t.id));
-        setTasks((prev) => {
-          const kept = prev.filter((t) => {
-            if (freshIds.has(t.id)) return false; // 由 fresh 版本替换
-            return isScheduled(t) && t.dateOffset < fromDay;
-          });
-          return [...kept, ...fresh];
-        });
-      })
-      .catch(() => {});
-  };
+  // 整窗重拉任务纠偏：收编 taskStore.reloadPruned（剪枝谓词/项目同批回填/迟到
+  // 结果丢弃/in-flight 守卫全在 store；窗口起点读 store 当前值——闭包零陈旧）
+  const reloadTasks = taskStore.reloadPruned;
 
   // 写请求失败自愈：乐观更新已生效（错值可能已推给 widget），本地重拉 + 通知对端 reload
   // 把两窗都拉回后端真值——不回滚本地（无快照机制，重拉语义等价且能顺带纠偏对端）
@@ -781,9 +728,7 @@ function App() {
       // 三问 this/following 两步（乐观模式同 handleUpdateTask）：先乐观挖空/
       // 截断主行，PATCH 响应的例外行/新系列行 upsert 回来；widget 整体重拉
       // 最简（同 handleUpdateTask 同分支取舍）
-      setTasks((list) =>
-        list.map((t) => (t.id === taskId ? carveSeriesRow(t, opts) : t)),
-      );
+      taskStore.mapTask(taskId, (t) => carveSeriesRow(t, opts));
       notifyPeer("main", { kind: "reload" });
       updateTask(taskId, body, opts)
         .then((created) => {
@@ -793,7 +738,7 @@ function App() {
         .catch((e) => recoverFromWriteError("重复日程排期写回失败", e));
       return;
     }
-    setTasks((list) => list.map((t) => (t.id === taskId ? apply(t) : t)));
+    taskStore.mapTask(taskId, apply);
     // 排期变化同步给桌面小部件（乐观前端形状整任务，widget 按 id upsert）
     const src = tasks.find((t) => t.id === taskId);
     if (src) notifyPeer("main", { kind: "upsert", tasks: [apply(src)] });
@@ -805,9 +750,7 @@ function App() {
   // 待办拖入侧栏项目：写入/转移项目归属（排期字段不动）。前端以 name 引用项目，
   // 持久化按 id 寻址——name → id 经 projects state 解析
   const handleTodoToProject = (projectName: string, taskId: string) => {
-    setTasks((list) =>
-      list.map((t) => (t.id === taskId ? { ...t, project: projectName } : t)),
-    );
+    taskStore.mapTask(taskId, (t) => ({ ...t, project: projectName }));
     // 归属变化同步给桌面小部件（该任务即从其收件箱默认列表消失）
     const src = tasks.find((t) => t.id === taskId);
     if (src) notifyPeer("main", { kind: "upsert", tasks: [{ ...src, project: projectName }] });
@@ -832,14 +775,11 @@ function App() {
     patch: Partial<Task>,
     opts?: { mode: "this" | "following" | "all"; date: string },
   ) => {
-    setTasks((list) =>
-      list.map((t) =>
-        t.id === taskId
-          ? (opts?.mode === "this" || opts?.mode === "following")
-            ? carveSeriesRow(t, opts)
-            : mergeTaskPatch(t, patch)
-          : t,
-      ),
+    taskStore.mapTask(
+      taskId,
+      (t) => (opts?.mode === "this" || opts?.mode === "following")
+        ? carveSeriesRow(t, opts)
+        : mergeTaskPatch(t, patch),
     );
     if (opts?.mode === "this" || opts?.mode === "following") {
       // Clone & Override 分支牵连主行挖空/截断 + 新行两处派生变化，widget 整体重拉
@@ -878,7 +818,7 @@ function App() {
     opts?: { mode: "this" | "following" | "all"; date: string },
   ) => {
     const keepRow = opts?.mode === "this" || opts?.mode === "following";
-    setTasks((list) => dropOrCarveTask(list, taskId, opts));
+    taskStore.mapTasks((list) => dropOrCarveTask(list, taskId, opts));
     // 整删按 id 通知 widget 移除；this/following 保系列行的派生变化（挖空/截断）
     // 交给 widget 整体重拉
     notifyPeer("main", keepRow ? { kind: "reload" } : { kind: "delete", taskIds: [taskId] });
@@ -908,7 +848,7 @@ function App() {
     const created = await createProject(name, color);
     const frontend = toFrontendProject(created);
     // 入列前再查一次：await 期间快速双 Enter 的第二发同请求已被后端 409 拒掉
-    setProjects((prev) =>
+    taskStore.updateProjects((prev) =>
       prev.some((p) => p.name === name) ? prev : [...prev, frontend],
     );
     // 新建项目同步给桌面小部件（其快捷录入 # 气泡与任务归属解析依赖项目列表）
@@ -1480,10 +1420,10 @@ function App() {
         .then(() => refreshUndo())
         .catch((e) => recoverFromWriteError("项目重命名写回后端失败", e));
     }
-    setProjects((prev) =>
+    taskStore.updateProjects((prev) =>
       prev.map((p) => (p.name === oldName ? { ...p, name: newName } : p)),
     );
-    setTasks((prev) =>
+    taskStore.mapTasks((prev) =>
       prev.map((t) => (t.project === oldName ? { ...t, project: newName } : t)),
     );
     setActiveProject((n) => (n === oldName ? newName : n));
@@ -1500,8 +1440,8 @@ function App() {
         .then(() => refreshUndo())
         .catch((e) => recoverFromWriteError("项目删除写回后端失败", e));
     }
-    setProjects((prev) => prev.filter((p) => p.name !== name));
-    setTasks((prev) =>
+    taskStore.updateProjects((prev) => prev.filter((p) => p.name !== name));
+    taskStore.mapTasks((prev) =>
       prev.map((t) => (t.project === name ? { ...t, project: undefined } : t)),
     );
     if (activeView === "project" && activeProject === name) {
@@ -1520,7 +1460,7 @@ function App() {
         .then(() => refreshUndo())
         .catch((e) => recoverFromWriteError("项目星标写回后端失败", e));
     }
-    setProjects((prev) =>
+    taskStore.updateProjects((prev) =>
       prev.map((p) => (p.name === name ? { ...p, starred: !p.starred } : p)),
     );
   };

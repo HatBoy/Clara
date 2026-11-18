@@ -39,7 +39,6 @@ import {
   setRecurrenceFreq,
   TITLE_MAX_LEN,
   toggleWeekday,
-  type Project,
   type ScheduledTask,
   type Task,
 } from "../data/tasks";
@@ -47,9 +46,7 @@ import {
   createProject,
   createTask,
   deleteTask,
-  fetchProjects,
   fetchSettings,
-  fetchTasks,
   scheduleToISO,
   toFrontendProject,
   toFrontendSettings,
@@ -63,6 +60,7 @@ import { applyTheme, DEFAULT_SETTINGS, type Settings } from "../lib/settings";
 import { notifyPeer, onPeerSync } from "../lib/sync";
 import type { ParsedInput } from "../lib/syntax";
 import { fetchWidgetVisible, hideWidgetPersisted, isTauri } from "../lib/tauri";
+import * as taskStore from "../lib/taskStore";
 import { applyScheduleTime, carveSeriesRow, dropOrCarveTask, mergeTaskPatch } from "../lib/taskWrites";
 import QuickAdd from "../components/QuickAdd";
 import ConfirmPopover from "../components/ConfirmPopover";
@@ -176,8 +174,9 @@ function WidgetWindow() {
   // 置顶态（初值 = localStorage 记忆，坏数据/无记忆回不置顶——与 conf 的
   // alwaysOnTop:false 一致；恢复见挂载 effect，写入口仅 toggleOnTop）
   const [onTop, setOnTop] = useState(readSavedPinned);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
+  // 任务数据单源（2026-11-17 架构批 6）：与主窗共用 lib/taskStore 原语
+  //（每个 WebView 窗口一个模块实例，跨窗一致性靠 peer 广播）
+  const { tasks, projects } = taskStore.useTaskStore();
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   // 当前时刻（红线/降淡/今日窗口，分钟精度）；widget 恒"今天"无翻页
   const [now, setNow] = useState(() => new Date());
@@ -203,21 +202,8 @@ function WidgetWindow() {
   // 浮层根节点：document 点外关闭时判断落点是否在浮层内
   const detailRef = useRef<HTMLDivElement>(null);
 
-  // 累积式 upsert：Map 按 id 合并保序（口径同 App，收件箱默认序 = 后端 sort_order 序）
-  const upsertTasks = (incoming: Task[]) =>
-    setTasks((prev) => {
-      if (incoming.length === 0) return prev;
-      const byId = new Map(prev.map((t) => [t.id, t]));
-      for (const t of incoming) byId.set(t.id, t);
-      return [...byId.values()];
-    });
-  const upsertProjects = (incoming: Project[]) =>
-    setProjects((prev) => {
-      if (incoming.length === 0) return prev;
-      const byId = new Map(prev.map((p) => [p.id ?? p.name, p]));
-      for (const p of incoming) byId.set(p.id ?? p.name, p);
-      return [...byId.values()];
-    });
+  // 数据原语直连 taskStore（原与 App 逐字重复的本地实现退役）
+  const upsertTasks = taskStore.upsertTasks;
 
   // 项目 id → name 映射（建任务时 toFrontendTask 转换用）
   const projectNameById = useMemo(
@@ -225,35 +211,18 @@ function WidgetWindow() {
     [projects],
   );
 
-  // —— 数据拉取（启动 + reload 重跑）：四请求并行——项目 + 未排期待办全量 + 今日
-  // 最小有界窗口（今天 0 点 ~ 明天 0 点；重复系列恒全量随窗口返回）+ 设置。
-  // StrictMode 双执行 cancelled 标记丢弃首轮；失败保持现状（本地回环毫秒级，
-  // 无 loading UI）
+  // —— 数据拉取（启动 + reload 重跑）：数据半边收 taskStore.reloadToday（今日窗
+  // 口径 + in-flight 守卫在 store），设置是本窗关切（主题/透明度跟随）单独拉。
+  // StrictMode 双执行的迟到结果由各 fetch 的守卫丢弃
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const n = new Date();
-        const dayStart = new Date(n.getFullYear(), n.getMonth(), n.getDate());
-        const dayEnd = new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1);
-        const [apiProjects, apiUnscheduled, apiToday, apiSettings] =
-          await Promise.all([
-            fetchProjects(),
-            fetchTasks({ unscheduled: true }),
-            fetchTasks({ start: dayStart, end: dayEnd }),
-            fetchSettings(),
-          ]);
+    taskStore.reloadToday();
+    fetchSettings()
+      .then((apiSettings) => {
         if (cancelled) return;
-        setProjects(apiProjects.map(toFrontendProject));
         setSettings(toFrontendSettings(apiSettings));
-        const nameById = new Map(apiProjects.map((p) => [p.id, p.name]));
-        upsertTasks(
-          [...apiUnscheduled, ...apiToday].map((t) => toFrontendTask(t, nameById)),
-        );
-      } catch (e) {
-        console.error("小部件加载数据失败", e);
-      }
-    })();
+      })
+      .catch((e) => console.error("小部件加载数据失败", e));
     return () => {
       cancelled = true;
     };
@@ -301,16 +270,14 @@ function WidgetWindow() {
     let unlisten: () => void = () => {};
     let disposed = false;
     onPeerSync((payload) => {
-      if (payload.kind === "upsert") {
-        if (payload.tasks) upsertTasks(payload.tasks);
-        if (payload.projects) upsertProjects(payload.projects);
-      } else if (payload.kind === "delete") {
-        const ids = new Set(payload.taskIds);
-        setTasks((list) => list.filter((t) => !ids.has(t.id)));
-      } else if (payload.kind === "settings") {
+      // 数据半边收 taskStore.applyPeer（两窗同构分派单源）；settings/reload 窗口编排
+      if (payload.kind === "settings") {
         setSettings(payload.settings);
+      } else if (payload.kind === "reload") {
+        setReloadTick((t) => t + 1); // 设置兜底重拉；数据由 reloadToday 直达
+        taskStore.reloadToday();
       } else {
-        setReloadTick((t) => t + 1);
+        taskStore.applyPeer(payload);
       }
     }).then((fn) => {
       if (disposed) fn(); // 等待订阅期间组件已卸载：立即取消本次订阅
@@ -490,6 +457,7 @@ function WidgetWindow() {
   const recoverFromWriteError = (label: string, e: unknown) => {
     console.error(label, e);
     setReloadTick((t) => t + 1);
+    taskStore.reloadToday();
     notifyPeer("widget", { kind: "reload" });
   };
 
@@ -503,7 +471,7 @@ function WidgetWindow() {
         PROJECT_COLORS[Math.floor(Math.random() * PROJECT_COLORS.length)];
       const created = await createProject(draft.newProject, color);
       const frontendProject = toFrontendProject(created);
-      setProjects((prev) =>
+      taskStore.updateProjects((prev) =>
         prev.some((p) => p.name === frontendProject.name)
           ? prev
           : [...prev, frontendProject],
@@ -549,7 +517,7 @@ function WidgetWindow() {
     const src = tasks.find((t) => t.id === taskId);
     if (!src || !isScheduled(src)) return;
     const apply = (t: Task): Task => applyScheduleTime(t, start, end);
-    setTasks((list) => list.map((t) => (t.id === taskId ? apply(t) : t)));
+    taskStore.mapTask(taskId, apply);
     notifyPeer("widget", { kind: "upsert", tasks: [apply(src)] });
     const body = {
       start_time: scheduleToISO(src.dateOffset, start),
@@ -569,14 +537,11 @@ function WidgetWindow() {
     patch: Partial<Task>,
     opts?: { mode: "this" | "following" | "all"; date: string },
   ) => {
-    setTasks((list) =>
-      list.map((t) =>
-        t.id === taskId
-          ? (opts?.mode === "this" || opts?.mode === "following")
-            ? carveSeriesRow(t, opts)
-            : mergeTaskPatch(t, patch)
-          : t,
-      ),
+    taskStore.mapTask(
+      taskId,
+      (t) => (opts?.mode === "this" || opts?.mode === "following")
+        ? carveSeriesRow(t, opts)
+        : mergeTaskPatch(t, patch),
     );
     if (opts?.mode === "this" || opts?.mode === "following") {
       // 派生变化（挖空/截断 + 新行）让主界面整窗重拉最简，取舍同 App
@@ -604,7 +569,7 @@ function WidgetWindow() {
     opts?: { mode: "this" | "following" | "all"; date: string },
   ) => {
     const keepRow = opts?.mode === "this" || opts?.mode === "following";
-    setTasks((list) => dropOrCarveTask(list, taskId, opts));
+    taskStore.mapTasks((list) => dropOrCarveTask(list, taskId, opts));
     notifyPeer(
       "widget",
       keepRow ? { kind: "reload" } : { kind: "delete", taskIds: [taskId] },
