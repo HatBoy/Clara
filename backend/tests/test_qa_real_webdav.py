@@ -129,8 +129,12 @@ def ab():
                 "minutes_enabled": False, "ingest_runs_per_day": 1,
                 "prep_enabled": False, "hardtask_enabled": False,
                 "brief_enabled": False})
+            # webdav_enabled=False：自动轮（schedule_now/30s 探测/3s 防抖）与
+            # 手动 run 编排竞态是上批 SB-4/5/6「首跑 0 行」的同型坑（tech-debt
+            # 2026-11-17 沉淀）——手动 run 无视 enabled 检查，全部同步走
+            # sync_and_wait 的手动 POST /run，编排确定性零竞态
             inst.patch("/api/sync", {**_creds(), "webdav_url": remote,
-                                     "webdav_enabled": True})
+                                     "webdav_enabled": False})
         yield a, b
     finally:
         for inst in (a, b):
@@ -204,29 +208,31 @@ def test_s4_lww_concurrent_last_wins(ab):
     """LWW 并发：两端各改同一任务不同标题（updated_at 错开）→ 双方 sync →
     收敛为较新一侧（两端一致）。"""
     a, b = ab
-    tid = next(t["id"] for t in _task_rows(a)
-               if t["title"] == "B端改名0")
+    titles_a = _task_titles(a)
+    anchor_title = "B端改名0" if "B端改名0" in titles_a else "A端任务0"
+    tid = next(t["id"] for t in _task_rows(a) if t["title"] == anchor_title)
     a.patch(f"/api/tasks/{tid}", {"title": "A并发改"})
-    time.sleep(1.2)  # updated_at 错开（A 新于 B）
+    time.sleep(1.2)  # updated_at 错开（b.patch 在后 → B 较新）
     b.patch(f"/api/tasks/{tid}", {"title": "B并发改"})
     a.sync_and_wait()
     b.sync_and_wait()
-    b.sync_and_wait()  # B 先推旧值、A 拉到后回推新值——第二轮收敛
+    a.sync_and_wait()  # 双端收敛为较新一侧（B 胜）
     assert _task_titles(a) == _task_titles(b)
-    assert "A并发改" in _task_titles(a)  # 较新一侧胜出
+    assert "B并发改" in _task_titles(a)  # updated_at 较新一侧胜出
 
 
 def test_s5_delete_propagation(ab):
     """删除传播：B 删任务 → 双端 sync → A 无该行且远端行数一致。"""
     a, b = ab
-    tid = next(t["id"] for t in _task_rows(b)
-               if t["title"] == "A并发改")
+    titles_a = _task_titles(a)
+    anchor_title = "A并发改" if "A并发改" in titles_a else "A端任务2"
+    tid = next(t["id"] for t in _task_rows(b) if t["title"] == anchor_title)
     b.delete(f"/api/tasks/{tid}")
     b.sync_and_wait()
     a.sync_and_wait()
     titles_a = _task_titles(a)
     titles_b = _task_titles(b)
-    assert "A并发改" not in titles_a and titles_a == titles_b
+    assert anchor_title not in titles_a and titles_a == titles_b
 
 
 def test_s6_natural_key_collision(ab):
@@ -280,6 +286,12 @@ def test_s8_guard_b_mass_delete(ab):
     cfg = a.sync_and_wait()
     assert not cfg["last_sync_ok"], "大比例删库未被守卫 b 拦截"
     assert cfg.get("last_sync_error"), "守卫 b 无指引文案"
+    # 收敛对账（守卫拦截后可恢复）：A reset-base → 冷启动 union 拉回远端 150 行
+    # → 两端正态（否则遗留删除意图会在 s10 持续拉扯）
+    a.post("/api/sync/reset-base")
+    cfg2 = a.sync_and_wait()
+    assert cfg2["last_sync_ok"] is True, cfg2.get("last_sync_error")
+    assert _task_titles(a) == _task_titles(b)
 
 
 def test_s9_backup_restore_chain(ab):
@@ -290,9 +302,9 @@ def test_s9_backup_restore_chain(ab):
     r = a.post("/api/sync/backup", {"path": str(bak)})
     assert r.status_code in (200, 201), r.text[:200]
     titles_before = _task_titles(a)
-    analyze = b.post("/api/merge-analyze", {"path": str(bak)}).json()
+    analyze = b.post("/api/sync/merge-analyze", {"path": str(bak)}).json()
     assert analyze.get("tables"), analyze
-    b.post("/api/merge-apply", {"path": str(bak), "strategy": "skip"})
+    b.post("/api/sync/merge-apply", {"path": str(bak), "strategy": "skip"})
     b.sync_and_wait()
     # B 合并后推给 A → A 数据集 ⊇ 备份时点（skip 不删本地行）
     a.sync_and_wait()
