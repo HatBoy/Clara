@@ -154,6 +154,14 @@ def ab():
             print(f"[qa-webdav] 远端 QA 子目录清理失败（保留现场）：{e}")
 
 
+def w_spawn_a2(old: Instance) -> Instance:
+    """同 data_dir 重启实例（restore 两段式的新进程置换验证）。"""
+    inst = _spawn(old.port, old.data_dir)
+    old.proc = inst.proc
+    old.base = inst.base
+    return inst
+
+
 def _task_rows(inst) -> list[dict]:
     rows = inst.get("/api/tasks")
     return rows.get("items", []) if isinstance(rows, dict) else rows
@@ -295,20 +303,27 @@ def test_s8_guard_b_mass_delete(ab):
 
 
 def test_s9_backup_restore_chain(ab):
-    """备份恢复链：A 备份 zip → merge-analyze dry-run → B merge-apply →
-    restore 两段（重启 A 进程完成置换）→ 数据 == 备份时点。"""
+    """备份恢复链：A 备份 zip → B 制造差异（删一任务）→ merge-analyze 识别
+    new_count≥1 → merge-apply(skip) 拉回 → 真重启 A 进程走 apply_pending_
+    restore 两段置换 → 数据 == 备份时点。"""
     a, b = ab
     bak = a.data_dir / "qa-backup.zip"
     r = a.post("/api/sync/backup", {"path": str(bak)})
     assert r.status_code in (200, 201), r.text[:200]
     titles_before = _task_titles(a)
+    victim = next(t for t in _task_rows(b) if t["title"] == "循环2")
+    b.delete(f"/api/tasks/{victim['id']}")
     analyze = b.post("/api/sync/merge-analyze", {"path": str(bak)}).json()
-    assert analyze.get("tables"), analyze
+    assert analyze["ok"] is True and analyze["new_count"] >= 1, analyze
     b.post("/api/sync/merge-apply", {"path": str(bak), "strategy": "skip"})
-    b.sync_and_wait()
-    # B 合并后推给 A → A 数据集 ⊇ 备份时点（skip 不删本地行）
-    a.sync_and_wait()
-    assert titles_before <= _task_titles(b) or titles_before <= _task_titles(a)
+    titles_b = _task_titles(b)
+    assert titles_before <= titles_b  # skip 合并补回被删行（不删本地既有行）
+    # 真重启 A：lifespan 最前 apply_pending_restore 完成两段置换 → 数据==备份时点
+    a.post("/api/sync/restore", {"path": str(bak)})
+    a.proc.terminate()
+    a.proc.wait(timeout=15)
+    a2 = w_spawn_a2(a)
+    assert _task_titles(a2) == titles_before
 
 
 def test_s10_multi_device_round_trip(ab):
