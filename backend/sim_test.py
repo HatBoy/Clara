@@ -31,6 +31,10 @@ database.engine = database.create_engine(
     poolclass=StaticPool)
 database.SessionLocal = database.sessionmaker(
     bind=database.engine, autoflush=False, expire_on_commit=False)
+# 2026-11-23 真机批修复：import main（连带导入 models/services，Base.metadata
+# 才有表）必须在 create_all 之前——sim_secretary 同款顺序（此前顺序反了建空库，
+# maybe_restore 查五表即炸 no such table）
+import main  # noqa: E402,F401
 database.Base.metadata.create_all(database.engine)
 # FTS 虚表（conftest 同款）
 from sqlalchemy import text  # noqa: E402
@@ -41,7 +45,6 @@ database._ensure_episodic_fts(database.engine)
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-import main  # noqa: E402
 from database import SessionLocal  # noqa: E402
 from services.config_backup import maybe_restore_and_snapshot  # noqa: E402
 

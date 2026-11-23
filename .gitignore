@@ -39,3 +39,4 @@ docs/
 *.njsproj
 *.sln
 *.sw?
+.playwright-cli/
