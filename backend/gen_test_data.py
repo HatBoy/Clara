@@ -82,16 +82,19 @@ def _ctx(rng: random.Random, anchor: datetime) -> dict:
 def _wipe(db) -> None:
     """清空业务十二表（子表先清防外键；FTS 虚表随触发器自动）。Message 须在
     Proposal 前——messages.proposal_id 外键引用（原序潜伏缺陷：此前 dev 库
-    messages 恰无挂接 proposal 才未炸，2026-11-17 真机首跑暴露）。"""
-    from models import (BehaviorEvent, EpisodicFact, IngestionItem, Message,
-                        Project, Proposal, Reminder, StatsMessage, StatsReport,
-                        Subtask, Task, WorkflowRun)
+    messages 恰无挂接 proposal 才未炸，2026-11-17 真机首跑暴露）。ChatState
+    一并归零（单行表无外键；messages 清空后摘要游标若残留，新一轮首轮对话
+    会注入上一局的陈旧滚动摘要——2026-11-18 测试批的测试卫生补丁）。"""
+    from models import (BehaviorEvent, ChatState, EpisodicFact, IngestionItem,
+                        Message, Project, Proposal, Reminder, StatsMessage,
+                        StatsReport, Subtask, Task, WorkflowRun)
     for cls in (Subtask, Reminder, Task, Message, Proposal, StatsReport,
                 StatsMessage, BehaviorEvent, EpisodicFact, Project,
                 WorkflowRun, IngestionItem):
         n = db.query(cls).delete()
         if n:
             print(f"  清空 {cls.__tablename__}: {n} 行")
+    db.query(ChatState).delete()  # summarized_count 游标归零
     db.commit()
 
 
