@@ -465,7 +465,10 @@ def test_chat_crisis_e2e_reschedule_confirm_only(monkeypatch, client):
     settle_draft(client, draft["proposal_id"], draft["draft_plan"])
     with TestingSessionLocal() as db:
         row = db.get(Task, tid)
-    assert row.start_time.date() == tomorrow.date()  # 用户确认后改期落库
+    # 改期落库日期无关断言（hint 含「今晚/明天」相对词——跨午夜运行时
+    # 「今晚」钳 now 后最早槽落今天日首，引擎行为正确；绝不允许过去）
+    assert row.start_time.date() >= datetime.now().date()
+    assert row.start_time.date() <= tomorrow.date()
 
 
 def test_reschedule_past_not_before_clamped():
