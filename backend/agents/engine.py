@@ -92,8 +92,14 @@ def plan_slots(*, entries: list[dict], busy: list[tuple[datetime, datetime]],
     tails: dict[str, int] = {}
     rule_slots: dict[str, datetime | None] = {}
     for e in entries:
+        start_from = e.get("from") or now
+        if start_from < now:
+            # 过去起点钳到 now（QA 批 2026-11-23 修复：危机改期「今晚…」经
+            # _hint_to_not_before 产过去 not_before → suggest_slot 从过去扫出
+            # 已过时刻草案；finder.pick_candidate 同款防御，引擎层单点补齐）
+            start_from = now
         slot = suggest_slot(
-            e.get("from") or now, e["duration"], busy_acc,
+            start_from, e["duration"], busy_acc,
             day_start_min=day_start_min, day_end_min=day_end_min, lunch=lunch,
             morning_only=title_morning_only(e["title"]),
             same_clock_first=bool(e.get("same_clock_first")),

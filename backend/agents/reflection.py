@@ -259,6 +259,12 @@ def _apply_actions(db: Session, actions: list[dict], report: ReflectionReport) -
                         and (row.confidence or 0) < 0.8):
                     row.confidence = round(min(0.8, (row.confidence or 0) + 0.15), 2)
                     report.reinforced += 1
+                # keep 是记忆链唯一不走 service 写函数（upsert/delete 自带
+                # commit）的路径——属性修改必须就地提交，否则夜间流
+                # （_run_nightly 的 with SessionLocal 退出即 close）中
+                # observation_count 累计与置信升档全部丢失（QA 批 2026-11-23
+                # Bug#2：keep 印证演化——观察→验证→法则爬升链——生产不生效）
+                db.commit()
             continue
         if a["action"] in ("replace", "merge"):
             delete_memory_rule(db, a["rule_id"])
