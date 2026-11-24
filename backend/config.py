@@ -51,8 +51,9 @@ def get_data_dir() -> Path:
     """返回可写的数据目录（存放 SQLite 数据库文件），不存在则创建。
 
     CLARA_DATA_DIR 环境变量优先（QA 套件 A/B 双实例数据目录隔离用——
-    DB/快照/备份/staging 全部经此单点，subprocess 内 import config 前设置生效）；
-    未设置时行为与原先逐字节一致。"""
+    DB/快照/备份/staging 全部经此单点，subprocess 内 import config 前设置生效；
+    打包形态同样生效——多实例/运维救急的通用覆盖口，正常用户环境无此变量、
+    行为与原先逐字节一致）。"""
     override = os.environ.get("CLARA_DATA_DIR")
     if override:
         base = Path(override)

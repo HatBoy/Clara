@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import time
 import subprocess
 import platform
 import shutil
@@ -141,6 +142,64 @@ def build_litellm_excludes(eager_modules: set[str], pkg_dir: Path) -> list[str]:
             + ["litellm.rust_bridge._native"])
 
 
+def smoke_test(exe_path: Path, log_path: Path) -> None:
+    """打包产物自动冒烟探活（2026-11-05 打包关卡的脚本化收口）。
+
+    背景：2026-10-11 litellm 引入起打包版启动即崩，存量 4 层窟窿拖到
+    2026-11-05 首次冒烟才暴露——「不冒烟的打包 = 未完成」。此前冒烟是手动
+    步骤（exe --port + curl 探活），2026-11-11 的 icalendar/tzdata collect-all
+    就登记了「exe 冒烟未跑」。本函数把关卡焊进打包链：每次 build 自动探活，
+    失败 fail-fast（打包产物已就位，不回滚——排查修完重跑即可）。
+
+    探活口径：GET /api/health 200 = main.py 顶层 import 链全通（routers 全量
+    在顶层装配，model_providers/litellm/icalendar 等重依赖链一荣俱荣——
+    /api/jobs 再加一层「读库 + job_rules 注册表」运行时探针）。
+    TZID+VTIMEZONE 运行时深链不在本关卡（数据面探针，见 tech-debt 登记）。
+
+    进程清理用 taskkill /T /F：onefile exe 的 Popen.pid 是 bootloader 父进程，
+    p.kill() 杀不掉解压后的真子进程（会残留占端口）——/T 杀树才干净（Git Bash
+    「$! 是 MSYS PID」坑与本题无关，Python Popen 拿的就是 Windows PID）。
+    """
+    import httpx
+
+    port = 8099  # tech-debt 冒烟先例端口
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("wb") as err_log:
+        proc = subprocess.Popen(
+            [str(exe_path), "--port", str(port)],
+            stdout=subprocess.DEVNULL, stderr=err_log)
+        ok, detail = False, ""
+        try:
+            deadline = time.time() + 90  # onefile 解压 + litellm 重 import，实际 2-5s
+            base = f"http://127.0.0.1:{port}"
+            while time.time() < deadline:
+                if proc.poll() is not None:  # 进程先于探活退出 = 启动即崩
+                    break
+                try:
+                    r = httpx.get(f"{base}/api/health", timeout=2)
+                    if r.status_code == 200:
+                        jobs = httpx.get(f"{base}/api/jobs", timeout=5)
+                        ok = jobs.status_code == 200
+                        detail = f"/api/health 200 + /api/jobs {jobs.status_code}"
+                        break
+                except httpx.HTTPError:
+                    time.sleep(0.5)
+            if not ok:
+                err_log.flush()
+                tail = log_path.read_text(encoding="utf-8", errors="replace")[-1500:]
+                raise RuntimeError(
+                    f"冒烟探活失败（health 未在 90s 内就绪或 /api/jobs 非 200；{detail}）\n"
+                    f"——崩溃 traceback 见日志：{log_path}\n---- 日志尾部 ----\n{tail}")
+            print(f"🩺 冒烟探活通过（{detail}）")
+        finally:
+            if platform.system().lower() == "windows":
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                               capture_output=True)
+            else:
+                proc.terminate()
+            proc.wait(timeout=15)
+
+
 def build_and_move():
     print("🚀 开始使用 PyInstaller 编译 Python 后端...")
     
@@ -255,10 +314,20 @@ def build_and_move():
     
     # 3. 按照 Tauri 规范重命名并移动
     target_bin = target_dir / f"clara-backend-{target_triple}{exe_extension}"
-    
+
     print(f"📦 移动二进制文件至: {target_bin}")
     shutil.copy(source_bin, target_bin)
-    
+    size_mb = target_bin.stat().st_size / (1024 * 1024)
+    print(f"📐 产物体积: {size_mb:.1f} MB（上次裁剪后实测 131.6 MB，涨幅显著时先查新依赖的数据文件）")
+
+    # 4. 打包关卡：自动冒烟探活（见 smoke_test docstring；--no-smoke 跳过——
+    #    仅限明确知道自己在做什么的重复打包场景）
+    if "--no-smoke" in sys.argv:
+        print("⏭️ 跳过冒烟探活（--no-smoke）——产物未经验证，发布前务必手动冒烟！")
+    else:
+        smoke_log = pybuild_dir / "smoke-last.log"
+        smoke_test(target_bin, smoke_log)
+
     print("✅ Python 后端边车打包完成！")
 
 if __name__ == "__main__":
