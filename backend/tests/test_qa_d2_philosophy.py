@@ -8,8 +8,7 @@
   下限 120min 抬升（草案 duration 仍报原值）；今天碎片放不下 → 7 天窗内找整块
   日（拒绝拆散的行为形态）；
 - 哲学红线硬闸（preference_slots）：可解析形态「周五下午别排事」产硬避让窗；
-  钟点原话「周五下午4点后绝不安排任何工作」被闸②（钟点）+闸③（宾语）双拒
-  ——负向锁定，修复方向登记 docs/qa-bug-checklist.md；
+  严格的自定义哲学可产周五 16:00 至午夜禁窗；普通参考语句不升级。
 - 张弛有度缓冲单源 engine.py:52-55：引擎层长/高优条目尾随 15min。
 """
 
@@ -82,8 +81,9 @@ def _invoke(monkeypatch, user_input, entries, *, philosophy=None,
 def test_two_minute_short_circuits_all_tiny(monkeypatch):
     """「回复张总一句收到」+ two-minute 哲学 → 劝导立即执行：不排期、不落库、
     不出任何卡。"""
-    out, _ = _invoke(monkeypatch, "回复张总一句收到", [
+    out, cap = _invoke(monkeypatch, "回复张总一句收到", [
         _entry("回复张总收到", 2, est_minutes=1)], philosophy="two-minute")
+    assert len(cap.calls) == cap.count(KEY_PROFILER) == 1
     assert "两分钟" in out["final_reply"] and "立刻" in out["final_reply"]
     assert out.get("draft_plan") == []
     assert out.get("applied_plan") is None
@@ -91,15 +91,15 @@ def test_two_minute_short_circuits_all_tiny(monkeypatch):
 
 
 def test_two_minute_includes_explicit_time(monkeypatch):
-    """用户明说时间也劝导（profiler.py:257-259：两分钟法则的精神是别为小事
-    花排期成本）——短路先于直落分流。"""
+    """用户指定的执行时刻优先于两分钟法则。"""
     out, _ = _invoke(monkeypatch, "明天上午9点回复张总收到", [
         {"task_id": None, "origin": "user", "title": "回复张总收到",
          "duration": 2, "start": (ANCHOR + timedelta(days=1, hours=0, minutes=0))
          .isoformat(), "explicit_time": "明天上午9点",
          "profile": {"est_minutes": 1}}], philosophy="two-minute")
-    assert "两分钟" in out["final_reply"]
-    assert out.get("applied_plan") is None
+    assert "已安排" in out["final_reply"]
+    assert datetime.fromisoformat(out["applied_plan"][0]["start"]) == ANCHOR + timedelta(days=1)
+    assert out["applied_plan"][0]["title"] == "回复张总收到"
 
 
 def test_two_minute_requires_philosophy_enabled(monkeypatch):
@@ -160,7 +160,7 @@ def test_deep_work_refuses_fragmenting(monkeypatch):
         _entry("底层架构重构方案", 120, category="深度脑力", energy_drain="高")],
         philosophy="deep-work")
     drafts = out.get("draft_plan") or []
-    assert drafts, out.get("final_reply")
+    assert len(drafts) == 1 and drafts[0]["duration"] == 120, drafts
     start = datetime.fromisoformat(drafts[0]["start"])
     assert start.date() > ANCHOR.date(), f"碎片化失守：落进了今天 {start}"
     assert start.hour == 8  # 明天日首整块
@@ -217,15 +217,46 @@ def test_custom_philosophy_without_rule_fills_friday_pm(monkeypatch):
         fri.replace(hour=13, minute=30)
 
 
-def test_clock_level_red_line_not_parseable(monkeypatch):
-    """负向锁定：「周五下午4点后绝不安排任何工作」不产硬避让窗（钟点闸② +
-    宾语闸③双拒，preference_slots 宁漏勿误设计）——QA 期望「100% 遵守」与
-    实现的差距登记 docs/qa-bug-checklist.md，修复方向=补钟点产窗分支。"""
-    rules = ["周五下午4点后绝不安排任何工作"]
-    assert parse_avoid_windows(rules) == []
-    # 正向对照：无钟点形态产窗
-    ok = parse_avoid_windows(["周五下午别排事"])
-    assert ok and ok[0]["weekday"] == 4 and ok[0]["start_min"] == 720
+@pytest.mark.parametrize(("clock", "duration", "blocked"), [("15:00", 60, False), ("15:30", 60, True), ("16:00", 30, True)])
+def test_custom_friday_explicit_boundary(monkeypatch, clock, duration, blocked):
+    from agents.prompts import personality_rules
+
+    presets = "two-minute,deep-work"
+    rules = personality_rules(None, presets, "周五下午4点后绝不安排任何工作。")
+    start = datetime.fromisoformat("2026-11-27T" + clock)
+    out, _ = _invoke(monkeypatch, f"周五{clock}安排产品评审", [{
+        "title": "产品评审", "origin": "user", "start": start.isoformat(),
+        "duration": duration, "explicit_time": clock}], philosophy=presets, memory_rules=rules)
+    if blocked:
+        assert not out.get("applied_plan") and not out.get("draft_plan")
+        assert out.get("question_plan") and "16:00" in out["final_reply"]
+    else:
+        assert [e["start"] for e in out["applied_plan"]] == [start.isoformat()]
+
+
+@pytest.mark.parametrize("rule_enabled", [False, True])
+def test_custom_friday_finder_only_late_slot(monkeypatch, rule_enabled):
+    from agents.prompts import personality_rules
+
+    friday = ANCHOR + timedelta(days=2)
+    for d in (ANCHOR, ANCHOR + timedelta(days=1)):
+        _db_task("全天占用", d.replace(hour=8), d.replace(hour=22))
+    _db_task("周五已有工作", friday.replace(hour=8), friday.replace(hour=15, minute=30))
+    presets = "two-minute,deep-work"
+    rules = personality_rules(None, presets, "周五16:00后绝不安排任何工作" if rule_enabled else None)
+    out, _ = _invoke(monkeypatch, "找个时间做产品评审", [_entry("产品评审", 60)],
+                     philosophy=presets, memory_rules=rules, settings_overrides={"work_minutes_per_day": 1440})
+    start = datetime.fromisoformat(out["draft_plan"][0]["start"])
+    assert start.date() == (friday + timedelta(days=int(rule_enabled))).date()
+    if not rule_enabled:
+        assert start + timedelta(hours=1) > friday.replace(hour=16)
+
+
+def test_custom_friday_only_strict_user_rule_is_hard():
+    hard = "[自定义哲学] 周五16:00后绝不安排任何工作"
+    assert [(w["weekday"], w["start_min"], w["end_min"]) for w in parse_avoid_windows([hard])] == [(4, 960, 1440)]
+    for text in (hard.replace("[自定义哲学] ", ""), hard.replace("绝不", "尽量不"), hard + "，除非有急事"):
+        assert parse_avoid_windows([text]) == []
 
 
 def test_clock_level_red_line_reaches_prompts(monkeypatch):

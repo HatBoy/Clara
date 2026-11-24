@@ -44,6 +44,7 @@ from sqlalchemy import Boolean, Date, DateTime, Time, null as sa_null, select
 from sqlalchemy.orm import Session
 
 from database import Base
+from services.device_secrets import portable
 
 
 # —— 值级内核（config_backup 共享层）——————————————————————————————————
@@ -146,8 +147,8 @@ def canonical_rows(name: str, rows: Iterable) -> list[dict]:
     table, pk = table_meta(name)
     columns = table.columns
     out = [
-        {c: canonical_value(columns[c], v) for c, v in _row_to_dict(row).items()
-         if c in columns}
+        portable(name, {c: canonical_value(columns[c], v) for c, v in _row_to_dict(row).items()
+                        if c in columns})
         for row in rows
     ]
     out.sort(key=lambda r: str(r.get(pk, "")))
@@ -157,7 +158,10 @@ def canonical_rows(name: str, rows: Iterable) -> list[dict]:
 def dump_table(db: Session, name: str) -> list[dict]:
     """全表读为规范行集（原 sync_engine.table_rows，签名与行为逐字兼容）。"""
     table, _ = table_meta(name)
-    return canonical_rows(name, db.execute(select(table)).all())
+    # 生成同步行不读取或解密本机凭证。
+    keys = portable(name, dict.fromkeys(table.columns.keys()))
+    cols = [c for c in table.columns if c.name in keys and not (name == "chat_channels" and c.name in ("app_id", "app_secret"))]
+    return canonical_rows(name, db.execute(select(*cols)).all())
 
 
 # —— 解码：规范形 → 两种落库方言 ———————————————————————————————————————

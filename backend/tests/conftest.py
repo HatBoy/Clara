@@ -4,6 +4,13 @@ app 是单例、dependency_overrides 是全局的——多个测试文件必须�
 各自建内存引擎会互相覆盖 override。
 """
 
+import os
+import tempfile
+
+# config.DATABASE_PATH 在导入时绑定。即使外层设置过开发目录，也不沿用。
+_TEST_DATA = tempfile.TemporaryDirectory(prefix="clara-pytest-", ignore_cleanup_errors=True)
+os.environ["CLARA_DATA_DIR"] = _TEST_DATA.name
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, text
@@ -70,6 +77,8 @@ def fresh_db(monkeypatch):
 
     context_fetcher._reset_for_tests()  # 回源探测 TTL 缓存（2026-11-17 二轮批 1）
     monkeypatch.setattr(database, "SessionLocal", TestingSessionLocal)
+    monkeypatch.setattr(llm_svc, "SessionLocal", TestingSessionLocal)
+    monkeypatch.setattr(workflows, "SessionLocal", TestingSessionLocal)
     # episodic FTS 虚表（2026-11-03 记忆重构）：create_all 不认识虚表、drop_all
     # 也不删它——主表重建后虚表残留上例 rowid 索引会串台，须先 DROP 再随 create_all
     # 重建主表后补建（init_db 同款出口）；updated_at 触发器同理——drop_all 随表

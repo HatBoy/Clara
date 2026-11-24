@@ -2104,3 +2104,5 @@
 .virtual-block-close:hover {
   background: rgba(127, 127, 127, 0.18);
 }
+
+.focus-preview-note { position: absolute; z-index: 20; inset-inline: 12%; top: 4rem; padding: 8px 12px; border-radius: 8px; color: var(--text); background: var(--surface, white); box-shadow: 0 2px 12px #0002; pointer-events: none; text-align: center; font-size: 13px; }

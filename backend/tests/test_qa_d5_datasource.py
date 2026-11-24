@@ -15,6 +15,7 @@ import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from conftest import TestingSessionLocal
 from models import IngestSource, Task
 from services import data_ingest, llm, workflows
@@ -36,13 +37,14 @@ def test_sandbox_rejects_outside_roots(tmp_path):
     inside = root / "a.md"
     inside.write_text("hi", encoding="utf-8")
 
-    for bad in ("C:/Windows/system32/config.sys", str(root.parent / "elsewhere.md"),
-                str(root / ".." / "escape.md")):
+    outside = tmp_path / "非授权.md"
+    outside.write_text("隔离哨兵", encoding="utf-8")
+    for bad in (str(outside), str(root / ".." / outside.name)):
         try:
             _resolve_in_roots([root], bad)
             raise AssertionError(f"越界路径未被拒绝：{bad}")
         except ValueError as e:
-            assert "越界" in str(e) or "不存在" in str(e)
+            assert "越界" in str(e)
     assert _resolve_in_roots([root], str(inside)) == inside.resolve()
 
 
@@ -162,28 +164,39 @@ _DOC_MAP = json.dumps({"source_note": "1 条候选", "candidates": [
      "evidence": "原文摘录", "confidence": 0.9}]}, ensure_ascii=False)
 
 
-def test_ingest_untrusted_goes_to_cards_not_calendar(monkeypatch):
+@pytest.mark.parametrize('collision', [True, False])
+def test_ingest_untrusted_goes_to_cards_not_calendar(monkeypatch, collision):
     """交互克制核心：非 trusted 源的日程语义条目 → 幽灵方块（kind=schedule 卡）
     → Task 表零新增——绝不未经授权直接改日历。"""
     activate_model()
+    proposed = datetime.combine(date.today() + timedelta(days=1), datetime.min.time()).replace(hour=10)
     _patch_ingest(monkeypatch, items=[_item(title="周五评审会")],
                   map_reply=_DOC_MAP,
                   reduce_reply=json.dumps({
                       "draft_plan": [{"task_id": None, "title": "周五评审会",
-                                      "start": "2026-12-04T10:00:00", "duration": 60}],
+                                      "start": proposed.isoformat(), "duration": 60}],
                       "inbox_items": [],
                       "evidence": [{"idx": 0, "source": "测试源", "source_key": "k1",
                                     "item_id": "i1", "title": "周五评审会",
                                     "time": None, "fingerprint": "fp-i1".ljust(40, "0")}],
                       "summary": "已提炼 1 条"}, ensure_ascii=False))
+    with TestingSessionLocal() as db:
+        start = proposed if collision else proposed.replace(hour=15)
+        end = start + timedelta(hours=1)
+        row = Task(title="用户已确认事项", start_time=start, end_time=end)
+        db.add(row)
+        db.commit()
+        task_id = row.id
     before = _task_count()
     summary = _run_ingest_now(monkeypatch)
-    assert summary["drafts"] == 1 and not summary["skipped"]
+    assert summary["drafts"] == int(not collision) and not summary["skipped"]
     assert _task_count() == before  # 日历零变化
     with TestingSessionLocal() as db:
+        saved = db.get(Task, task_id)
+        assert (saved.title, saved.start_time, saved.end_time, saved.is_deleted) == ("用户已确认事项", start, end, False)
         cards = [p for p in list_proposals(db) if p.kind == "schedule"
                  and p.outcome in (None, "")]
-        assert cards, "排期草案卡未建立"
+        assert len(cards) == int(not collision)
 
 
 def test_ingest_reject_fingerprint_silenced(monkeypatch, client):
@@ -205,8 +218,8 @@ def test_ingest_reject_fingerprint_silenced(monkeypatch, client):
     with TestingSessionLocal() as db:
         card = [p for p in list_proposals(db) if p.kind == "schedule"][0]
     # 拒绝走 HTTP 结算端点（on_proposal_settled 钩子真实链路）
-    resp = client.post(f"/api/ai/proposals/{card.id}/outcome",
-                       json={"outcome": "rejected", "reason": "不要"})
+    resp = client.post(f"/api/ai/proposals/{card.id}/decide",
+                       json={"items": [{"item_id": i, "action": "reject", "reason": "不要"} for i in card.item_ids]})
     assert resp.status_code == 200
     row = _ledger_row("k1", fp)
     assert row.rejected_at is not None  # 指纹已置永静默
@@ -295,8 +308,8 @@ def test_ingest_settle_items_isolation(monkeypatch, client):
     assert summary["inbox"] == 2
     with TestingSessionLocal() as db:
         card = [p for p in list_proposals(db) if p.kind == "inbox"][0]
-    resp = client.post(f"/api/ai/proposals/{card.id}/settle-items",
-                       json={"indexes": [0], "outcome": "rejected"})
+    resp = client.post(f"/api/ai/proposals/{card.id}/decide",
+                       json={"items": [{"item_id":card.item_ids[0], "action":"reject"}]})
     assert resp.status_code == 200
     # 条目级隔离：仅被拒条目指纹置 rejected_at，同卡其余不受牵连
     r1 = _ledger_row("k1", "fp-i1".ljust(40, "0"))

@@ -273,3 +273,18 @@ def test_oversized_zip_member_rejected(client, tmp_path, monkeypatch):
         sync_merge.load_zip_tables(str(path))
     res = client.post("/api/sync/restore", json={"path": str(path)})
     assert res.status_code == 422 and "过大" in res.text
+
+
+def test_import_older_proposal_does_not_erase_settlement(tmp_path):
+    from services import ai_data, proposal_decisions, row_codec
+    from models import Proposal
+    with TestingSessionLocal() as db:
+        p = ai_data.create_proposal(db,kind='inbox', payload={'items':[{'title':'一条待办'}]})
+        pid = p.id
+        old = _sync_zip(tmp_path, {'proposals':row_codec.dump_table(db,'proposals')})
+        cmd = [{'item_id':p.item_ids[0], 'action':'accept'}]
+        receipt = proposal_decisions.decide(db,pid,cmd)['receipts'][0]
+        sync_merge.apply_merge(db,str(old),'overwrite'); db.expire_all()
+        assert db.get(Proposal,pid).outcome == 'accepted'
+        assert proposal_decisions.decide(db,pid,cmd)['receipts'][0] == receipt
+        assert _titles(db) == ['一条待办']

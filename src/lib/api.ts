@@ -180,13 +180,13 @@ export type LatestRelease = {
 export const checkLatestRelease = () => getJson<LatestRelease>("/api/about/latest-release");
 
 // ── 同步备份（2026-11-14，「设置 → 同步备份」）：配置 / 测试 / 手动同步 /
-//    备份两件套（自关于页迁入）/ 合并导入。密码明文回显——本地单用户定调 ──
+//    备份两件套（自关于页迁入）/ 合并导入。密码只写，读侧仅给配置标志 ──
 
 export type SyncConfig = {
   webdav_enabled: boolean;
   webdav_url: string | null;
   webdav_username: string | null;
-  webdav_password: string | null;
+  webdav_password_set: boolean;
   auto_backup_enabled: boolean;
   auto_backup_dir: string | null;
   auto_backup_dir_resolved: string;
@@ -218,6 +218,7 @@ export type SyncRunResult = {
 };
 
 export type MergeConflict = {
+  protected_rule?: string | null;
   table: string;
   pk: string;
   local_updated_at: string | null;
@@ -225,6 +226,7 @@ export type MergeConflict = {
 };
 
 export type MergeAnalyzeResult = {
+  protected_count: number;
   ok: boolean;
   new_count: number;
   updated_count: number;
@@ -1016,7 +1018,7 @@ export type ApiModel = {
   name: string;
   base_url: string | null; // 空 = LiteLLM 按 provider/ 前缀官方路由
   model_name: string; // LiteLLM 模型标识（provider/模型名）
-  api_key: string | null; // null = 本地免鉴权服务
+  api_key_set: boolean;
   thinking_mode: boolean;
   context_length: number; // token 数（8192..1048576 档位）
   is_active: boolean; // 全局至多一行 true
@@ -1086,7 +1088,7 @@ export const testModelDraft = (body: {
 
 // Key 配置（api_key 原样回显免重填；key_ok null = 从未验证）
 export type ApiComposioKey = {
-  api_key: string | null;
+  api_key_set: boolean;
   key_ok: boolean | null;
   key_error: string | null;
   key_checked_at: string | null;
@@ -1391,7 +1393,6 @@ export type ApiChatChannel = {
   placeholder: boolean; // true = 建设中占位（微信，恒未配置不可接）
   configured: boolean; // DB 行存在 = 已填凭据
   app_id: string | null; // 编辑表单回填（未配置恒空）
-  app_secret: string | null; // 同上；密码态显示 + 眼睛切换查看
   enabled: boolean; // worker 装载开关（false = 不监听消息）
   push_enabled: boolean; // 定时任务推送开关（晨报/会前准备等也发该渠道）
   push_ready: boolean; // 推送目标已缓存（用户与机器人有过对话）

@@ -1,3 +1,4 @@
+import { toRrule } from "../lib/rrule";
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import {
@@ -19,7 +20,8 @@ import {
   fetchAiProposals,
   ingestItemsOf,
   isIngestProposal,
-  settleProposalItems,
+  type ProposalDecision,
+  type DecisionResult,
   type AiProposal,
   type DraftPlanItem,
   type EvidenceEntry,
@@ -105,21 +107,6 @@ const entrySource = (
     : { key: "__none__", name: "未知来源", ref: null };
 };
 
-// 条目溯源键（落库透传用，2026-10-24 直排批）：entrySource 只回显示字段，这里
-// 回完整 {source_key, fingerprint}——App 侧 createTask 随溯源两键落任务行
-const srcTracing = (
-  p: AiProposal,
-  idx: number,
-): { source_key: string; fingerprint?: string } | null => {
-  if (p.kind === "inbox") {
-    const ref = (ingestItemsOf(p)[idx] as InboxItem).source_ref;
-    return ref ? { source_key: ref.source_key, fingerprint: ref.fingerprint } : null;
-  }
-  const ev =
-    ((p.payload.evidence as EvidenceEntry[] | undefined) ?? []).find((e) => e.idx === idx) ?? null;
-  return ev ? { source_key: ev.source_key, fingerprint: ev.fingerprint } : null;
-};
-
 // 单条溯源行（口径同 CopilotPanel 建议卡 traceRows）
 const traceRowOf = (title: string, ref: { source: string; title: string } | null) =>
   ref ? `「${title}」 来自 ${ref.source} ·「${ref.title}」` : `「${title}」 · 无溯源`;
@@ -160,51 +147,19 @@ const groupEntries = (proposals: AiProposal[]): DsGroup[] => {
   return [...groups.values()].sort((a, b) => a.name.localeCompare(b.name, "zh"));
 };
 
-// 右栏 · 数据源页（2026-10-23）：采集提炼建议的第二视图（第一视图是聊天面板的
-// 建议卡）。2026-10-24 单条操作批重做渲染粒度——一卡多条拆成每条独立待办卡，每条
-// 可单独确认/编辑后确认/拒绝；组头「确认全部」逐条批量（跨源卡不能整卡确认——
-// 会把别的组的条目连带落库）。结算 = 后端 settle-items 部分结算（payload 收缩、
-// 卡清空才回写 outcome），拒绝只静默该条指纹。本地乐观移除（失败 refetch 自愈），
-// 结算成功只乐观减徽标（onItemsSettled）——不触发 refreshKey 重拉：重拉与后端
-// 回写的竞态曾致「点两次才消失」（onSettled 同步递增 aiRefreshKey → 重拉早于
-// outcome 落库 → 卡复活覆盖乐观移除），外部事件（工作流/切页）仍是权威对账通道。
-// 卡盒视觉完全复用收件箱待办卡（.inbox-todo 优先级色条/玻璃盒/悬停操作组），2026-10-26
-// 对齐批编辑区亦整体复刻收件箱八批定稿布局（标题/备注/耗时+优先级/重复+日期四段，
-// 自绘月历 + 时间双列滚动列表 + 重复面板点外即收），悬停与编辑态操作行统一四钮
-// （确认/智能排期/编辑/删除，图标与收件箱同源）；确认落库时优先级/备注/重复规则
-// 随条目透传。2026-10-24 直排批：条目卡可拖入日历直接排期（TODO_MIME 附 suggest
-// 载荷，App 建任务 + settle 结算），inbox 条目编辑区可选排期时间直排免收件箱中转
-// （留空仍进收件箱），两通路溯源键均随条目透传落库
+// 数据源按来源展示待处理条目。每张卡的稳定 ID 与清单从同一响应读取，
+// 编辑、确认、拖拽均由后端单次结算；本地不预先删除或创建任务。
 function DataSourcePanel({
   style,
   onCollapse,
-  onSettleItem,
-  onSmartSchedule,
-  onItemsSettled,
+  onDecide,
   onOpenSettings,
   refreshKey = 0,
   syncTrigger = 0,
 }: {
   style?: CSSProperties;
   onCollapse: () => void;
-  // 单条结算（直接确认 / 编辑后确认）：App 侧落库该条 + settle-items 收缩，
-  // 返回是否落库成功（false 时面板 refetch 恢复条目）
-  onSettleItem: (
-    proposal: AiProposal,
-    index: number,
-    item: InboxItem | DraftPlanItem,
-    outcome: "accepted" | "modified",
-  ) => Promise<boolean>;
-  // 智能排期（2026-10-26 对齐批）：有日期条目 = 与确认同路径直落日历；无日期 =
-  // 先入收件箱再由统一引擎找空档，失败任务留收件箱不丢。返回 {ok, scheduled}
-  // 供面板区分提示（scheduled=false 即「已加入收件箱」降级口径）
-  onSmartSchedule: (
-    proposal: AiProposal,
-    index: number,
-    item: InboxItem | DraftPlanItem,
-  ) => Promise<{ ok: boolean; scheduled: boolean }>;
-  // 结算成功条数（乐观减徽标；不触发面板重拉）
-  onItemsSettled: (count: number) => void;
+  onDecide: (id: string, items: ProposalDecision[]) => Promise<DecisionResult>;
   // 空态动作（2026-11-17 批 1）：打开设置 → 数据接入
   onOpenSettings?: () => void;
   // 重拉信号（App 的 aiRefreshKey：工作流事件递增；effect 初跑即挂载拉取）
@@ -245,13 +200,17 @@ function DataSourcePanel({
   const [refreshing, setRefreshing] = useState(false);
 
   const [loadError, setLoadError] = useState<string | null>(null);
+  const readGeneration = useRef(0);
   const refetch = () => {
+    const generation = ++readGeneration.current;
     fetchAiProposals(true)
       .then((rows) => {
+        if (generation !== readGeneration.current) return;
         setProposals(rows);
         setLoadError(null);
       })
       .catch((e) => {
+        if (generation !== readGeneration.current) return;
         console.error("数据源建议拉取失败", e);
         setLoadError(e instanceof Error ? e.message : "拉取失败");
       });
@@ -267,19 +226,13 @@ function DataSourcePanel({
     return () => window.clearTimeout(t);
   }, [notice]);
 
-  // 本地乐观收缩：从卡条目数组移除指定序号（一次给全批序号——逐条多次调用会让
-  // 剩余条目 idx 漂移误删），空卡剔除；失败路径由 refetch 权威恢复
-  const removeLocal = (p: AiProposal, idxs: number[]) =>
-    setProposals((prev) =>
-      prev.flatMap((row) => {
-        if (row.id !== p.id) return [row];
-        const key = row.kind === "inbox" ? "items" : "draft_plan";
-        const items = ((row.payload?.[key] as unknown[] | undefined) ?? []).filter(
-          (_, i) => !idxs.includes(i),
-        );
-        return items.length ? [{ ...row, payload: { ...row.payload, [key]: items } }] : [];
-      }),
-    );
+  const submit = async (p: AiProposal, decisions: ProposalDecision[]) => {
+    const result = await onDecide(p.id, decisions);
+    ++readGeneration.current;
+    setProposals(prev => prev.flatMap(row => row.id !== p.id || row.settled_count > result.proposal.settled_count
+      ? [row] : result.proposal.outcome ? [] : [result.proposal]));
+    return result;
+  };
 
   // 手动刷新（2026-11-04）：立即采集一轮并等待完成（feed 类内容页的刷新语义
   // ——定时档 1-4 次/天间隙大，用户在数据源页想看最新数据时在此刷）。等待型
@@ -332,38 +285,21 @@ function DataSourcePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncTrigger]);
 
-  // 单条确认（不改）：落库 + settle(accepted)。schedule 条目补溯源键——payload 条目
-  // 不带 source_ref（溯源在 evidence per idx），不补则确认落库丢来源（2026-10-24
-  // 直排批顺修；inbox 条目自身带 source_ref 无需处理）
-  const confirmItem = async (en: DsEntry) => {
-    removeLocal(en.p, [en.idx]);
-    const src = srcTracing(en.p, en.idx);
-    const item =
-      en.p.kind === "schedule" && src
-        ? ({ ...(en.item as DraftPlanItem), source_ref: src } as DraftPlanItem)
-        : en.item;
-    const ok = await onSettleItem(en.p, en.idx, item, "accepted");
-    if (ok) {
-      onItemsSettled(1);
-      setNotice({ text: en.p.kind === "inbox" ? "已加入收件箱" : "已写入日历" });
-    } else {
-      setNotice({ text: "应用失败，请稍后重试", bad: true });
-      refetch();
-    }
-  };
-
-  // 单条拒绝：settle(rejected)——后端只静默该条指纹，同卡其余条目不受牵连
-  const rejectItem = async (en: DsEntry) => {
-    removeLocal(en.p, [en.idx]);
+  const decideEntry = async (en: DsEntry, action: ProposalDecision["action"], entry?: Record<string, unknown>) => {
     try {
-      await settleProposalItems(en.p.id, [en.idx], "rejected");
-      onItemsSettled(1);
-    } catch (err) {
-      console.error("条目拒绝回写失败", err);
-      setNotice({ text: "操作失败，请稍后重试", bad: true });
+      const result = await submit(en.p, [{item_id: en.p.item_ids[en.idx], action, entry}]);
+      setEditingKey(null);
+      setRecurrenceOpen(false);
+      setWhenOpen(false);
+      setNotice({text: action === "reject" ? "已拒绝" : result.receipts[0].scheduled ? "已写入日历" :
+        action === "smart" ? "已收录为待办，未排期" : "已加入收件箱"});
+    } catch {
+      setNotice({text: "未确认本次结算，正在核对最新建议。", bad: true});
       refetch();
     }
   };
+  const confirmItem = (en: DsEntry) => decideEntry(en, "accept");
+  const rejectItem = (en: DsEntry) => decideEntry(en, "reject");
 
   // 装载编辑态（2026-10-26 布局复刻收件箱）：schedule 的 naive ISO 截成
   // datetime-local 值、inbox 留空（留空 = 进收件箱，选值 = 直排进日历）；备注与
@@ -379,17 +315,16 @@ function DataSourcePanel({
       start,
       recurrence: (it as { recurrence?: Recurrence | null }).recurrence ?? null,
     });
-    setEditingKey(`${en.p.id}#${en.idx}`);
+    setEditingKey(`${en.p.id}#${en.p.item_ids[en.idx]}`);
     setRecurrenceOpen(false);
     setWhenOpen(false);
   };
 
   // 草稿 → 落库条目组装（确认与智能排期共用）：direct = schedule 恒真 / inbox
   // 选了时间；溯源键两形态都随条目透传不丢来源（schedule 条目 payload 不带
-  // source_ref——溯源在 evidence per idx，srcTracing 按 idx 补）
+  // source_ref——溯源在 evidence per idx，服务端按稳定 ID 回填溯源）
   const assembleItem = (en: DsEntry, d: EditDraft): InboxItem | DraftPlanItem => {
     const title = d.title.trim() || en.item.title; // 空标题回落原值
-    const src = srcTracing(en.p, en.idx);
     const direct = en.p.kind === "schedule" || !!d.start; // 直排进日历（schedule 恒是）
     return direct
       ? ({
@@ -400,7 +335,6 @@ function DataSourcePanel({
           priority: d.priority,
           ...(d.notes.trim() ? { notes: d.notes.trim() } : {}),
           ...(d.recurrence ? { recurrence: d.recurrence } : {}),
-          ...(src ? { source_ref: src } : {}),
           ...(en.p.kind === "inbox" ? { evidence: (en.item as InboxItem).evidence ?? null } : {}),
         } as DraftPlanItem)
       : ({
@@ -413,50 +347,14 @@ function DataSourcePanel({
         } as InboxItem);
   };
 
-  // 编辑后确认：组装编辑条目走 App 落库通路 + settle(modified)。inbox 条目选了排期
-  // 时间 → 组装 DraftPlanItem 形态直排进日历（start 非空，免收件箱中转），留空维持
-  // InboxItem 进收件箱
-  const applyModified = async (en: DsEntry) => {
-    if (!editDraft) return;
-    const direct = en.p.kind === "schedule" || !!editDraft.start;
-    const item = assembleItem(en, editDraft);
-    removeLocal(en.p, [en.idx]);
-    const ok = await onSettleItem(en.p, en.idx, item, "modified");
-    if (ok) {
-      onItemsSettled(1);
-      setEditingKey(null);
-      setRecurrenceOpen(false);
-      setWhenOpen(false);
-      setNotice({ text: direct ? "已按修改内容写入日历" : "已按修改内容加入收件箱" });
-    } else {
-      setNotice({ text: "应用失败，请稍后重试", bad: true });
-      refetch();
-    }
-  };
-
-  // 智能排期（2026-10-26 对齐批）：编辑态按当前草稿排期（assembleItem 组装）、
-  // 非编辑态用原始条目。有日期直落日历；无日期由 App 先入收件箱再调统一引擎——
-  // 无空档时任务留在收件箱（不丢），条目照结清不复活。schedule 条目补溯源键
-  // （同 confirmItem，智能排期直落不丢来源）
-  const smartItem = async (en: DsEntry, item: InboxItem | DraftPlanItem) => {
-    const src = srcTracing(en.p, en.idx);
-    const payload =
-      en.p.kind === "schedule" && src
-        ? ({ ...(item as DraftPlanItem), source_ref: src } as DraftPlanItem)
-        : item;
-    removeLocal(en.p, [en.idx]);
-    const r = await onSmartSchedule(en.p, en.idx, payload);
-    if (r.ok) {
-      onItemsSettled(1);
-      setEditingKey(null);
-      setRecurrenceOpen(false);
-      setWhenOpen(false);
-      setNotice({ text: r.scheduled ? "已智能排期写入日历" : "暂无可用空档，已加入收件箱" });
-    } else {
-      setNotice({ text: "智能排期失败，请稍后重试", bad: true });
-      refetch();
-    }
-  };
+  const editableFields = (item: InboxItem | DraftPlanItem) => ({
+    title: item.title, duration: item.duration, notes: item.notes, priority: item.priority,
+    recurrence_rule: item.recurrence ? toRrule(item.recurrence) : null,
+    ...("start" in item ? { start: item.start } : {}),
+  });
+  const applyModified = (en: DsEntry) => editDraft && decideEntry(en, "modify", editableFields(assembleItem(en, editDraft)));
+  const smartItem = (en: DsEntry, item: InboxItem | DraftPlanItem) =>
+    decideEntry(en, "start" in item && item.start ? "schedule" : "smart", editableFields(item));
 
   const groups = groupEntries(proposals);
 
@@ -529,40 +427,17 @@ function DataSourcePanel({
                     type="button"
                     className="ds-group-accept"
                     onClick={() => {
-                      // 批量确认：先按卡聚合一次性收缩（防逐条移除 idx 漂移），再逐条
-                      // 落库（跨源卡不能整卡确认）；失败条目后端未收缩，refetch 自愈。
-                      // 同卡 idx 降序结算（2026-11-04 真机日志批根修）：后端 settle 收缩
-                      // 后剩余条目前移重排（evidence.idx 同步重排契约），本循环闭包捕获
-                      // 的是移除前的原始 idx 快照——升序时第 2 条起与后端重排错位
-                      // （结算错条目、末条越界 422——真机「确认全部」必触发）；降序
-                      // 时后删的都是更小 idx，未删条目位置不变，原始 idx 全程有效
-                      const byCard = new Map<AiProposal, number[]>();
-                      g.entries.forEach(({ p, idx }) =>
-                        byCard.set(p, [...(byCard.get(p) ?? []), idx]),
-                      );
-                      byCard.forEach((idxs, p) => removeLocal(p, idxs));
-                      const ordered = [...g.entries].sort((a, b) =>
-                        a.p.id === b.p.id
-                          ? b.idx - a.idx
-                          : a.p.id.localeCompare(b.p.id),
-                      );
+                      const cards = new Map<AiProposal, ProposalDecision[]>();
+                      for (const en of g.entries) cards.set(en.p, [...(cards.get(en.p) ?? []),
+                        {item_id: en.p.item_ids[en.idx], action: "accept"}]);
                       void (async () => {
                         let n = 0;
-                        for (const entry of ordered) {
-                          // 逐条顺序落库（防重闸按 `${id}#${idx}` 条目键独立，并发安全；
-                          // 顺序执行便于失败计数）
-                          if (await onSettleItem(entry.p, entry.idx, entry.item, "accepted")) {
-                            n += 1;
-                          } else {
-                            console.error("批量确认条目失败", entry.p.id, entry.idx);
-                          }
-                        }
-                        if (n) onItemsSettled(n);
-                        if (n < g.entries.length) {
-                          setNotice({ text: "部分条目应用失败，稍后重试", bad: true });
+                        try {
+                          for (const [card, decisions] of cards) n += (await submit(card, decisions)).receipts.length;
+                          setNotice({text: `已确认 ${n} 条`});
+                        } catch {
+                          setNotice({text: `已收到 ${n}/${g.entries.length} 条回执，正在核对剩余条目。`, bad: true});
                           refetch();
-                        } else {
-                          setNotice({ text: `已确认 ${n} 条` });
                         }
                       })();
                     }}
@@ -572,7 +447,7 @@ function DataSourcePanel({
                   </button>
                 </div>
                 {g.entries.map((en) => {
-                  const key = `${en.p.id}#${en.idx}`;
+                  const key = `${en.p.id}#${en.p.item_ids[en.idx]}`;
                   const editing = editingKey === key;
                   const src = entrySource(en.p, en.idx);
                   const d = editDraft;
@@ -583,8 +458,8 @@ function DataSourcePanel({
                     // 编辑态实时跟随草稿）/ 玻璃盒 / 悬停操作组（.inbox-todo-actions
                     // 显隐规则对 .inbox-todo:hover 同样命中）；.ds-card 仅覆盖纵向堆叠
                     // 布局。可拖拽直排（2026-10-24）：不挂 plain（保留 grab 光标），编辑
-                    // 态关 draggable；suggest 附带载荷全字段在此组装，放置端
-                    // App.handleSuggestDrop 零查找建任务 + settle 结算，伪 id（ds-…）
+                    // 态关 draggable；
+                    // 放置端只提交原稳定条目标识和候选时间，伪 id（ds-…）
                     // 保证退化路径按 id 查不到任务时静默放弃
                     <div
                       key={key}
@@ -599,11 +474,7 @@ function DataSourcePanel({
                             minutes: en.item.duration ?? null,
                             suggest: {
                               proposalId: en.p.id,
-                              index: en.idx,
-                              duration: en.item.duration ?? null,
-                              priority: en.item.priority ?? null,
-                              notes: (en.item as InboxItem).notes ?? null,
-                              source: srcTracing(en.p, en.idx),
+                              itemId: en.p.item_ids[en.idx],
                             },
                           }),
                         );

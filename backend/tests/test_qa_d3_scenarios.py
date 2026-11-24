@@ -405,12 +405,15 @@ def test_chat_breakdown_draft_frame_and_settle(monkeypatch, client):
     assert "draft" in types and "reply" in types and "done" in types
     draft = first_of(events, "draft")
     assert draft["proposal_id"] and len(draft["draft_plan"]) == 2
+    assert client.get("/api/tasks").json() == []
     created = settle_draft(client, draft["proposal_id"], draft["draft_plan"])
-    assert len(created) == 2
-    from datetime import datetime as _dt
-    row0, entry0 = created[0], draft["draft_plan"][0]
-    assert row0["title"] == entry0["title"][:30]
-    assert _dt.fromisoformat(row0["start_time"]) ==         _dt.fromisoformat(entry0["start"])
+    assert len(created) == len({row["id"] for row in created}) == 2
+    for row, entry in zip(created, draft["draft_plan"], strict=True):
+        start = datetime.fromisoformat(entry["start"])
+        assert row["title"] == entry["title"]
+        assert datetime.fromisoformat(row["start_time"]) == start
+        assert datetime.fromisoformat(row["end_time"]) == start + timedelta(minutes=entry["duration"])
+    assert client.get(f"/api/ai/proposals/{draft['proposal_id']}").json()['outcome'] == 'accepted'
 
 
 def test_chat_breakdown_modified_reflow(monkeypatch, client):
@@ -483,3 +486,59 @@ def test_reschedule_past_not_before_clamped():
         busy=[], now=now, day_start_min=480, day_end_min=1320,
         lunch=(690, 810), use_ai=False)
     assert slots["k"] is not None and slots["k"] >= now
+
+
+@pytest.mark.parametrize('scenario,hour,day_offset', [('morning', 9, 0), ('nightly', 20, 1)])
+def test_clock_tick_delivers_brief_once(monkeypatch, scenario, hour, day_offset):
+    """真实 tick → 认领 → 异步派发 → 幕僚读取日程 → 简报；同刻再 tick 不重发。"""
+    import asyncio
+    from contextlib import suppress
+
+    from models import WorkflowRun
+    from qa_helpers import frozen_dt_cls
+    from services import ai_data, workflows
+    from services.settings import get_settings
+    from services.sync_config import get_sync_config
+
+    now = datetime.now().replace(hour=hour, minute=0, second=0, microsecond=0)
+    start = now.replace(hour=10) + timedelta(days=day_offset)
+    _db_task('校对蓝色发布稿', start, start + timedelta(hours=1))
+    activate_model()
+    with TestingSessionLocal() as db:
+        s = get_settings(db)
+        s.prep_enabled = s.hardtask_enabled = s.ingest_enabled = s.minutes_enabled = False
+        s.weekly_report_enabled = get_sync_config(db).auto_backup_enabled = False
+        db.commit()
+    key = KEY_SCENARIO[scenario]
+    cap = MultiKeyLLMCapture({key: _brain(scenario, strategy='先校对蓝色发布稿。')})
+    patch_strategist_reads(monkeypatch)
+    monkeypatch.setattr(llm, 'call_llm', cap)
+    monkeypatch.setattr(workflows, 'datetime', frozen_dt_cls(now))
+    monkeypatch.setattr(workflows, '_booted_at', now)
+    monkeypatch.setattr(workflows, '_fire_push', lambda *args: None)
+
+    async def run():
+        q = workflows.subscribe()
+        try:
+            loop = asyncio.create_task(workflows.agent_loop())
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=5)
+                assert event['type'] == scenario
+            finally:
+                loop.cancel()
+                with suppress(asyncio.CancelledError):
+                    await loop
+            # 再跑一次真实认领循环；首个 await 前已完成所有同步认领。
+            loop = asyncio.create_task(workflows.agent_loop())
+            await asyncio.sleep(0)
+            loop.cancel()
+            with suppress(asyncio.CancelledError):
+                await loop
+        finally:
+            workflows.unsubscribe(q)
+    asyncio.run(run())
+    assert cap.count(key) == 1 and '校对蓝色发布稿' in cap.users(key)[0]
+    with TestingSessionLocal() as db:
+        assert db.query(WorkflowRun).filter_by(name=scenario, run_date=now.date()).count() == 1
+        assert len(ai_data.list_proposals(db, unresolved_only=True)) == 1
+        assert '校对蓝色发布稿' in ai_data.list_messages(db)[0].content

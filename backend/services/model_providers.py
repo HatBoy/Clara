@@ -83,6 +83,8 @@ def update_model(db: Session, model_id: str, patch: ModelProviderUpdate) -> Mode
         )
         if dup is not None:
             raise ConflictError(f"显示名称已存在: {data['name']}")
+    if any(k in data and data[k] != getattr(row, k) for k in ("base_url", "model_name")):
+        data.setdefault("api_key", None)
     for key, value in data.items():
         setattr(row, key, value)
     db.commit()

@@ -22,6 +22,7 @@ from pathlib import Path
 
 from sqlalchemy import delete, select
 
+from services.device_secrets import portable
 from config import get_data_dir
 from database import Base
 
@@ -60,16 +61,9 @@ def snapshot_path() -> Path:
 def dump_config(db) -> dict:
     """七张配置表整表 dump → {表名: [行 dict, ...]}（值口径单源 row_codec.ser_value
     ——与同步域规范行同内核，2026-11-17 架构批 2）。"""
-    from services.row_codec import ser_value
+    from services.row_codec import dump_table
 
-    tables = {t.name: t for t in Base.metadata.sorted_tables}
-    snap: dict = {}
-    for name in _CONFIG_TABLES:
-        table = tables[name]
-        snap[name] = [
-            {c: ser_value(v) for c, v in zip(table.columns.keys(), row)}
-            for row in db.execute(select(table)).all()
-        ]
+    snap = {name: dump_table(db, name) for name in _CONFIG_TABLES}
     return snap
 
 
@@ -85,7 +79,7 @@ def restore_config(db, snap: dict) -> int:
     # （af6daf2 同型修复，恢复路径与同步路径自此同一实现）
     total = 0
     for name in _CONFIG_TABLES:
-        rows = snap.get(name) or []
+        rows = [portable(name, row) for row in snap.get(name) or []]
         table = tables[name]
         db.execute(delete(table))
         if rows:
@@ -97,12 +91,12 @@ def restore_config(db, snap: dict) -> int:
     return total
 
 
-def maybe_restore_and_snapshot(db) -> bool:
+def maybe_restore_and_snapshot(db, *, allow_restore: bool = True) -> bool:
     """启动自愈主入口：检测库刚重建特征 → 恢复快照；随后无条件覆盖写新快照。
     返回是否发生了恢复（调用方仅用于日志，行为已自足）。"""
     path = snapshot_path()
     tables = {t.name: t for t in Base.metadata.sorted_tables}
-    rebuilt = all(
+    rebuilt = allow_restore and all(
         db.execute(select(tables[name]).limit(1)).first() is None
         for name in _EMPTY_TRIGGER_TABLES)
     if rebuilt and path.exists():

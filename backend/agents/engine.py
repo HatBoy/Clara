@@ -142,6 +142,12 @@ def plan_slots(*, entries: list[dict], busy: list[tuple[datetime, datetime]],
                 if day_load is not None:  # 每日负荷同步剔除自身旧位置贡献
                     day_eff = dict(day_load)
                     bump_day_load(day_eff, rule.date(), -e["duration"])
+                earliest = max(now, e.get("from") or now)
+                if (cand.tzinfo is not None or cand < earliest or
+                        (cand.date() - earliest.date()).days > SLOT_MAX_DAYS or
+                        any(cand < end and begin < cand + timedelta(minutes=dur_total)
+                            for begin, end in busy_eff)):
+                    continue
                 if is_valid_slot(
                         cand, e["duration"], busy_eff, now=now,
                         day_start_min=day_start_min, day_end_min=day_end_min,

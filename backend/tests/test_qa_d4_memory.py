@@ -195,8 +195,10 @@ def test_hitl_patch_promotes_and_protects(monkeypatch, client):
              "confidence": 0.7}]}, ensure_ascii=False),
     }, default="")
     monkeypatch.setattr(llm, "call_llm", fake)
+    _decided_proposal()
     with TestingSessionLocal() as db:
-        reflection.run_reflection(db)
+        report = reflection.run_reflection(db)
+        assert not report.skipped and fake.count(RESOLVE_PROMPT) == 1
         rules = {r.id: r for r in list_memory_rules(db)}
     assert rules[rid].content == "周三下午 15 点后不排会"  # 手改原文原样保留
     assert rules[rid].source == "user_manual" and rules[rid].confidence == 1.0
@@ -229,12 +231,25 @@ def test_dismissal_blocks_relearn(monkeypatch, client):
              "evidence": "e", "confidence": 0.7}]}, ensure_ascii=False),
     }, default="")
     monkeypatch.setattr(llm, "call_llm", fake)
-    with TestingSessionLocal() as db:
-        report = reflection.run_reflection(db)
-        rules = list_memory_rules(db)
-    # 同义规则被纠偏账拦下（difflib ≥0.6），库保持空
-    assert rules == []
-    assert report.discarded >= 1
+    from datetime import date
+    from models import Proposal
+
+    for offset in (0, 1, 2):
+        night = datetime.now() + timedelta(days=offset)
+        class Night(date):
+            @classmethod
+            def today(cls):
+                return night.date()
+
+        monkeypatch.setattr(reflection, 'date', Night)
+        with TestingSessionLocal() as db:
+            if offset:
+                db.add(Proposal(kind='schedule', payload={}, outcome='rejected', created_at=night))
+                db.commit()
+            report = reflection.run_reflection(db)
+            assert not report.skipped and report.discarded >= 1
+            assert list_memory_rules(db) == []
+    assert fake.count(REFLECT_PROMPT) == 3
 
 
 def test_decay_exempts_user_sources():
@@ -298,6 +313,21 @@ def test_telemetry_cluster_forms_via_patch_chain(client):
            and c["count"] >= 3 and c["period"] == "下午"]
     assert hit, clusters
     assert hit[0]["avg_delta"] > 0
+
+
+@pytest.mark.parametrize("independent", [False, True], ids=["同一改期重投", "三项独立改期"])
+def test_reschedule_replay_is_not_three_observations(client, independent):
+    first = _make_task_at()
+    with TestingSessionLocal() as db:
+        start = db.get(Task, first).start_time.replace(hour=15)
+    ids = [first, _make_task_at(), _make_task_at()] if independent else [first] * 3
+    for task_id in ids:
+        result = client.patch(f"/api/tasks/{task_id}", json={
+            "start_time": start.isoformat(), "end_time": (start + timedelta(hours=1)).isoformat()})
+        assert result.status_code == 200
+    with TestingSessionLocal() as db:
+        clusters = aggregate_deviations(db)
+    assert [c['count'] for c in clusters] == ([3] if independent else [])
 
 
 def test_telemetry_low_sample_no_cluster(client):
@@ -365,13 +395,13 @@ def test_keep_reinforce_upgrades_to_hardgate(monkeypatch):
     with TestingSessionLocal() as db:
         row = inject_rule(db, "周三下午别排会", source="ai_reflect",
                           confidence=0.6, category="会议偏好", evidence="初始")
-    _decided_proposal()
     for _ in range(4):
+        _decided_proposal()
         fake = MultiKeyLLMCapture({
             REFLECT_PROMPT: json.dumps({"candidates": [
                 {"category": "会议偏好", "content": "周三下午别排会",
                  "evidence": "对话原话", "confidence": 0.6,
-                 "signal": "behavior"}], "facts": []}, ensure_ascii=False),
+                 "signal": "adjudication", "source_idx": 0}], "facts": []}, ensure_ascii=False),
             RESOLVE_PROMPT: json.dumps({"actions": [
                 {"candidate_idx": 0, "action": "keep",
                  "rule_id": row.id, "category": "会议偏好",
@@ -381,6 +411,11 @@ def test_keep_reinforce_upgrades_to_hardgate(monkeypatch):
         monkeypatch.setattr(llm, "call_llm", fake)
         with TestingSessionLocal() as db:
             reflection.run_reflection(db)
+            db.expire_all()
+            count = db.get(type(row), row.id).observation_count
+            reflection.run_reflection(db)
+            db.expire_all()
+            assert db.get(type(row), row.id).observation_count == count
             fresh = [r for r in list_memory_rules(db) if r.id == row.id][0]
     assert fresh.confidence >= 0.8, fresh.confidence
     from services.ai_data import injected_rules

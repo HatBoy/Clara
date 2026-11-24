@@ -97,6 +97,8 @@ def apply_preference(db: Session, *, raw: str, category: str, content: str) -> d
         db, category=category, content=content, confidence=1.0,
         evidence=f"对话明示：{raw}", source="chat",
     )
+    if rule is None:
+        return {"ok": False, "reply": "画像已满，请先清理一条规则。"}
     reply = (
         f"记住了：{content}\n已写入长期偏好（设置 → 记忆画像可见），排期、简报与建议都会遵守。"
     )
@@ -122,7 +124,9 @@ def _apply_user_actions(db: Session, actions: list[dict], *, raw: str,
     if first["action"] == "keep" and first.get("rule_id"):
         row = db.get(MemoryRule, first["rule_id"])
         if row is not None:
-            row.source = "chat"
+            previous = {"source": row.source, "confidence": row.confidence, "evidence": row.evidence,
+                        "last_confirmed_at": row.last_confirmed_at.isoformat() if row.last_confirmed_at else None}
+            row.source = "user_manual" if row.source == "user_manual" else "chat"
             row.confidence = 1.0
             row.last_confirmed_at = _dt.now()
             row.evidence = f"对话明示：{raw}"
@@ -130,7 +134,7 @@ def _apply_user_actions(db: Session, actions: list[dict], *, raw: str,
             logger.info("[settings] 对话印证既有偏好并升级 %s", row.id)
             return {"ok": True,
                     "reply": f"记住了：{row.content}\n（与已有偏好一致，已确认为你的明确设定）",
-                    "journal": {"type": "prefer", "rule_id": row.id,
+                    "journal": {"type": "prefer", "rule_id": row.id, "previous": previous,
                                 "category": row.category, "content": row.content}}
     if first["action"] in ("replace", "merge") and first.get("rule_id"):
         delete_memory_rule(db, first["rule_id"])  # 合并非纠偏：不落纠偏账
@@ -140,6 +144,8 @@ def _apply_user_actions(db: Session, actions: list[dict], *, raw: str,
         content=first.get("content") or content, confidence=1.0,
         evidence=f"对话明示：{raw}", source="chat",
     )
+    if rule is None:
+        return {"ok": False, "reply": "画像已满，请先清理一条规则。"}
     logger.info("[settings] 对话写入偏好 [%s] %s（仲裁动作 %s）",
                 rule.category, rule.id, first["action"])
     return {"ok": True,
@@ -246,7 +252,12 @@ def undo_last_change(db: Session) -> dict:
                 rule = db.scalar(select(MemoryRule).where(
                     MemoryRule.category == act.get("category"),
                     MemoryRule.content == act["content"]))
-            if rule is not None:
+            if rule is not None and act.get("previous"):
+                old = act["previous"]
+                rule.source, rule.confidence, rule.evidence = old["source"], old["confidence"], old.get("evidence")
+                rule.last_confirmed_at = datetime.fromisoformat(old["last_confirmed_at"]) if old.get("last_confirmed_at") else None
+                undone.append("已恢复此前的偏好")
+            elif rule is not None:
                 db.delete(rule)
                 undone.append(f"偏好「{act['content'][:20]}」已删")
         elif kind == "unprefer":

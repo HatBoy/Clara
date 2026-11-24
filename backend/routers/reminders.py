@@ -8,7 +8,6 @@
 """
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -22,11 +21,8 @@ router = APIRouter(prefix="/api/reminders", tags=["reminders"])
 @router.get("/stream")
 async def stream_reminders():
     """提醒事件流。客户端断开时 FastAPI 取消生成器，finally 退订防队列泄漏
-    （connected/ping/data 帧与退订时序收在 sse_kit.subscribe_stream 单源）。"""
-    q = reminders_service.subscribe()
-    return StreamingResponse(
-        sse_kit.subscribe_stream(q, unsubscribe=reminders_service.unsubscribe),
-        media_type="text/event-stream")
+    （connected/ping/data 帧与退订时序收在 sse_kit.subscription_response 单源）。"""
+    return sse_kit.subscription_response(reminders_service.subscribe, reminders_service.unsubscribe)
 
 
 @router.post("/{task_id}/snooze", response_model=ReminderSnoozeOut)

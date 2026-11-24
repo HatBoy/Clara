@@ -583,19 +583,19 @@ def test_settle_items_partial_shrinks_payload(client):
                  "title": "原始乙", "time": None, "fingerprint": "f2"},
             ],
         })
-    resp = client.post(f"/api/ai/proposals/{proposal.id}/settle-items",
-                       json={"indexes": [0], "outcome": "rejected"})
+    resp = client.post(f"/api/ai/proposals/{proposal.id}/decide",
+                       json={"items": [{"item_id": proposal.item_ids[i], "action": "reject"} for i in [0]]})
     assert resp.status_code == 200
-    body = resp.json()
+    body = resp.json()["proposal"]
     assert body["outcome"] is None and len(body["payload"]["draft_plan"]) == 1
     assert body["payload"]["draft_plan"][0]["title"] == "乙"
     assert body["payload"]["evidence"][0]["idx"] == 0  # 重排对齐
     assert body["payload"]["evidence"][0]["fingerprint"] == "f2"
 
-    resp = client.post(f"/api/ai/proposals/{proposal.id}/settle-items",
-                       json={"indexes": [0], "outcome": "accepted"})
+    resp = client.post(f"/api/ai/proposals/{proposal.id}/decide",
+                       json={"items": [{"item_id": proposal.item_ids[i], "action": "accept"} for i in [1]]})
     assert resp.status_code == 200
-    assert resp.json()["outcome"] == "accepted"  # 清空 → 整卡结束
+    assert resp.json()["proposal"]["outcome"] == "accepted"  # 清空 → 整卡结束
 
 
 def test_settle_items_reject_only_dropped_fingerprint(client, tmp_path):
@@ -624,8 +624,8 @@ def test_settle_items_reject_only_dropped_fingerprint(client, tmp_path):
                  "fingerprint": fp_b}},
             ],
         })
-    resp = client.post(f"/api/ai/proposals/{proposal.id}/settle-items",
-                       json={"indexes": [0], "outcome": "rejected"})
+    resp = client.post(f"/api/ai/proposals/{proposal.id}/decide",
+                       json={"items": [{"item_id": proposal.item_ids[i], "action": "reject"} for i in [0]]})
     assert resp.status_code == 200
     from sqlalchemy import select
 
@@ -637,22 +637,15 @@ def test_settle_items_reject_only_dropped_fingerprint(client, tmp_path):
 
 
 def test_settle_items_guards(client):
-    # 404 行不存在 / 422 已决 / 422 序号越界 / 422 空表
-    resp = client.post("/api/ai/proposals/nope/settle-items",
-                       json={"indexes": [0], "outcome": "accepted"})
-    assert resp.status_code == 404
+    assert client.post('/api/ai/proposals/nope/decide', json={'items':[{'item_id':'nope','action':'accept'}]}).status_code == 404
     with TestingSessionLocal() as db:
-        p1 = ai_data.create_proposal(db, kind="inbox", payload={"items": [{"title": "甲"}]})
-        p2 = ai_data.create_proposal(db, kind="inbox", payload={"items": [{"title": "乙"}]})
-    resp = client.post(f"/api/ai/proposals/{p1.id}/settle-items",
-                       json={"indexes": [5], "outcome": "accepted"})
-    assert resp.status_code == 422
-    resp = client.post(f"/api/ai/proposals/{p1.id}/settle-items",
-                       json={"indexes": [0], "outcome": "accepted"})
-    assert resp.status_code == 200
-    resp = client.post(f"/api/ai/proposals/{p1.id}/settle-items",
-                       json={"indexes": [0], "outcome": "accepted"})
-    assert resp.status_code == 422  # 已决（清空回写）不再部分结算
+        p = ai_data.create_proposal(db, kind='inbox', payload={'items':[{'title':'甲'}]})
+    url = f'/api/ai/proposals/{p.id}'
+    assert client.post(url+'/settle-items',json={'indexes':[0],'outcome':'accepted'}).status_code == 409
+    assert client.post(url+'/decide', json={'items':[]}).status_code == 422
+    assert client.post(url+'/decide', json={'items':[{'item_id':'不存在','action':'accept'}]}).status_code == 409
+    for action, code in [('accept',200), ('accept',200), ('reject',409)]:
+        assert client.post(url+'/decide',json={'items':[{'item_id':p.item_ids[0],'action':action}]}).status_code == code
 
 
 def test_settle_items_minutes_and_hardtask_kinds(client):
@@ -668,25 +661,25 @@ def test_settle_items_minutes_and_hardtask_kinds(client):
             "headline": "拆解", "steps": ["列大纲", "找参考", "写初稿"],
             "advice": "先列大纲"})
     # minutes：删首条 → 剩 1 条未决；再删空 → 回写 rejected
-    resp = client.post(f"/api/ai/proposals/{minutes.id}/settle-items",
-                       json={"indexes": [0], "outcome": "rejected"})
+    resp = client.post(f"/api/ai/proposals/{minutes.id}/decide",
+                       json={"items": [{"item_id": minutes.item_ids[i], "action": "reject"} for i in [0]]})
     assert resp.status_code == 200
-    body = resp.json()
+    body = resp.json()["proposal"]
     assert body["outcome"] is None
     assert [it["title"] for it in body["payload"]["items"]] == ["预约评审"]
-    resp = client.post(f"/api/ai/proposals/{minutes.id}/settle-items",
-                       json={"indexes": [0], "outcome": "rejected"})
+    resp = client.post(f"/api/ai/proposals/{minutes.id}/decide",
+                       json={"items": [{"item_id": minutes.item_ids[i], "action": "reject"} for i in [1]]})
     assert resp.status_code == 200
-    assert resp.json()["outcome"] == "rejected"  # 清空 → 整卡结束
+    assert resp.json()["proposal"]["outcome"] == "rejected"  # 清空 → 整卡结束
     # hardtask：字符串条目收缩（删两条）→ 清空回写
-    resp = client.post(f"/api/ai/proposals/{hard.id}/settle-items",
-                       json={"indexes": [0, 2], "outcome": "rejected"})
+    resp = client.post(f"/api/ai/proposals/{hard.id}/decide",
+                       json={"items": [{"item_id": hard.item_ids[i], "action": "reject"} for i in [0, 2]]})
     assert resp.status_code == 200
-    assert resp.json()["payload"]["steps"] == ["找参考"]
-    resp = client.post(f"/api/ai/proposals/{hard.id}/settle-items",
-                       json={"indexes": [0], "outcome": "rejected"})
+    assert resp.json()["proposal"]["payload"]["steps"] == ["找参考"]
+    resp = client.post(f"/api/ai/proposals/{hard.id}/decide",
+                       json={"items": [{"item_id": hard.item_ids[i], "action": "reject"} for i in [1]]})
     assert resp.status_code == 200
-    assert resp.json()["outcome"] == "rejected"
+    assert resp.json()["proposal"]["outcome"] == "rejected"
 
 
 def test_chat_applied_event_persists_and_settles(monkeypatch, client):

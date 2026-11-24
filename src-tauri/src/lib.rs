@@ -21,7 +21,7 @@ const WINDOW_STATE_FLAGS: StateFlags = StateFlags::SIZE
     .union(StateFlags::MAXIMIZED);
 
 // 边车子进程句柄；应用退出时取出并 kill，防止僵尸进程
-struct SidecarChild(Mutex<Option<CommandChild>>);
+struct SidecarChild(Mutex<Option<(CommandChild, std::sync::mpsc::Receiver<()>)>>);
 
 // 关闭主窗口的行为："hide" = 隐藏到托盘（默认，与后端 AppSettings.close_action
 // 默认一致）/ "quit" = 完全退出。前端拉到设置后经 set_close_behavior 命令同步，
@@ -575,22 +575,24 @@ fn spawn_sidecar(app: &tauri::AppHandle, port: u16) -> Result<(), String> {
         .shell()
         .sidecar("clara-backend")
         .map_err(|e| format!("定位边车可执行文件失败: {e}"))?
-        .args(["--port".to_string(), port.to_string()]);
+        .args(["--port".to_string(), port.to_string(), "--host-managed".to_string()]);
 
     let (mut rx, child) = sidecar_command
         .spawn()
         .map_err(|e| format!("启动 Python 边车失败: {e}"))?;
     confine_child_to_job(child.pid());
+    let (stopped, wait) = std::sync::mpsc::channel();
     if let Some(state) = app.try_state::<SidecarChild>() {
-        *state.0.lock().unwrap() = Some(child);
+        *state.0.lock().unwrap() = Some((child, wait));
     } else {
-        app.manage(SidecarChild(Mutex::new(Some(child))));
+        app.manage(SidecarChild(Mutex::new(Some((child, wait)))));
     }
 
     // 监听 Python 进程的终端输出（用于在 Rust 控制台查看 Python 日志）
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
+                CommandEvent::Terminated(_) => { let _ = stopped.send(()); break; }
                 CommandEvent::Stdout(line) => {
                     println!("Python Stdout: {}", String::from_utf8_lossy(&line));
                 }
@@ -616,7 +618,7 @@ fn restart_backend(app: tauri::AppHandle) -> Result<(), String> {
     }
     let state = app.state::<SidecarChild>();
     let existing = state.0.lock().unwrap().take();
-    let Some(child) = existing else {
+    let Some((child, _)) = existing else {
         return Err("后端进程非本应用管理（可能复用了外部实例），请重启应用".to_string());
     };
     child
@@ -953,7 +955,14 @@ pub fn run() {
             // 应用退出时杀死边车进程，防止僵尸进程（未拉起边车时无操作）
             if let tauri::RunEvent::Exit = event {
                 if let Some(state) = app.try_state::<SidecarChild>() {
-                    if let Some(child) = state.0.lock().unwrap().take() {
+                    let owned = state.0.lock().ok().and_then(|mut state| state.take());
+                    if let Some((mut child, wait)) = owned {
+                        // 私有标准输入通道：只关闭当前宿主实际拉起的进程。
+                        if child.write(b"clara:quit
+").is_ok()
+                            && wait.recv_timeout(std::time::Duration::from_secs(24)).is_ok() {
+                            return;
+                        }
                         if let Err(e) = child.kill() {
                             eprintln!("退出时杀死 Python 边车失败: {e}");
                         }

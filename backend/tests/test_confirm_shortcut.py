@@ -104,7 +104,8 @@ def test_active_delete_anchor():
 def test_shortcut_confirm_applies_and_finalizes():
     pid = _make_draft()
     ret = confirm_shortcut({"user_input": "可以"})
-    assert ret["resolved_proposal"] == {"proposal_id": pid, "outcome": "accepted"}
+    assert ret["resolved_proposal"]["proposal_id"] == pid and ret["resolved_proposal"]["outcome"] == "accepted"
+    assert len(ret["resolved_proposal"]["item_ids"]) == 2
     assert len(ret["applied_plan"]) == 2
     assert "已安排" in ret["final_reply"] and "体检" in ret["final_reply"]
 

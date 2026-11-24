@@ -31,7 +31,7 @@ from agents.engine import (
     MEETING_HEAD_MIN,
     MEETING_TAIL_MIN,
 )
-from services.preference_slots import parse_avoid_windows
+from services.preference_slots import hits_window, parse_avoid_windows
 from services.tasks import (
     candidate_slots,
     day_busy_minutes,
@@ -94,7 +94,10 @@ def _rainy_dates(weather) -> set[date]:
         if not isinstance(r, dict):
             continue
         precip, d = r.get("precip"), r.get("date")
-        if isinstance(precip, (int, float)) and precip >= RAINY_PRECIP and d:
+        wind = r.get("wind_kmh")
+        # 六级风下限约 39 km/h：排期建议避开露天活动，不作当地气象预警。
+        if d and ((isinstance(precip, (int, float)) and precip >= RAINY_PRECIP)
+                  or (isinstance(wind, (int, float)) and wind >= 39)):
             try:
                 out.add(date.fromisoformat(str(d)))
             except ValueError:
@@ -171,6 +174,12 @@ def pick_candidate(e: dict, *, now: datetime, philosophy: set, rainy: set,
             and duration <= GARBAGE_DUR_MAX):
         anchors = [a for a in (ctx["lunch"][1] if ctx["lunch"] else None,
                                ctx["day_end_min"] - 60) if a is not None] or None
+    elif (not user_will and profile.get("category") == "深度脑力"
+          and profile.get("energy_drain") == "高"):
+        energy = ctx.get("energy") or {}
+        peak = (energy.get("peak") or {}).get("hour")
+        if isinstance(peak, int) and energy.get("low"):
+            anchors = [peak * 60]  # 只偏好有独立峰谷证据的时段；硬约束仍优先。
     # 约束 7 + 预算豁免（no_slot"坚持安排"的回落通路）
     budget = None if (user_will or e.get("_no_budget")) else ctx["day_budget"]
     from_raw = e.get("_from") or e.get("start") or e.get("not_before")
@@ -184,7 +193,7 @@ def pick_candidate(e: dict, *, now: datetime, philosophy: set, rainy: set,
         same_clock_first=same_clock,
         day_load=dict(day_load) if (day_load is not None and not user_will) else None,
         day_budget=budget, allowed_dates=allowed, anchor_mins=anchors,
-        avoid_windows=None if user_will else avoid, k=5)
+        avoid_windows=[w for w in avoid if w.get("hard")] if user_will else avoid, k=5)
     # 约束 6：通勤前置（槽前 30 分钟须空闲——含同批已占与缓冲区）
     commute = _commute_needed(profile)
     for s in cands:
@@ -255,6 +264,10 @@ def finder_node(state: SchedulerState) -> dict:
         dur = _eff_duration(e, philosophy)
         if s0 < now:
             raise_question("past", [e])
+            agent_entries.remove(e)
+            continue
+        if hits_window(s0, dur, [w for w in avoid if w.get("hard")]):
+            raise_question("no_time", [{**e, "start": e["_from"]}], hard_window=True)
             agent_entries.remove(e)
             continue
         if any(overlaps(s0, s0 + timedelta(minutes=dur), b0, b1)

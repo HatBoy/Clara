@@ -115,7 +115,17 @@ def search_facts(db: Session, query: str, *, k: int = SEARCH_K,
         if overlap >= 1 or text_hit:
             scored.append((score, row))
     scored.sort(key=lambda p: -p[0])
-    return [r for _, r in scored[:k]]
+    hits = [r for _, r in scored[:k]]
+    if len(hits) < k and len(candidates) == 500:
+        # 短词不走 trigram：最近 500 行不是历史边界。只补确切子串，避免加载全库。
+        from sqlalchemy import func, or_
+        more = select(EpisodicFact).where(
+            or_(EpisodicFact.expires_at.is_(None), EpisodicFact.expires_at > now),
+            or_(func.instr(EpisodicFact.topic, q) > 0, func.instr(EpisodicFact.fact, q) > 0),
+            EpisodicFact.id.not_in([r.id for r in hits]),
+        ).order_by(EpisodicFact.created_at.desc()).limit(k - len(hits))
+        hits.extend(db.scalars(more))
+    return hits
 
 
 def fact_lines(rows: list[EpisodicFact]) -> list[str]:
@@ -190,5 +200,6 @@ def distill_fact_candidates(db: Session, *, now: datetime | None = None) -> list
             "evidence": f"同主题事实 {len(facts)} 条（近段对话与复盘）"[:80],
             "confidence": 0.6,
             "signal": "behavior",
+            "source_ids": [f.id for f in facts[:3]],
         })
     return candidates

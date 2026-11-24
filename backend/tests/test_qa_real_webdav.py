@@ -1,21 +1,22 @@
 """QA 真实 WebDAV A/B 双实例同步（CLARA_QA_WEBDAV=1 才跑；外呼真实坚果云）。
 
-架构：subprocess 起两个 uvicorn（端口 8801/8802），`CLARA_DATA_DIR` 各自隔离
-到临时目录（本轮新增的 config 环境变量分支）；凭据从 dev 库
-`backend/data/config_snapshot.json` 的 sync_settings 行读取；远端用独立子目录
-`<URL>/qa-test-<ts>/` 天然隔离用户现有同步基线（teardown DELETE 清理）。
+架构：subprocess 起两个 uvicorn（系统分配端口），`CLARA_DATA_DIR` 各自隔离
+到临时目录（本轮新增的 config 环境变量分支）；凭据只从本轮显式指定的测试环境读取；远端用独立子目录
+`<URL>/qa-test-<uuid>/` 天然隔离用户现有同步基线（teardown DELETE 清理）。
 
 场景序列（module 级顺序链，前序产物是后续输入）：首推 / 冷启动纯拉 / 增量
 双向 / LWW 并发 / 删除传播 / 自然键撞车 / 守卫 a / 守卫 b / 备份恢复链 /
 多端循环终态全等。
 """
 
-import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -26,30 +27,32 @@ pytestmark = [
                        reason="真实 WebDAV A/B 需设 CLARA_QA_WEBDAV=1"),
 ]
 
-PORT_A, PORT_B = 8801, 8802
-_TS = time.strftime("%Y%m%d-%H%M%S")
-_SNAP = json.loads((Path(__file__).resolve().parents[1] / "data"
-                    / "config_snapshot.json").read_text(encoding="utf-8"))
+_RUN = uuid4().hex
 
 
 def _creds():
-    """dev 快照的 sync_settings 行（坚果云真实凭据）。"""
-    ss = _SNAP.get("sync_settings") or _SNAP.get("tables", {}).get("sync_settings")
-    row = ss[0] if isinstance(ss, list) else ss
-    return {"webdav_url": row["webdav_url"].rstrip("/"),
-            "webdav_username": row["webdav_username"],
-            "webdav_password": row["webdav_password"]}
+    """仅取专用环境配置，拒绝在地址中内嵌凭证或查询串。"""
+    keys = ("CLARA_QA_DAV_URL", "CLARA_QA_DAV_USER", "CLARA_QA_DAV_PASSWORD")
+    if not all(os.environ.get(k) for k in keys):
+        pytest.skip("缺少真实 DAV 专用环境配置")
+    url, user, password = (os.environ[k] for k in keys)
+    parts = urlsplit(url)
+    if (parts.scheme != "https" or not parts.hostname or parts.username is not None
+            or parts.query or parts.fragment):
+        pytest.fail("专用 DAV 地址须为不含凭证和查询串的 HTTPS 地址")
+    return {"webdav_url": url.rstrip("/"), "webdav_username": user, "webdav_password": password}
 
 
 def _remote_root():
-    c = _creds()
-    return f"{c['webdav_url']}/qa-test-{_TS}"
+    return f"{_creds()['webdav_url']}/qa-test-{_RUN}"
 
 
-def _dav(method: str, url: str, *, expect=(200, 201, 207, 404, 409)):
-    r = httpx.request(method, url, auth=(_creds()["webdav_username"],
-                                         _creds()["webdav_password"]), timeout=30)
-    assert r.status_code in expect, f"{method} {url} → {r.status_code} {r.text[:200]}"
+def _dav(method: str, url: str, *, expect, content=None):
+    cfg = _creds()
+    assert url.startswith(_remote_root() + "/"), "拒绝访问本轮专属目录之外的地址"
+    r = httpx.request(method, url, content=content, auth=(cfg["webdav_username"],
+                      cfg["webdav_password"]), timeout=30, trust_env=False)
+    assert r.status_code in expect, f"DAV {method} 状态 {r.status_code}"
     return r
 
 
@@ -63,8 +66,8 @@ class Instance:
         self.base = f"http://127.0.0.1:{port}"
 
     def api(self, method: str, path: str, payload: dict | None = None):
-        r = httpx.request(method, f"{self.base}{path}", json=payload, timeout=60)
-        assert r.status_code < 500, f"{method} {path} → {r.status_code} {r.text[:300]}"
+        r = httpx.request(method, f"{self.base}{path}", json=payload, timeout=60, trust_env=False)
+        assert r.is_success, f"{method} {path} → {r.status_code}"
         return r
 
     def get(self, path):
@@ -86,45 +89,56 @@ class Instance:
         expect_ok=False 断言失败形态。返回终态配置。"""
         before = self.get("/api/sync").get("last_sync_at")
         run = self.post("/api/sync/run")
-        assert run.status_code in (200, 202), run.text[:200]
+        assert run.json()["started"] is True, "同步未启动"
         deadline = time.time() + timeout
         while time.time() < deadline:
             cfg = self.get("/api/sync")
             if (not cfg.get("syncing") and cfg.get("last_sync_at") != before):
                 if expect_ok:
-                    assert cfg.get("last_sync_ok") is True,                         f"实例 {self.port} 同步失败：{cfg.get('last_sync_error')}"
+                    assert cfg.get("last_sync_ok") is True, f"实例 {self.port} 同步轮失败"
                 return cfg
             time.sleep(1.0)
         raise AssertionError(f"实例 {self.port} 同步轮询超时 {timeout}s")
 
 
 def _spawn(port: int, data_dir: Path) -> Instance:
-    env = {**os.environ, "CLARA_DATA_DIR": str(data_dir)}
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "main:app", "--port", str(port)],
-        cwd=str(Path(__file__).resolve().parents[1]), env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    inst = Instance(port, data_dir, proc)
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        try:
-            if httpx.get(f"{inst.base}/api/health", timeout=2).status_code == 200:
-                return inst
-        except httpx.HTTPError:
-            time.sleep(0.8)
-    raise AssertionError(f"实例 {port} 启动超时")
+    env = {**os.environ, "CLARA_DATA_DIR": str(data_dir), "PYTHONUTF8": "1"}
+    data_dir.mkdir(exist_ok=True)
+    log = data_dir / "qa-start.log"
+    with log.open("wb") as stderr:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "main:app", "--no-use-colors", "--host", "127.0.0.1", "--port", str(port)],
+            cwd=str(Path(__file__).resolve().parents[1]), env=env,
+            stdout=subprocess.DEVNULL, stderr=stderr)
+    try:
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and proc.poll() is None:
+            address = re.search(rb"Uvicorn running on http://127\.0\.0\.1:(\d+)", log.read_bytes())
+            if address:
+                inst = Instance(int(address[1]), data_dir, proc)
+                if httpx.get(f"{inst.base}/api/health", timeout=2, trust_env=False).is_success:
+                    return inst
+            time.sleep(0.2)
+        raise AssertionError("临时边车未就绪")
+    except BaseException:
+        proc.kill()
+        proc.wait(timeout=15)
+        raise
 
 
 @pytest.fixture(scope="module")
-def ab():
-    """A/B 双实例 + 远端 QA 子目录（module 级一次起，场景顺序共享状态）。"""
-    tmp_a = Path(__file__).resolve().parents[1] / "data" / f"qa-ab-A-{_TS}"
-    tmp_b = Path(__file__).resolve().parents[1] / "data" / f"qa-ab-B-{_TS}"
+def ab(tmp_path_factory):
+    """仅清理本轮成功新建且仍含归属标记的子目录。"""
     remote = _remote_root()
-    _dav("MKCOL", remote + "/", expect=(200, 201, 405))  # 预建父目录（MKCOL 不递归）
-    a = _spawn(PORT_A, tmp_a)
-    b = _spawn(PORT_B, tmp_b)
+    marker = remote + "/qa-owner.txt"
+    owner = uuid4().hex.encode()
+    _dav("MKCOL", remote + "/", expect=(201,))
+    _dav("PUT", marker, content=owner, expect=(200, 201, 204))
+    live = []
     try:
+        for device in ("A", "B"):
+            live.append(_spawn(0, tmp_path_factory.mktemp("qa-dav-" + device)))
+        a, b = live
         for inst in (a, b):
             # 关 AI 与全部工作流开关（setup_b.py 口径——第二设备不自行开跑 AI 流）
             inst.patch("/api/settings", {
@@ -141,21 +155,15 @@ def ab():
                                      "webdav_enabled": False})
         yield a, b
     finally:
-        for inst in (a, b):
+        for inst in live:
             inst.proc.terminate()
-        for inst in (a, b):
             try:
                 inst.proc.wait(timeout=15)
             except subprocess.TimeoutExpired:
                 inst.proc.kill()
-        import shutil
-
-        for d in (tmp_a, tmp_b):
-            shutil.rmtree(d, ignore_errors=True)  # 数据目录清理（含 qa 备份产物）
-        try:
-            _dav("DELETE", remote + "/", expect=(200, 204, 404))
-        except AssertionError as e:
-            print(f"[qa-webdav] 远端 QA 子目录清理失败（保留现场）：{e}")
+                inst.proc.wait(timeout=15)
+        assert _dav("GET", marker, expect=(200,)).content == owner, "归属不符，保留远端现场"
+        _dav("DELETE", remote + "/", expect=(200, 204))
 
 
 def w_spawn_a2(old: Instance) -> Instance:
@@ -184,10 +192,8 @@ def test_s1_first_push(ab):
     for i in range(3):
         a.post("/api/tasks", {"title": f"A端任务{i}", "duration_mins": 30})
     cfg = a.sync_and_wait()
-    assert cfg["last_sync_ok"] is True, cfg.get("last_sync_error")
-    r = httpx.get(_remote_root() + "/clara-sync/manifest.json",
-                  auth=(_creds()["webdav_username"], _creds()["webdav_password"]),
-                  timeout=30)
+    assert cfg["last_sync_ok"] is True
+    r = _dav("GET", _remote_root() + "/clara-sync/manifest.json", expect=(200,))
     assert r.status_code == 200 and "tables" in r.json()
 
 
@@ -195,7 +201,7 @@ def test_s2_cold_start_pull(ab):
     """B 冷启动纯拉：空库 B 同步 → 任务集 == A 任务集（全自动免确认）。"""
     a, b = ab
     cfg = b.sync_and_wait()
-    assert cfg["last_sync_ok"] is True, cfg.get("last_sync_error")
+    assert cfg["last_sync_ok"] is True
     assert _task_titles(b) == _task_titles(a)
 
 
@@ -254,12 +260,14 @@ def test_s6_natural_key_collision(ab):
     b.post("/api/projects", {"name": "撞名项目", "color": "#00FF00"})
     a.sync_and_wait()
     b.sync_and_wait()
-    b.sync_and_wait()
+    a.sync_and_wait()
+    matched = []
     for inst in (a, b):
         projs = inst.get("/api/projects")
         projs = projs.get("items", []) if isinstance(projs, dict) else projs
-        names = [p["name"] for p in projs if p["name"] == "撞名项目"]
-        assert len(names) == 1, f"自然键撞车未收敛：{names}"
+        row, = [p for p in projs if p["name"] == "撞名项目"]
+        matched.append((row["id"], row["color"]))
+    assert matched[0] == matched[1]
 
 
 def test_s7_guard_a_remote_manifest_missing(ab):
@@ -271,10 +279,10 @@ def test_s7_guard_a_remote_manifest_missing(ab):
     cfg = a.sync_and_wait(expect_ok=False)
     # A 端本地快照仍在 → 守卫 a 拦截（远端数据意外缺失）——强断言
     assert cfg["last_sync_ok"] is False, "守卫 a 未拦截远端 manifest 缺失"
-    assert "意外缺失" in (cfg.get("last_sync_error") or ""), cfg
+    assert "意外缺失" in (cfg.get("last_sync_error") or "")
     a.post("/api/sync/reset-base")
     cfg2 = a.sync_and_wait()
-    assert cfg2["last_sync_ok"] is True, cfg2.get("last_sync_error")
+    assert cfg2["last_sync_ok"] is True
     b.sync_and_wait()
     assert _task_titles(a) == _task_titles(b)
 
@@ -302,7 +310,7 @@ def test_s8_guard_b_mass_delete(ab):
     # → 两端正态（否则遗留删除意图会在 s10 持续拉扯）
     a.post("/api/sync/reset-base")
     cfg2 = a.sync_and_wait()
-    assert cfg2["last_sync_ok"] is True, cfg2.get("last_sync_error")
+    assert cfg2["last_sync_ok"] is True
     assert _task_titles(a) == _task_titles(b)
 
 
@@ -314,29 +322,36 @@ def test_s9_backup_restore_chain(ab):
     bak = a.data_dir / "qa-backup.zip"
     r = a.post("/api/sync/backup", {"path": str(bak)})
     assert r.status_code in (200, 201), r.text[:200]
+    rows_before = sorted(_task_rows(a), key=lambda row: row["id"])
     titles_before = _task_titles(a)
     victim = next(t for t in _task_rows(b) if t["title"] == "批量0")
     b.delete(f"/api/tasks/{victim['id']}")
+    manual = b.post("/api/ai/memory-rules", {"category": "边界", "content": "仅 B 手写规则"}).json()
     analyze = b.post("/api/sync/merge-analyze", {"path": str(bak)}).json()
     assert analyze["ok"] is True and analyze["new_count"] >= 1, analyze
     b.post("/api/sync/merge-apply", {"path": str(bak), "strategy": "skip"})
+    assert manual in b.get("/api/ai/memory-rules")
     titles_b = _task_titles(b)
     assert titles_before <= titles_b  # skip 合并补回被删行（不删本地既有行）
     # 真重启 A：lifespan 最前 apply_pending_restore 完成两段置换 → 数据==备份时点
-    a.post("/api/sync/restore", {"path": str(bak)})
+    a.delete(f"/api/tasks/{victim['id']}")
+    a.post("/api/tasks", {"title": "仅恢复前存在", "duration_mins": 17})
+    assert _task_titles(a) == (titles_before - {"批量0"}) | {"仅恢复前存在"}
+    assert a.post("/api/sync/restore", {"path": str(bak)}).json()["requires_restart"]
     a.proc.terminate()
     a.proc.wait(timeout=15)
     a2 = w_spawn_a2(a)
-    assert _task_titles(a2) == titles_before
+    assert sorted(_task_rows(a2), key=lambda row: row["id"]) == rows_before
+    # B 合并写入的新时间戳与本地规则仍离线；先发布，再由无基线的 A 拉取。
+    b.sync_and_wait()
+    a2.sync_and_wait()
+    assert sorted(_task_rows(a2), key=lambda r: r["id"]) == sorted(_task_rows(b), key=lambda r: r["id"])
+    assert manual in a2.get("/api/ai/memory-rules")
 
 
 def test_s10_multi_device_round_trip(ab):
-    """多端循环 A→B→A 三轮交替编辑：**终态两端全等**（强断言）+ 全程无失败轮。
-    中间轮的瞬时漂移（坚果云读时序窗——A 轮 last_sync_at 更新与远端 manifest
-    对读侧可见之间的窗口）为观察项不做轮内强断言——曾在整链中单次全过，
-    非确定性漂移登记 docs/qa-bug-checklist.md。"""
+    """三轮交替写；每轮末按 ID 比完整任务，不把追加重试算作首次成功。"""
     a, b = ab
-    drifts: list[int] = []
     for round_no in range(3):
         editor = a if round_no % 2 == 0 else b
         editor.post("/api/tasks",
@@ -344,11 +359,8 @@ def test_s10_multi_device_round_trip(ab):
         editor.sync_and_wait()
         other = b if round_no % 2 == 0 else a
         other.sync_and_wait()
-        if _task_titles(a) != _task_titles(b):
-            drifts.append(round_no)
-            other.sync_and_wait()  # 追加一轮对账轮（收敛重试）
-    assert _task_titles(a) == _task_titles(b), (
-        f"三轮循环后终态漂移（中间轮漂移={drifts}）")
+        assert sorted(_task_rows(a), key=lambda row: row['id']) == sorted(
+            _task_rows(b), key=lambda row: row['id']), f"第 {round_no + 1} 轮未收敛"
     assert "循环2" in _task_titles(a) and "循环0" in _task_titles(a)
     a_cfg = a.get("/api/sync")
     b_cfg = b.get("/api/sync")

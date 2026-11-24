@@ -4,7 +4,7 @@
 // 挂载 fetchModels，增删改 / 激活 / 测速全走后端 /api/models；保存成功后自动对
 // 该模型测速一次并把结果记回卡片（last_test_* 三列以 /{id}/test 落库值为真源）。
 import { useEffect, useState } from "react";
-import { Bot, Eye, EyeOff, Pencil, Plus, Trash2, Zap } from "lucide-react";
+import { Bot, Pencil, Plus, Trash2, Zap } from "lucide-react";
 import {
   activateModel,
   setAuxModel,
@@ -20,6 +20,7 @@ import {
 } from "../../lib/api";
 import ConfirmPopover from "../ConfirmPopover";
 import { SetSelect, SetToggle, type SelectOption } from "./SettingsControls";
+import "./AboutSettings.css"; // 与同步备份共用行内清除按钮样式
 import "./ModelSettings.css";
 
 // 表单草稿（camelCase 本地形状；保存时转 ModelCreateBody / ModelPatchBody）
@@ -56,7 +57,7 @@ function ModelSettings({ onModelChange }: { onModelChange?: () => void }) {
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null); // null = 新建
   const [draft, setDraft] = useState<ModelDraft>(EMPTY_DRAFT);
-  const [showKey, setShowKey] = useState(false);
+  const [clearingKey, setClearingKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<ApiModelTestResult | null>(null);
   const [saving, setSaving] = useState(false);
@@ -82,6 +83,9 @@ function ModelSettings({ onModelChange }: { onModelChange?: () => void }) {
     };
   }, []);
 
+  const saved = models?.find(m => m.id === editingId);
+  const keepKey = saved?.api_key_set && !draft.apiKey.trim() &&
+    (saved.base_url ?? "") === draft.baseUrl.trim() && saved.model_name === draft.modelId.trim();
   const patch = (p: Partial<ModelDraft>) => setDraft((d) => ({ ...d, ...p }));
 
   const openForm = (m: ApiModel | null) => {
@@ -92,13 +96,12 @@ function ModelSettings({ onModelChange }: { onModelChange?: () => void }) {
             name: m.name,
             baseUrl: m.base_url ?? "",
             modelId: m.model_name,
-            apiKey: m.api_key ?? "", // GET 原样回显，编辑免重填
+            apiKey: "",
             thinkingMode: m.thinking_mode,
             contextLength: m.context_length,
           }
         : EMPTY_DRAFT,
     );
-    setShowKey(false);
     setTestResult(null);
     setFormError(null);
     setFormOpen(true);
@@ -154,7 +157,7 @@ function ModelSettings({ onModelChange }: { onModelChange?: () => void }) {
     setTestResult(null);
     try {
       setTestResult(
-        await testModelDraft({
+        keepKey && editingId ? await testModelById(editingId) : await testModelDraft({
           base_url: draft.baseUrl.trim() || null,
           model_name: draft.modelId.trim(),
           api_key: draft.apiKey.trim() || null,
@@ -189,6 +192,22 @@ function ModelSettings({ onModelChange }: { onModelChange?: () => void }) {
       .finally(() => setAutoTestId(null));
   };
 
+  const handleClearKey = async () => {
+    if (!saved?.api_key_set) return;
+    setClearingKey(true);
+    setFormError(null);
+    try {
+      const row = await updateModel(saved.id, { api_key: null });
+      setModels(prev => prev?.map(m => m.id === row.id ? row : m) ?? null);
+      setTestResult(null);
+      onModelChange?.();
+    } catch {
+      setFormError("密钥清除失败，请重试");
+    } finally {
+      setClearingKey(false);
+    }
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setFormError(null);
@@ -196,7 +215,7 @@ function ModelSettings({ onModelChange }: { onModelChange?: () => void }) {
       name: draft.name.trim(),
       base_url: draft.baseUrl.trim() || null,
       model_name: draft.modelId.trim(),
-      api_key: draft.apiKey.trim() || null, // 清空输入框 = 显式 null = 清空
+      ...(keepKey ? {} : { api_key: draft.apiKey.trim() || null }),
       thinking_mode: draft.thinkingMode,
       context_length: draft.contextLength,
     };
@@ -371,7 +390,7 @@ function ModelSettings({ onModelChange }: { onModelChange?: () => void }) {
                         value={draft.baseUrl}
                         maxLength={200}
                         placeholder="留空走官方，或 https://…/v1"
-                        onChange={(e) => patch({ baseUrl: e.target.value })}
+                        onChange={(e) => patch({ baseUrl: e.target.value, apiKey: "" })}
                       />
                       <span className="model-field-hint">留空 = 服务商官方接口；自定义/本地端点填完整地址（OpenAI 兼容需含 /v1）</span>
                     </label>
@@ -382,31 +401,30 @@ function ModelSettings({ onModelChange }: { onModelChange?: () => void }) {
                         value={draft.modelId}
                         maxLength={100}
                         placeholder="deepseek/deepseek-chat"
-                        onChange={(e) => patch({ modelId: e.target.value })}
+                        onChange={(e) => patch({ modelId: e.target.value, apiKey: "" })}
                       />
                       <span className="model-field-hint">LiteLLM 格式：服务商/模型名（deepseek/、openai/、ollama/、anthropic/…；其他服务商用 openai/ + Base URL 接入）</span>
                     </label>
                   </div>
 
                   <div className="model-field">
-                    <span className="model-field-label">API 密钥</span>
+                    <label className="model-field-label" htmlFor="model-api-key">API 密钥</label>
                     <div className="model-key-wrap">
                       <input
                         className="model-input mono"
-                        type={showKey ? "text" : "password"}
+                        id="model-api-key"
+                        type="password"
                         value={draft.apiKey}
                         maxLength={200}
-                        placeholder="sk-…（本地服务可留空）"
+                        placeholder={keepKey ? "已保存，留空保留" : "本地服务可留空"}
                         onChange={(e) => patch({ apiKey: e.target.value })}
                       />
-                      <button
-                        type="button"
-                        className="model-key-eye"
-                        title={showKey ? "隐藏密钥" : "显示密钥"}
-                        onClick={() => setShowKey((v) => !v)}
-                      >
-                        {showKey ? <EyeOff size={13} strokeWidth={2} /> : <Eye size={13} strokeWidth={2} />}
-                      </button>
+                      {saved?.api_key_set && (
+                        <button type="button" className="about-link" disabled={clearingKey || saving || testing}
+                          onClick={handleClearKey}>
+                          {clearingKey ? "清除中…" : "清除原密钥"}
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -450,7 +468,7 @@ function ModelSettings({ onModelChange }: { onModelChange?: () => void }) {
                       <button
                         type="button"
                         className="model-btn ghost-accent"
-                        disabled={testing || !draft.modelId.trim()}
+                        disabled={testing || clearingKey || !draft.modelId.trim()}
                         onClick={handleTest}
                       >
                         {testing ? "测试中…" : "测试连通性"}
@@ -468,7 +486,7 @@ function ModelSettings({ onModelChange }: { onModelChange?: () => void }) {
                       <button
                         type="button"
                         className="model-btn primary"
-                        disabled={saving || !canSave}
+                        disabled={saving || clearingKey || !canSave}
                         onClick={handleSave}
                       >
                         保存配置

@@ -221,6 +221,9 @@ def _migrate_memory_rule_columns(eng) -> None:
     required = {
         "structured_anchor": "JSON",            # 高置信规则的结构化避让窗锚
         "slot": "VARCHAR(10)",                  # 固定槽位（NULL=旧行待夜间回填）
+        "pause_until": "DATE",
+        "last_decay_day": "DATE",
+        "confirmed_sources": "JSON",
         "observation_count": "INTEGER DEFAULT 0 NOT NULL",  # 同义印证计数（置信演化）
     }
     missing = [name for name in required if name not in cols]
@@ -544,7 +547,7 @@ def _fix_proposal_declined_outcomes(eng) -> None:
 _NEEDS_UPDATED_AT = [
     "stats_reports", "subtasks", "reminders", "proposals", "messages",
     "memory_dismissals", "episodic_facts", "behavior_events",
-    "workflow_runs", "ingestion_items", "stats_messages",
+    "workflow_runs", "ingestion_items", "stats_messages", "estimate_preferences",
 ]
 _BACKFILL_TS = {"memory_dismissals": "dismissed_at", "ingestion_items": "last_seen_at"}
 
@@ -691,6 +694,10 @@ def init_db() -> None:
     _drop_task_dependencies(engine)
     _fix_proposal_declined_outcomes(engine)
     _migrate_updated_at_columns(engine)
+    from services.device_secrets import migrate_local, prune_orphaned_secrets
+    from config import DATABASE_PATH
+    migrate_local(engine)
+    prune_orphaned_secrets(DATABASE_PATH.parent)
     _ensure_updated_at_triggers(engine)
     _ensure_episodic_fts(engine)
     _sweep_json_null_text(engine)

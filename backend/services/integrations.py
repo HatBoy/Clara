@@ -133,7 +133,7 @@ def _key_out(row: IntegrationSettings) -> ComposioKeyOut:
     """ORM 行 → 契约。列名带 composio_ 前缀、契约字段用短名——名字不一致，
     from_attributes 按字段名取属性取不到（会静默落 None），必须显式映射。"""
     return ComposioKeyOut(
-        api_key=row.composio_api_key,
+        api_key_set=bool(row.composio_api_key),
         key_ok=row.composio_key_ok,
         key_error=row.composio_key_error,
         key_checked_at=row.composio_key_checked_at,

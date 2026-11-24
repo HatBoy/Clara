@@ -172,7 +172,8 @@ def test_create_201_shape(client: TestClient):
     assert body["is_active"] is False
     assert body["thinking_mode"] is False
     assert body["context_length"] == 32768  # 档位默认 32K
-    assert body["api_key"] == "sk-live"
+    assert body["api_key_set"] and "api_key" not in body
+    assert "sk-live" not in client.get("/api/models").text
     assert body["last_test_ok"] is None  # 从未测试
     assert len(body["id"]) == 36  # UUID 形
     assert client.get("/api/models").json()[0]["name"] == "云端模型"
@@ -191,7 +192,7 @@ def test_create_1m_context_201(client: TestClient):
 def test_create_blank_api_key_becomes_none(client: TestClient):
     # 空白串经 strip + validator 归一为 None（本地免鉴权服务口径）
     body = _create(client, "本地模型", api_key="   ")
-    assert body["api_key"] is None
+    assert not body["api_key_set"]
     with TestingSessionLocal() as db:
         assert db.scalar(select(ModelProvider).where(ModelProvider.name == "本地模型")).api_key is None
 
@@ -292,7 +293,7 @@ def test_update_api_key_null_clears(client: TestClient):
     a = _create(client, "A", api_key="sk-orig")
     resp = client.patch(f"/api/models/{a['id']}", json={"api_key": None})
     assert resp.status_code == 200
-    assert resp.json()["api_key"] is None
+    assert not resp.json()["api_key_set"]
     with TestingSessionLocal() as db:
         assert db.get(ModelProvider, a["id"]).api_key is None
 

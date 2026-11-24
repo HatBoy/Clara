@@ -492,6 +492,9 @@ function InboxPanel({
       );
   }
 
+  const filteredEmpty = mode === "inbox" && !toggleOn && list.length === 0 &&
+    tasks.some(t => !isScheduled(t) && !t.done && t.project);
+
   return (
     <section className="inbox" style={style}>
       <header className="inbox-header">
@@ -565,14 +568,14 @@ function InboxPanel({
             <EmptyState
               compact
               icon={<Inbox size={22} strokeWidth={1.6} />}
-              title={mode === "inbox" ? "收件箱是空的" : "这个项目还没有任务"}
+              title={filteredEmpty ? "项目待办已隐藏" : mode === "inbox" ? "收件箱是空的" : "这个项目还没有任务"}
               description={
-                mode === "inbox"
+                filteredEmpty ? "当前只显示未归属项目的待办。" : mode === "inbox"
                   ? "随手记一条待办，或从接入的数据源里看看有什么要处理的"
                   : "把想法加成这个项目的待办，或在日历里为它安排时间"
               }
               action={
-                mode === "inbox" && onQuickAdd
+                filteredEmpty ? { label: "显示项目待办", onClick: () => setToggleOn(true) } : mode === "inbox" && onQuickAdd
                   ? { label: "快速添加", onClick: onQuickAdd }
                   : undefined
               }
@@ -933,6 +936,9 @@ function InboxPanel({
                             ))}
                           </div>
                         </div>
+                        <small className="inbox-todo-meta">{scheduled
+                          ? `耗时立即调整${todo.end !== undefined ? ` · 结束 ${fmtTime(todo.end)}` : ""}；${todo.recurrence ? "改时间影响整个系列" : "日期需确认改期"}`
+                          : "耗时和优先级在收起时保存；选择日期后需确认排期"}</small>
                         {/* 预估校准提示（批 E1）：已填估时与同类历史均值偏差 >25% 且
                             样本 ≥2 时显示；采纳写入属性草稿（flushDraft 统一提交） */}
                         {!scheduled &&

@@ -40,6 +40,7 @@ router = APIRouter(prefix="/api/sync", tags=["sync"])
 def _config_out(db: Session, row) -> SyncConfigOut:
     """ORM 行 → 出参（组装目录解析 / 最近备份时刻 / 同步锁状态三个非库字段）。"""
     out = SyncConfigOut.model_validate(row)
+    out.webdav_password_set = bool(row.webdav_password)
     out.auto_backup_dir_resolved = str(effective_backup_dir(row))
     out.auto_backup_last_at = last_auto_backup_at()  # type: ignore[assignment]
     out.syncing = sync_engine.is_syncing()
@@ -71,8 +72,10 @@ def test_connection(body: SyncTestIn, db: Session = Depends(get_db)):
 
     row = sync_config_service.get_sync_config(db)
     url = body.url or row.webdav_url
-    username = body.username or row.webdav_username
-    password = body.password if body.password is not None else row.webdav_password
+    same_url = url == row.webdav_url
+    username = body.username if body.username is not None else (row.webdav_username if same_url else None)
+    same_identity = same_url and username == row.webdav_username
+    password = body.password if body.password is not None else (row.webdav_password if same_identity else None)
     if not url:
         raise HTTPException(status_code=422, detail="请先填写 WebDAV 服务地址")
     client = WebDavClient(url, username, password)
@@ -80,19 +83,21 @@ def test_connection(body: SyncTestIn, db: Session = Depends(get_db)):
         ok, ms, message = client.test_connection()
     finally:
         client.close()
-    row.last_test_at = datetime.now()
-    row.last_test_ok = ok
-    row.last_test_ms = ms
-    db.commit()
+    if same_identity and password == row.webdav_password:
+        row.last_test_at = datetime.now()
+        row.last_test_ok = ok
+        row.last_test_ms = ms
+        db.commit()
     return SyncTestOut(ok=ok, ms=ms, message=message)
 
 
 @router.post("/run", response_model=SyncRunOut)
-async def run_now():
-    """手动「立即同步」：后台执行（未启用/未配置的中文提示由 _sync_once 落
-    last_sync_error，前端底部行显示——按钮不做禁用拦截）。"""
+async def run_now(db: Session = Depends(get_db)):
+    """未配置时立即说明原因；已配置的手动同步不受自动开关影响。"""
     if sync_engine.is_syncing():
         return SyncRunOut(started=False, error="上一轮同步仍在进行，请稍候")
+    if not sync_config_service.get_sync_config(db).webdav_url:
+        return SyncRunOut(started=False, error="未配置 WebDAV 服务地址")
     # 强引用池托管（sse_kit.spawn 单源：asyncio 弱引用 GC 坑）
     sse_kit.spawn(asyncio.create_task(asyncio.to_thread(sync_engine.sync_now)))
     return SyncRunOut(started=True)

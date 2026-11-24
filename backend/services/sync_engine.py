@@ -26,6 +26,7 @@ sync_snapshot/）/ Remote（WebDAV 上 tables/<t>.json）。合并真值表与�
 import asyncio
 import json
 import logging
+from services.device_secrets import portable, portable_update
 import os
 import threading
 import time
@@ -216,7 +217,7 @@ def _load_base(name: str) -> list[dict] | None:
         return None
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else None
+        return [portable(name, row) for row in data] if isinstance(data, list) else None
     except (ValueError, OSError):
         # 单表快照损坏按缺失处理（该表走 union 合并——保守不丢数据）
         logger.warning("同步快照损坏按缺失处理：%s", p.name)
@@ -333,9 +334,30 @@ def _consume_cleared_marker(version: int | None = None) -> None:
 # —— 三路合并（纯函数，直测友好）————————————————————————————————————————
 
 
+def _winner(left: dict, right: dict) -> dict:
+    """平局比规范行内容，不以整份 manifest 的最后写入设备冒充行作者。"""
+    lt, rt = _row_ts(left), _row_ts(right)
+    if lt != rt:
+        return left if rt is None or (lt is not None and lt > rt) else right
+    return min((left, right), key=lambda r: json.dumps(r, sort_keys=True, ensure_ascii=False))
+
+
+def _canonical_rekeys(name, pk, local, remote) -> bool:
+    """全部旧主键消失时，只有每个自然身份都保留且换为较小主键才属于重编号。"""
+    keys = NATURAL_KEYS.get(name)
+    if not keys:
+        return False
+    remote_ids = {tuple(row.get(k) for k in keys): row[pk] for row in remote}
+    for row in local:
+        identity = tuple(row.get(k) for k in keys)
+        new_id = remote_ids.get(identity)
+        if None in identity or new_id is None or not new_id < row[pk]:
+            return False
+    return True
+
+
 def _merge_table(name: str, local: list[dict], base: list[dict] | None,
-                 remote: list[dict] | None,
-                 local_device: str = "", remote_device: str = "") -> dict:
+                 remote: list[dict] | None) -> dict:
     """行级三路合并。返回 {merged, del_remote, del_local}（del_* 为相对 R/L 的
     删除主键集，供守卫判定；merged 为最终行集）。
 
@@ -350,7 +372,7 @@ def _merge_table(name: str, local: list[dict], base: list[dict] | None,
     base=None（冷启动）：union + 同键取新（Case A/B/C 的统一公式——L 空则纯
     Pull、R 空则纯 Force Push、双有则并集）。
 
-    平局收敛（优化批 3）：ts 完全相等时按 device_id 字典序/行内容 hash 做确定性
+    平局收敛（优化批 3）：ts 完全相等时按规范行内容 做确定性
     选择——此前"本地优先"会让双端各留己方版本、互相推送 ping-pong 永不收敛。
     """
     _, pk = _table_meta(name)
@@ -360,18 +382,15 @@ def _merge_table(name: str, local: list[dict], base: list[dict] | None,
 
     merged: dict = {}
 
-    def newer(local_row: dict, remote_row: dict) -> dict:
-        lt, rt = _row_ts(local_row), _row_ts(remote_row)
-        if lt is None:
-            return remote_row
-        if rt is None:
-            return local_row
-        if lt != rt:
-            return local_row if lt > rt else remote_row
-        # 平局：与"谁是本地"无关的确定性规则（两端算出同一物理行）
-        if local_device and remote_device and local_device != remote_device:
-            return local_row if local_device < remote_device else remote_row
-        return local_row if _hash_rows([local_row]) <= _hash_rows([remote_row]) else remote_row
+    def choose(left, right):
+        winner = _winner(left, right)
+        if name == 'proposals':
+            from services.proposal_decisions import merge_synced
+            try:
+                return merge_synced(left, right, winner)
+            except ValueError as exc:
+                raise SyncAbort(f'建议结算冲突，未覆盖任何一端：{exc}') from exc
+        return winner
 
     def modified_since(row: dict, base_row: dict) -> bool:
         rt, bt = _row_ts(row), _row_ts(base_row)
@@ -386,11 +405,11 @@ def _merge_table(name: str, local: list[dict], base: list[dict] | None,
             elif r_row is None:
                 merged[key] = l_row
             else:
-                merged[key] = newer(l_row, r_row)
+                merged[key] = choose(l_row, r_row)
             continue
         s_row = s_map.get(key)
         if l_row is not None and r_row is not None:
-            merged[key] = newer(l_row, r_row)
+            merged[key] = choose(l_row, r_row)
         elif l_row is not None:
             if s_row is None:
                 merged[key] = l_row            # 本地新增
@@ -422,7 +441,7 @@ def _write_local(db: Session, name: str, merged: list[dict],
     返回 (实际落库行集, 插入数, 更新数, 待删键集)。
 
     - 键不在本地 → INSERT；撞自然键唯一约束 → pk 收敛（canonical = 双方 pk
-      字典序小者；内容 ts 新者胜、平局行哈希小者；本地 pk 败时子表外键改指
+      字典序小者；内容 ts 新者胜、平局规范内容小者；本地 pk 败时子表外键改指
       canonical——2026-11-17 真机实证旧版双端各持己 pk 互推永不收敛）；
     - 键在本地且内容不同 → UPDATE（显式带 updated_at——触发器 WHEN 守卫不覆盖）；
     - 本地有而 merged 无 → 进待删键集（**不内联删**——2026-11-17 真机批：
@@ -435,6 +454,13 @@ def _write_local(db: Session, name: str, merged: list[dict],
     cols = table.columns.keys()
     actual: dict[str, dict] = {}  # pk → 行（撞车收敛可能重复触达同键，dict 去重）
     inserted = updated = 0
+
+    def update_winner(key, row, old):
+        target = table.update().where(getattr(table.c, pk) == key)
+        if "updated_at" in cols and row.get("updated_at") == old.get("updated_at"):
+            # 同时间戳直接 UPDATE 会触发业务时钟盖章；过渡值只在写事务内可见。
+            db.execute(target.values(updated_at=text("''")))
+        db.execute(target.values(**_writable_row(table, portable_update(name, row, old))))
 
     merged_map = {r[pk]: r for r in merged}
     # 迭代副本（2026-11-16 优化批 3）：撞自然键时会重定向 merged_map 的键，
@@ -453,7 +479,7 @@ def _write_local(db: Session, name: str, merged: list[dict],
                 # 平局无条件本地胜），双端各持一版互推——远端 pk 逐轮翻转永不
                 # 收敛，每轮探测白推一次（限频服务持续烧配额）。现规则双端
                 # 对称：canonical pk = 双方 pk 字典序小者；内容 = ts 新者（平局
-                # 取行哈希小者，双端独立计算同一胜者）；本地 pk 败时子表外键
+                # 取规范内容小者，双端独立计算同一胜者）；本地 pk 败时子表外键
                 # 改指胜者、删本地行、插胜者行。
                 hit = _find_by_natural_key(db, name, row)
                 if hit is None:
@@ -464,15 +490,7 @@ def _write_local(db: Session, name: str, merged: list[dict],
                     merged_map.pop(key, None)
                     continue
                 canonical = min(key, hit[pk])
-                lt, rt = _row_ts(hit), _row_ts(row)
-                if rt is None or (lt is not None and lt > rt):
-                    winner = hit  # 本地内容胜（含远端无 ts）
-                elif lt is None or rt > lt:
-                    winner = row  # 远端内容胜
-                elif _hash_rows([hit]) <= _hash_rows([row]):
-                    winner = hit  # 平局：行哈希小者（确定性、双端对称）
-                else:
-                    winner = row
+                winner = _winner(hit, row)
                 out = {**winner, pk: canonical}
                 if canonical != hit[pk]:
                     # 本地 pk 败：子表外键改指 canonical → 删本地行 → 插胜者行。
@@ -482,13 +500,11 @@ def _write_local(db: Session, name: str, merged: list[dict],
                     # test_sync_engine 的 pk 收敛直测依赖）
                     db.execute(text("PRAGMA defer_foreign_keys=ON"))
                     _repoint_children(db, name, hit[pk], canonical)
-                    db.execute(delete(table).where(getattr(table.c, pk) == hit[pk]))
-                    db.execute(table.insert().values(**_writable_row(table, out)))
+                    # 修改原行主键而非删建，保留同目的地设备授权，绝不带进 actual。
+                    update_winner(hit[pk], out, hit)
                     updated += 1
                 elif winner is row and not _rows_equal(out, hit, cols):
-                    db.execute(table.update().where(
-                        getattr(table.c, pk) == canonical
-                    ).values(**_writable_row(table, out)))
+                    update_winner(canonical, out, hit)
                     updated += 1
                 local_map.pop(hit[pk], None)
                 # 键重定向（优化批 3 语义保留）：末尾 doomed 不把已收敛行当
@@ -505,15 +521,7 @@ def _write_local(db: Session, name: str, merged: list[dict],
             if _rows_equal(row, local_row, cols):
                 actual[local_row[pk]] = local_row  # 内容相同：不写，推送本地形态
                 continue
-            lt, rt = _row_ts(local_row), _row_ts(row)
-            if lt is not None and rt is not None and lt >= rt:
-                actual[local_row[pk]] = local_row  # 本地新（LWW）：保留本地
-                continue
-            values = _writable_row(table, row)
-            values[pk] = key
-            db.execute(table.update().where(
-                getattr(table.c, pk) == key).values(**values))
-            row = {**row, pk: key}
+            update_winner(key, row, local_row)
             updated += 1
             actual[key] = row
 
@@ -560,7 +568,7 @@ def find_by_natural_key(db: Session, name: str, row: dict,
     if hit is None:
         return None
     cols = table.columns.keys()
-    return {c: _ser(v) for c, v in zip(cols, hit)}
+    return portable(name, {c: _ser(v) for c, v in zip(cols, hit)})
 
 
 # 内部旧名兼容锚点（_write_local 撞车回退定位沿用）
@@ -741,6 +749,7 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
             pushed_tables[name] = {"sha1": base_hash, "rows": len(local)}
             continue
 
+        clear_from = None
         remote_missing = False
         if base_exists and base is not None and remote_hash_hint == base_hash:
             remote, remote_hash = base, base_hash  # 远端未变：省 GET，R=Base
@@ -748,16 +757,16 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
             data = client.fetch_table(name)
             remote_missing = data is None
             remote = (data or {}).get("rows", [])
+            clear_from = (data or {}).get("cleared_from")
             remote_hash = _hash_rows(remote)
+            remote = [portable(name, row) for row in remote]
             stats["bytes_pulled"] += len(json.dumps(remote, ensure_ascii=False))
 
         # 表级守卫 a：Base 有记录但远端文件 404（manifest 撒谎/文件被删）
         if base_exists and remote_missing and base:
             raise SyncAbort(f"远端表文件缺失：{name}（manifest 有记录但拉取 404）")
 
-        result = _merge_table(name, local, base, remote,
-                              local_device=cfg.device_id or "",
-                              remote_device=(manifest or {}).get("device_id") or "")
+        result = _merge_table(name, local, base, remote)
         merged, del_remote, del_local = result["merged"], result["del_remote"], result["del_local"]
 
         # 守卫 b（推方向）：将删远端大量行且远端自身未变 → 疑本地删库重建。
@@ -778,7 +787,9 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
         if base_exists and base is not None and local_hash == base_hash \
                 and len(local) > 0 and del_local \
                 and len(del_local) == len(local) \
-                and name not in cleared_tables:
+                and not (not remote and clear_from == base_hash
+                         and remote_hash_hint == remote_hash) \
+                and not (remote_hash_hint == remote_hash and _canonical_rekeys(name, pk, local, remote)):
             raise SyncAbort(
                 f"远端 {name} 表已被清空而本地未动过，疑似云端数据异常，已中止同步"
                 "防止本地被连带清空。如云端确已清空，请点「重置同步基线」后重新同步")
@@ -786,9 +797,9 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
         plans.append({
             "name": name, "pk": pk, "merged": merged,
             "del_local": del_local, "remote_hash": remote_hash,
-            # 只允许删除规划时已存在的本地键（优化批 3）：规划与写库之间用户
-            # 新写的行不得被"本地删除传播"误删
-            "planned_keys": {r[pk] for r in local},
+            # 写锁内复核规划版本，避免旧计划覆盖用户删改。
+            "local_hash": local_hash,
+            "clear_from": remote_hash if name in cleared_tables and not local and remote else None,
         })
 
     # 只读阶段结束：结束隐式读事务（否则写事务会从第一次 SELECT 起一直持有
@@ -798,12 +809,16 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
     # —— 阶段 2：单事务写本地（零网络 IO，短事务；写序铁律收编 writing）—————
     # 插入/更新按父前子后；删除经 writer 登记后由 writing 退出时逆拓扑（子先
     # 父后）统一执行——2026-11-17 真机批教训的结构化吸收（详见 writing docstring）
+    if plans:
+        db.execute(text("BEGIN IMMEDIATE"))  # 锁内复核，读后至提交不再容许插入业务写
     with writing(db) as w:
+        for p in plans:
+            if _hash_rows(table_rows(db, p["name"])) != p["local_hash"]:
+                raise SyncAbort(f"规划期间本地 {p['name']} 已变化，已保留编辑；请重试同步")
         for p in plans:
             name, pk = p["name"], p["pk"]
             fresh = {r[pk]: r for r in table_rows(db, name)}
-            actual, ins, upd, doomed = _write_local(db, name, p["merged"], fresh,
-                                                    deletable=p["planned_keys"])
+            actual, ins, upd, doomed = _write_local(db, name, p["merged"], fresh)
             p["actual"] = actual
             w.delete(name, pk, doomed)
             stats["inserted"] += ins
@@ -828,6 +843,8 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
                                    "updated_at": datetime.now().isoformat(timespec="seconds")}
             continue
         payload = {"table": name, "rows": actual}
+        if not actual and p["clear_from"]:
+            payload["cleared_from"] = p["clear_from"]
         client.push_table(name, payload)
         any_pushed = True
         stats["bytes_pushed"] += len(json.dumps(payload, ensure_ascii=False))
@@ -880,13 +897,13 @@ def run_sync(db: Session, client: WebDavClient, cfg) -> dict:
     return stats
 
 
-def _sync_once(manual: bool = False) -> dict:
+def _sync_once(manual: bool = False, *, lock_timeout: float = 0) -> dict:
     """一轮同步的完整编排（锁/配置/状态回写/广播；循环、手动与退出冲刷共用）。
     manual=True 跳过 webdav_enabled 检查（2026-11-16 真机批用户拍板：「立即
     同步」是手动一次性操作，不受自动同步开关约束——开关只管自动；地址仍必须
     已配置）。返回 run_sync 的结果或错误态 dict（不抛——调用方零异常处理）；
     限频失败（429/503）附 rate_limited=True 供 sync_loop 快速进入长退避。"""
-    if not _sync_lock.acquire(blocking=False):
+    if not _sync_lock.acquire(timeout=lock_timeout):
         return {"busy": True}
     # 取走脏表（2026-11-16 优化批 3）：此前只 peek 不清空——任何一次业务写后
     # 脏集合永久非空，sync_loop 每 3 秒跑一轮全表扫描 + manifest GET + SSE 广播，
@@ -947,6 +964,11 @@ def _sync_once(manual: bool = False) -> dict:
                 client.close()  # 复用连接随轮关闭（二轮批 1）
     finally:
         _sync_lock.release()
+
+
+def flush_on_exit() -> dict:
+    """等待当前轮结束后再做一次最终对齐；不得绕开启用状态。"""
+    return _sync_once(lock_timeout=15)
 
 
 def sync_now() -> dict:

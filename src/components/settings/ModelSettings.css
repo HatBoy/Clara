@@ -291,35 +291,16 @@
   font-family: ui-monospace, Consolas, monospace;
 }
 
-/* 密钥行：眼睛钮内嵌输入框右侧 */
+/* 与同步备份一致：清除操作在输入框之后，不覆盖输入区域。 */
 .model-key-wrap {
-  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .model-key-wrap .model-input {
-  width: 100%;
-  box-sizing: border-box;
-  padding-right: 32px;
-}
-
-.model-key-eye {
-  position: absolute;
-  top: 4px;
-  right: 5px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.model-key-eye:hover {
-  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
 }
 
 /* 进阶设定区：细分隔线收尾；内部复用 .settings-row（上下文覆盖收窄内距对齐表单字段） */

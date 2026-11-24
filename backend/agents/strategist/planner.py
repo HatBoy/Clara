@@ -40,7 +40,7 @@ def plan_actions(actions: list[dict], *, now: datetime,
     相对时间作引擎起点（排期链 _hint_to_not_before 同款；解析不出回落明早
     0 点，此前用户明给时间被丢弃全自主挑槽是排期链修过的坑在直排路径复存）。
     """
-    from agents.engine import plan_slots
+    from agents.engine import TAIL_BUFFER_MIN, plan_slots
 
     busy = list(busy)  # 拷贝再追加：同批已落条目计回 busy 供后续条目避让
     drafts: list[dict] = []
@@ -63,7 +63,7 @@ def plan_actions(actions: list[dict], *, now: datetime,
                 drafts.append({"task_id": None, "title": title,
                                "start": slot.isoformat(timespec="minutes"),
                                "duration": duration})
-                busy.append((slot, slot + timedelta(minutes=duration)))
+                busy.append((slot, slot + timedelta(minutes=duration + (TAIL_BUFFER_MIN if duration >= 90 else 0))))
             else:
                 inbox.append(_entry(title, duration, "近期找不到空档，已放收件箱"))
         elif action == "reschedule":
@@ -83,7 +83,7 @@ def plan_actions(actions: list[dict], *, now: datetime,
                 drafts.append({"task_id": it["task_id"], "title": snap["title"],
                                "start": slot.isoformat(timespec="minutes"),
                                "duration": snap["duration"]})
-                busy.append((slot, slot + timedelta(minutes=snap["duration"])))
+                busy.append((slot, slot + timedelta(minutes=snap["duration"] + (TAIL_BUFFER_MIN if snap["duration"] >= 90 else 0))))
             else:
                 inbox.append(_entry(snap["title"], snap["duration"],
                                     "未来无空档，未能自动改期，请手动调整"))

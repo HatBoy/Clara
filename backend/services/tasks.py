@@ -130,6 +130,10 @@ def similar_done_durations(db: Session, title: str, *, days: int = 90,
     norm = normalize_title(title)
     if not norm:
         return None
+    from services.time_strategy import calibrated_estimate
+    preset = calibrated_estimate(db, title)
+    if preset is not None:
+        return preset
     lo = datetime.now() - timedelta(days=days)
     rows = list(db.scalars(
         select(Task).where(Task.is_deleted.is_(False), Task.done_at.is_not(None),
@@ -322,7 +326,7 @@ def get_task(db: Session, task_id: str) -> Task | None:
     return result
 
 
-def create_task(db: Session, body: TaskCreate) -> Task:
+def create_task(db: Session, body: TaskCreate, *, task_id: str | None = None) -> Task:
     """新建任务（快捷录入框）：sort_order 排全表末位，start_time 非空即 ever_scheduled。
 
     校验与不变式同 update_task 口径：project_id 活性校验、end ⇒ start、end > start、
@@ -353,7 +357,7 @@ def create_task(db: Session, body: TaskCreate) -> Task:
         duration_mins = round((end_time - start_time).total_seconds() / 60)
     sort_order = db.scalar(select(func.coalesce(func.max(Task.sort_order), -1))) + 1
     task = Task(
-        title=body.title,
+        id=task_id, title=body.title,
         duration_mins=duration_mins,
         start_time=start_time,
         end_time=end_time,
@@ -436,14 +440,17 @@ def _record_event(db: Session, task: Task, kind: str, *,
     warning——遥测绝不让改期/完成 500（防御纪律同 weather）。commit 与调用方
     共事务末尾合并：只 db.add + flush，不单独 commit（调用点均在 db.commit 前）。"""
     try:
-        from models import BehaviorEvent
+        from models import BehaviorEvent, MemoryRule
 
         anchor = prev_start or new_start
+        context = _event_context(db, anchor)
+        if db.scalar(select(MemoryRule.id).where(MemoryRule.pause_until >= datetime.now().date()).limit(1)):
+            context = {**(context or {}), "temporary_exception": True}
         event = BehaviorEvent(
             task_id=task.id, kind=kind,
             prev_start=prev_start, new_start=new_start,
             delta_min=delta_min, planned_min=planned_min,
-            context=_event_context(db, anchor),
+            context=context,
         )
         db.add(event)
         db.flush()
@@ -593,12 +600,13 @@ def update_task(
         # 遥测（批 5）：取消排期（放弃这段安排的近似口径——真删走 DELETE 记 abandon）
         _record_event(db, task, "unschedule", prev_start=prev_start)
     if ("end_time" in data and data["end_time"] is not None
-            and "start_time" not in data
+            and data.get("start_time", prev_start) == prev_start
             and prev_end is not None and data["end_time"] != prev_end
             and task.start_time is not None):
         # 遥测（批 5）：改时长（估时偏差 / 超长耗时信号源）——start 不变时
         # 新旧时长差 = end 差；不变式重算前 data 里就是新 end
         _record_event(db, task, "resize", prev_start=task.start_time,
+                      planned_min=round((prev_end-task.start_time).total_seconds()/60),
                       delta_min=round((data["end_time"] - prev_end).total_seconds() / 60))
     if done_flag:
         # 遥测（批 5）：完成事件——delta = 实际-计划（未排期勾选完成两值 None）
@@ -1465,7 +1473,7 @@ def is_valid_slot(start: datetime, duration: int, busy: list[tuple[datetime, dat
     规则槽（AI 贴习惯但不可信，规则不聪明但可靠）。"""
     if start.tzinfo is not None or start < now:
         return False
-    cap_min = MORNING_END_MIN if morning_only else day_end_min
+    cap_min = min(day_end_min, MORNING_END_MIN) if morning_only else day_end_min
     return _gates_ok(start, duration, busy, day_start_min=day_start_min, cap_min=cap_min,
                      lunch=lunch, day_load=day_load, day_budget=day_budget,
                      avoid_windows=avoid_windows)
@@ -1494,7 +1502,7 @@ def candidate_slots(start: datetime, duration: int, busy: list[tuple[datetime, d
 
     候选互为备选（同一任务的替代起点），相互可重叠；批量互斥由调用方逐条定
     槽后回填 busy 实现（引擎层同款口径）。纯函数不读库。"""
-    cap_min = MORNING_END_MIN if morning_only else day_end_min
+    cap_min = min(day_end_min, MORNING_END_MIN) if morning_only else day_end_min
     out: list[datetime] = []
 
     def push(t: datetime) -> None:

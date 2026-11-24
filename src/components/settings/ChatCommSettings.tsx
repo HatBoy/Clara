@@ -76,7 +76,7 @@ function CredentialModal({
 }) {
   const meta = CREDENTIAL_META[channel.provider];
   const [appId, setAppId] = useState(channel.app_id ?? "");
-  const [secret, setSecret] = useState(channel.app_secret ?? "");
+  const [secret, setSecret] = useState("");
   const [showSecret, setShowSecret] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -124,7 +124,7 @@ function CredentialModal({
               className="mcp-input mono"
               type={showSecret ? "text" : "password"}
               value={secret}
-              placeholder={channel.configured ? "已保存 · 可直接修改后保存" : "应用密钥"}
+              placeholder={channel.configured ? "已保存 · 留空保留" : "应用密钥"}
               onChange={(e) => setSecret(e.target.value)}
             />
             <button

@@ -158,17 +158,13 @@ def test_upsert_edit_empty_secret_keeps_old(client, monkeypatch):
     assert sent_payloads[-1] == {"app_id": "cli", "app_secret": "s1"}
 
 
-def test_secret_roundtrip_for_edit_form(client, monkeypatch):
-    """app_secret 原样回显（Composio key 先例）——编辑模态回填 + 前端密码态/眼睛
-    查看的契约；未配置渠道恒 None。"""
+def test_channel_list_omits_secrets(client, monkeypatch):
     _patch_probe(monkeypatch, 200, {"code": 0})
-    client.put("/api/chat-channels/feishu",
-               json={"app_id": "cli", "app_secret": "sk-1"})
-    items = client.get("/api/chat-channels").json()
-    feishu = [it for it in items if it["provider"] == "feishu"][0]
-    assert feishu["app_secret"] == "sk-1"
-    assert [it["app_secret"] for it in items if it["provider"] != "feishu"] == [
-        None, None, None]  # 其余三渠道未配置恒 None
+    response = client.put("/api/chat-channels/feishu", json={"app_id": "cli", "app_secret": "qa-secret-marker"})
+    assert response.status_code == 200 and 'qa-secret-marker' not in response.text
+    listing = client.get("/api/chat-channels")
+    assert all('app_secret' not in item for item in listing.json())
+    assert 'qa-secret-marker' not in listing.text
 
 
 # —— 测试 / 启停 / 删除 ——
@@ -217,8 +213,8 @@ def test_snapshot_roundtrip_includes_chat_channels(monkeypatch):
         restore_config(db, snap)
         row = chat_channels.get_channel(db, "dingtalk")
         assert row is not None
-        assert (row.app_id, row.app_secret, row.conn_ok) == ("dk1", "sk-1", True)
-        assert row.conn_at is not None  # datetime 族经 isoformat 往返还原
+        assert (row.app_id, row.app_secret, row.conn_ok) == ("", "", None)
+        assert row.conn_at is None  # 跨设备重新授权，不携带旧验证状态
 
 
 def test_snapshot_restore_null_bool_backfills_false(monkeypatch):
@@ -548,6 +544,7 @@ def test_wechat_login_roundtrip_and_persist(client, monkeypatch):
     with TestingSessionLocal() as db:
         row = db.execute(select(ChatChannel).where(
             ChatChannel.provider == "wechat")).scalar_one()
+    assert "tk-1" not in client.get("/api/chat-channels").text
     assert row.app_id == "tk-1"                          # 列语义映射：token
     assert row.app_secret == "https://ilink2.weixin.qq.com"  # 列语义映射：baseurl
     assert row.conn_ok is True and row.enabled is True and row.conn_error is None
@@ -665,7 +662,7 @@ def test_wechat_worker_loop_and_expired(monkeypatch):
     monkeypatch.setattr(chat_channels, "_ilink_post", fake_post)
     delivered: list = []
     monkeypatch.setattr(chat_channels, "_deliver",
-                        lambda provider, text, reply, epoch: delivered.append(
+                        lambda provider, text, reply, epoch, message_id: delivered.append(
                             (provider, text, reply)))
     with TestingSessionLocal() as db:
         db.add(ChatChannel(provider="wechat", app_id="tk-9",
@@ -1013,7 +1010,7 @@ def test_deliver_forwards_epoch(monkeypatch):
     chat_channels._epoch = 7
     captured: dict = {}
 
-    def fake_handle(provider, text, reply, epoch=None):
+    def fake_handle(provider, text, reply, epoch=None, message_id=None):
         captured.update(provider=provider, epoch=epoch)
 
         async def _noop():
@@ -1048,3 +1045,34 @@ def test_wechat_state_roundtrip_and_expiry(tmp_path, monkeypatch):
     state["tokens_at"] = _time.time() - chat_channels._WECHAT_TOKEN_TTL_S - 10
     (tmp_path / "state.json").write_text(__import__("json").dumps(state), encoding="utf-8")
     assert chat_channels._load_wechat_tokens() == {}
+
+
+def test_duplicate_ids_are_scoped_to_each_gateway():
+    """四个平台各自分配 ID。同平台重投忽略，不能吞掉别的平台第一次投递。"""
+    mid = '验收-42'
+    incoming = [
+        (chat_channels._feishu_extract, _feishu_event(message_id=mid)),
+        (chat_channels._dingtalk_extract, _dingtalk_msg(mid=mid)),
+        (chat_channels._wecom_extract, _wecom_frame(msgid=mid)),
+        (chat_channels._wechat_extract, _wechat_msg(cid=mid)),
+    ]
+    for extract, event in incoming:
+        assert extract(event)[0] == 'ok'
+        assert extract(event) is None
+
+
+@pytest.mark.parametrize('provider', ['feishu', 'dingtalk', 'wecom', 'wechat'])
+def test_replayed_delivery_after_cache_reset_runs_one_turn(monkeypatch, provider):
+    from services import chat_turn
+    _activate_model()
+    monkeypatch.setattr(chat_turn, 'load_graph', lambda: _FakeGraph({'final_reply': '已出草案', 'draft_plan': [{'title': '合成项目对齐'}]}))
+    monkeypatch.setattr(chat_turn, 'schedule_compaction', lambda: None)
+    sent = []
+    for _ in range(2):
+        chat_channels._reset_for_tests()  # 进程内缓存丢失；同一文件/库中的消息仍在
+        asyncio.run(chat_channels.handle_incoming(provider, '请安排项目对齐', sent.append, message_id='平台重投'))
+    assert len(sent) == 1
+    with TestingSessionLocal() as db:
+        messages = list(db.scalars(select(Message).where(Message.source == provider)))
+        assert sorted(m.role for m in messages) == ['assistant', 'user']
+        assert sum(bool(m.proposal_id) for m in messages) == 1

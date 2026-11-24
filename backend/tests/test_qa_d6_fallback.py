@@ -114,9 +114,7 @@ def test_empty_completion_retries_with_bigger_budget(monkeypatch):
                                          "content": "重试后的正文"}}]}
 
     monkeypatch.setattr(llm_mod.litellm, "completion", _fake_completion)
-    monkeypatch.setattr(llm_mod, "get_active_config",
-                        lambda db: {"api_key": "k", "base_url": "http://x",
-                                    "model_name": "m"}, raising=False)
+    activate_model()
     out = llm_mod.call_llm([{"role": "user", "content": "hi"}], max_tokens=100)
     assert out == "重试后的正文"
     assert len(calls) == 2 and calls[1] > calls[0]  # 二次更大预算

@@ -105,6 +105,7 @@ def update_sync_config(db: Session, patch) -> SyncSettings:
         key in data and data[key] != getattr(row, key)
         for key in ("webdav_url", "webdav_username"))
     if server_changed:
+        data.setdefault("webdav_password", None)
         data["last_sync_at"] = None
         data["last_sync_ok"] = None
         data["last_sync_error"] = None

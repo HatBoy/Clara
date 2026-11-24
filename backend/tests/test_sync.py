@@ -571,3 +571,84 @@ def test_create_backup_failure_leaves_no_half_zip(tmp_path, monkeypatch):
         backup_svc.create_backup(str(dest))
     assert not dest.exists()
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_draft_destination_does_not_inherit_credentials(client, monkeypatch):
+    from routers import sync
+    seen = []
+    class Probe:
+        def __init__(self, *args):
+            seen.append(args)
+        def test_connection(self):
+            return True, 1, '测试替身'
+        def close(self):
+            pass
+    monkeypatch.setattr(sync, 'WebDavClient', Probe)
+    client.patch('/api/sync', json={'webdav_url': 'https://a.example',
+                 'webdav_username': 'u', 'webdav_password': '假密码'})
+    assert client.post('/api/sync/test', json={'url': 'https://b.example'}).is_success
+    assert seen == [('https://b.example', None, None)]
+    assert client.get('/api/sync').json()['last_test_ok'] is None
+    client.patch('/api/sync', json={'webdav_url': 'https://b.example'})
+    client.post('/api/sync/test', json={})
+    assert seen[-1][-1] is None
+
+
+def test_restore_interruption_keeps_old_db_and_retryable_marker(tmp_path, monkeypatch):
+    src = _make_backup(tmp_path)
+    _make_db(tmp_path / 'clara.db', rows=2)
+    backup_svc.prepare_restore(str(src))
+    real_replace = backup_svc.os.replace
+    def fail_publish(source, target):
+        if target == backup_svc.DATABASE_PATH:
+            raise OSError('故障注入')
+        real_replace(source, target)
+    with monkeypatch.context() as m:
+        m.setattr(backup_svc.os, 'replace', fail_publish)
+        with pytest.raises(OSError, match='故障注入'):
+            backup_svc.apply_pending_restore()
+    assert _titles(tmp_path / 'clara.db') == ['任务0', '任务1']
+    assert backup_svc.apply_pending_restore()
+    assert _titles(tmp_path / 'clara.db') == ['任务0']
+
+
+@pytest.mark.parametrize('phase', ['before', 'after'])
+def test_restore_process_death_is_retryable(tmp_path, phase):
+    """切换边界前后强退子进程；不运行清理钩子，不影响应用默认数据目录。"""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    archive = _make_backup(tmp_path)
+    _make_db(tmp_path / 'clara.db', rows=2)
+    backup_svc.prepare_restore(str(archive))
+    env = {**os.environ, 'CLARA_DATA_DIR': str(tmp_path), 'PYTHONUTF8':'1'}
+    # 先制造未检查点的已提交 WAL，再模拟应用进程终止。
+    def run(code):
+        return subprocess.run([sys.executable, '-c', code], cwd=Path(__file__).resolve().parents[1],
+                              env=env, timeout=45, capture_output=True)
+    interrupted_writer = run('import os,sqlite3; from config import DATABASE_PATH; '
+                             'db=sqlite3.connect(DATABASE_PATH); db.execute("pragma journal_mode=wal"); '
+                             'db.execute("insert into tasks values (?, ?)", ("wal", "未检查点")); '
+                             'db.commit(); os._exit(73)')
+    assert interrupted_writer.returncode == 73, interrupted_writer.stderr
+    crash = run('''import os
+from services import backup
+from database import Base
+import models
+original = os.replace
+def stop(source, target):
+    if target == backup.DATABASE_PATH:
+        if PHASE == 'after': original(source, target)
+        os._exit(74)
+    return original(source, target)
+os.replace = stop
+backup.apply_pending_restore()
+'''.replace('PHASE', repr(phase)))
+    assert crash.returncode == 74, crash.stderr
+    assert (tmp_path / 'restore_staging' / backup_svc._PENDING_FLAG).is_file()
+    assert _titles(tmp_path / 'clara.db') == (['任务0'] if phase == 'after' else sorted(['任务0','任务1','未检查点']))
+    recovered = run('import models; from services.backup import apply_pending_restore; assert apply_pending_restore(); assert not apply_pending_restore()')
+    assert recovered.returncode == 0, recovered.stderr
+    assert _titles(tmp_path / 'clara.db') == ['任务0']

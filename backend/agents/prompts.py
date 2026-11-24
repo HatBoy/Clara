@@ -248,7 +248,7 @@ REFLECT_PROMPT = """你是 Clara 的习惯学习官，从三类信号归纳行�
 2. reject_reason 是最强信号（用户亲口说的理由），优先依据；chat_excerpts 里反复出现的偏好表达次之；deviations 的稳定偏差再次（如"周一下午的安排反复被推迟"）；accepted / modified 的整体模式最后。
 3. 每条候选标 signal：依据主要来自用户原话（chat_excerpts）→ "chat"；来自 deviations 的稳定偏差 → "behavior"；其余（裁决行为）→ "adjudication"。chat 候选 confidence 不超过 0.55（顺口一说不等于稳定习惯），evidence 逐字引用原话（≤80 字，至多 2 条）；behavior 候选 confidence 给 0.6-0.8（统计验证级），evidence 引用聚类数字（如"近 14 天周五下午 4 次改期"）。
 4. 每天从对话归纳的候选至多 2 条——只挑原话里最明确、对排期最有指导价值的偏好；一次性安排（"明天上午开会"）不是偏好，不归纳。
-5. 每条候选必须带 evidence（≤80 字，引用裁决摘要或原话，禁止改写编造）与 confidence（0.0-1.0，证据越直接越高）。
+5. behavior 和 adjudication 候选用 source_idx 指定主要依据在 deviations 或 decisions 中的从零起序号。每条候选必须带 evidence（≤80 字，引用裁决摘要或原话，禁止改写编造）与 confidence（0.0-1.0，证据越直接越高）。
 6. category 从这些短词中选最贴切的：作息规律 / 工作习惯 / 会议偏好 / 优先级倾向 / 排期偏好 / 其他。
 7. content ≤100 字，写成可执行的规则（如"上午 10 点前不排会议"），不写观察描述。
 8. 与 existing_rules 语义重复的不再归纳。

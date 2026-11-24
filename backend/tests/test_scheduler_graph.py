@@ -275,15 +275,15 @@ def test_two_minute_shortcut_when_philosophy_on(monkeypatch):
     # （无卡无 applied，终态条件边直达 END）
     fake = _LLMCapture({PLANNER_PROMPT: json.dumps({
         "entries": [{"task_id": None, "origin": "user", "title": "回消息",
-                     "start": "2026-10-17T10:00:00", "duration": 2,
-                     "explicit_time": "上午10点",
+                     "start": None, "duration": 2,
+                     "explicit_time": None,
                      "profile": {"category": "机械杂事", "energy_drain": "低",
                                  "env_deps": [], "common_sense_rules": [],
                                  "est_minutes": 2}}],
         "reply": "好"}, ensure_ascii=False)})
     monkeypatch.setattr(llm, "call_llm", fake)
     _patch_inputs(monkeypatch, pending=[], philosophy="two-minute")
-    out = scheduler_app.invoke({"user_input": "记一下，今天上午10点回消息",
+    out = scheduler_app.invoke({"user_input": "记一下，回消息",
                                 "memory_rules": []})
     assert "两分钟" in out["final_reply"] and "立刻" in out["final_reply"]
     assert out["draft_plan"] == [] and "applied_plan" not in out

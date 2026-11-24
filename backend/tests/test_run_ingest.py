@@ -92,6 +92,7 @@ def _patch_services(monkeypatch, *, sources=None, truncated=False, error=None,
         monkeypatch.setattr(data_ingest, "claim_llm_budget", lambda db, n=1: True)
     fake = llm_fake or _FakeLLM()
     monkeypatch.setattr(llm, "call_llm", fake)
+    monkeypatch.setattr(llm, "call_llm_aux", fake)
     return fake
 
 

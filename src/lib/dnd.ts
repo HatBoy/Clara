@@ -19,16 +19,10 @@ export type DraggedTodo = {
   fromOffset?: number;
 };
 
-// 数据源建议条目的附加载荷（2026-10-24 直排批）：数据源页条目卡拖向日历时随
-// TODO_MIME 一并携带——面板侧组装好建任务所需全部字段（溯源/优先级/备注），
-// 放置端（App.handleSuggestDrop）零查找直接建任务 + settle-items 结算
+// 数据源拖拽只带服务器签发的条目标识；落点与来源由后端一次结算。
 export type SuggestedDrop = {
   proposalId: string;
-  index: number;
-  duration: number | null;
-  priority: number | null;
-  notes: string | null;
-  source: { source_key: string; fingerprint?: string } | null;
+  itemId: string;
 };
 
 export type DraggedTodoWithSuggest = DraggedTodo & { suggest?: SuggestedDrop };
@@ -70,7 +64,7 @@ export function parseTodoDrag(e: ReactDragEvent): DraggedTodoWithSuggest | null 
       s &&
       typeof s === "object" &&
       typeof s.proposalId === "string" &&
-      typeof s.index === "number"
+      typeof s.itemId === "string" && s.itemId.length > 0
     ) {
       todo.suggest = s as SuggestedDrop;
     }

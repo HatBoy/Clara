@@ -2,7 +2,7 @@
 
 断言口径经读码核实（见 docs/qa-bug-checklist.md 薄弱环节对账）：
 - 医疗上午闸 = MORNING_KEYWORDS 标题子串 + 医疗画像常识「上午」（finder agent
-  路径硬闸；origin=user 直落路径无此闸——设计取舍，直落用例锁定现状）；
+  路径硬闸；明确空腹体检指定下午时单独问询，不覆盖用户钟点）；
 - 频率防呆 = FREQ_GUARD_DAYS {体检365, 洗牙180, 疫苗90} + last_similar_occurrence
   （真库历史行 + 相似度 0.6）→ frequency 问询；
 - 天气 = RAINY_PRECIP=60 雨日剔日（外出体力类）→ no_slot / 改日落无雨日；
@@ -103,18 +103,40 @@ def test_medical_title_keyword_hits_gate_without_profile(monkeypatch):
     assert datetime.fromisoformat(drafts[0]["start"]).hour < 12
 
 
-def test_medical_explicit_afternoon_lands_as_user_will(monkeypatch):
-    """现状口径锁定：origin=user 明示「下午2点体检」直落 applied（钟点即意志）
-    ——route_user_entry 不查医疗上午闸、无附注提醒。与「常识防呆须拦截下午」
-    的产品期望冲突，登记 docs/qa-bug-checklist.md 待用户拍板（修复方向：直落
-    路径补就医上午 prefer_clash 附注或问询）。"""
+MEDICAL_NOW = datetime(2026, 11, 24, 9)
+MEDICAL_PM = datetime(2026, 11, 25, 14)
+
+
+@pytest.mark.parametrize(("reply", "action", "expected"), [
+    ("保留下午", "confirmed", MEDICAL_PM),
+    ("坚持原时间", "insisted", MEDICAL_PM),
+    ("改到明天上午9点", "rescheduled", datetime(2026, 11, 25, 9)),
+    ("好的", "rescheduled", None),  # 即使模型擅自补 9 点也不写入
+])
+def test_medical_afternoon_requires_explicit_choice(monkeypatch, reply, action, expected):
     out, _ = _invoke(monkeypatch, "明天下午2点安排常规空腹体检", [
-        _user_at("空腹体检", ANCHOR + timedelta(days=1, hours=5),
-                 "明天下午2点")])
-    applied = out.get("applied_plan") or []
-    assert applied, out.get("final_reply")
-    assert datetime.fromisoformat(applied[0]["start"]).hour == 14
-    assert not out.get("question_plan")
+        _user_at("体检", MEDICAL_PM, "明天下午2点")], anchor=MEDICAL_NOW)
+    assert not out.get("applied_plan") and not out.get("draft_plan")
+    assert "上午" in out["final_reply"] and "体检机构" in out["final_reply"]
+    pending = {**out["question_plan"], "proposal_id": "q1"}
+    response = {"resolution": {"action": action, "entries": [
+        _user_at("体检", datetime(2026, 11, 25, 9), "明天上午9点")]}}
+    monkeypatch.setattr(llm, "call_llm", MultiKeyLLMCapture({
+        KEY_PROFILER: json.dumps(response, ensure_ascii=False)}))
+    settled = scheduler_app.invoke({"user_input": reply, "pending": pending, "memory_rules": []})
+    applied = settled.get("applied_plan") or []
+    if expected is None:
+        assert not applied and not settled.get("draft_plan") and settled.get("question_plan")
+    else:
+        assert [e["start"] for e in applied] == [expected.isoformat()]
+
+
+@pytest.mark.parametrize("description", ["无需空腹的体检", "非空腹体检", "常规体检", "遵医嘱指定下午的空腹体检"])
+def test_medical_exceptions_keep_requested_time(monkeypatch, description):
+    out, _ = _invoke(monkeypatch, "明天下午2点安排" + description, [
+        _user_at("体检", MEDICAL_PM, "明天下午2点")], anchor=MEDICAL_NOW)
+    assert [e["start"] for e in out["applied_plan"]] == [MEDICAL_PM.isoformat()]
+    assert not out.get("question_plan") and "上午" not in out["final_reply"]
 
 
 def test_freq_guard_blocks_recent_checkup(monkeypatch):
@@ -171,6 +193,26 @@ def test_rain_redirects_to_clear_day(monkeypatch):
     assert drafts
     start = datetime.fromisoformat(drafts[0]["start"])
     assert start.date() >= (ANCHOR + timedelta(days=2)).date()
+
+
+@pytest.mark.parametrize("rain, expected_day", [(0, 0), (90, 1)])
+def test_same_hike_changes_day_only_when_forecast_changes(monkeypatch, rain, expected_day):
+    out, _ = _invoke(monkeypatch, "找个时间去爬山", [
+        _agent("爬山", 60, category="外出体力", env_deps=["需要好天气"])],
+        weather=_weather({0: rain, 1: 0}))
+    drafts = out.get("draft_plan") or []
+    assert len(drafts) == 1 and not out.get("applied_plan")
+    assert datetime.fromisoformat(drafts[0]['start']).date() == (ANCHOR + timedelta(days=expected_day)).date()
+
+
+@pytest.mark.parametrize("category,wind,offset", [("外出体力", 10, 0), ("外出体力", 60, 1), ("深度脑力", 60, 0)])
+def test_windy_dry_day(monkeypatch, category, wind, offset):
+    weather = _weather({0: 0, 1: 0})
+    weather[0]['wind_kmh'] = wind
+    title = '爬山' if category == '外出体力' else '室内写作'
+    out, _ = _invoke(monkeypatch, '安排' + title, [_agent(title, 60, category=category)], weather=weather)
+    assert not out.get('applied_plan')
+    assert datetime.fromisoformat(out['draft_plan'][0]['start']).date() == (ANCHOR + timedelta(days=offset)).date()
 
 
 def test_rain_does_not_block_indoor(monkeypatch):
@@ -319,3 +361,20 @@ def test_user_clock_clash_conflict_not_silent_move(monkeypatch):
     assert q.get("suggestion")  # 引擎给出改期主荐
     assert not (out.get("draft_plan") or [])
     assert not (out.get("applied_plan") or [])
+
+
+@pytest.mark.parametrize('peak', [9, 17])
+def test_deep_task_follows_observed_peak(monkeypatch, peak):
+    from models import BehaviorEvent
+    with TestingSessionLocal() as db:
+        for day in range(1, 5):
+            at = datetime.now() - timedelta(days=day)
+            for kind, hour in [('done', peak), ('reschedule', 14)]:
+                db.add(BehaviorEvent(kind=kind, created_at=at, prev_start=at.replace(hour=hour)))
+        db.commit()
+    out, _ = _invoke(monkeypatch, '写架构方案，同时安排报销', [
+        _agent('写架构方案', 120, category='深度脑力', energy_drain='高'),
+        _agent('整理报销', 15, category='机械杂事', energy_drain='低')], philosophy='deep-work')
+    slots = {e['title']: datetime.fromisoformat(e['start']) for e in out['draft_plan']}
+    assert slots['写架构方案'].hour == peak
+    assert (slots['整理报销'].hour, slots['整理报销'].minute) == (13, 30)

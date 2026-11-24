@@ -14,6 +14,7 @@
 import logging
 import threading
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime
 
 from sqlalchemy import delete as sa_delete
@@ -60,8 +61,25 @@ def finish(entry: dict | None) -> None:
         _local.entry = None
     if not (entry["tasks"] or entry["projects"]):
         return
-    with _lock:
-        _stack.append(entry)
+    pending = getattr(_local, 'pending', None)
+    if pending is not None:
+        pending.append(entry)
+    else:
+        with _lock:
+            _stack.append(entry)
+
+
+@contextmanager
+def defer_publish():
+    """事务提交后才开放撤销；批内任一步失败不发布幽灵撤销项。"""
+    _local.pending = []
+    try:
+        yield
+        with _lock:
+            _stack.extend(_local.pending)
+    finally:
+        _local.pending = None
+        _local.entry = None
 
 
 def _dedup(rows: list[dict]) -> list[dict]:

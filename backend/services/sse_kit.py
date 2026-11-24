@@ -5,8 +5,8 @@ ai_coach /stream 内联）、跨线程队列桥信封两份逐行同构（ai_coa
 stats ask）、后台任务强引用池四份（asyncio 只持弱引用、无人引用的长任务
 会在跑完前被 GC——同一坑修了 4 遍）。连接生命周期从此有了 seam：
 
-- 帧：sse_frame / CONNECTED / PING（协议单源，坏帧口径由 json.dumps 保证）
-- 订阅流：subscribe_stream（connected 头 + 空转 ping + data 帧 + finally 退订）
+- 帧：sse_frame（协议单源，坏帧口径由 json.dumps 保证）
+- 订阅流：subscription_response（connected 头 + 空转 ping + data 帧 + finally 退订）
 - 线程桥：StreamDone / StreamFailure 信封 + deliver（call_soon_threadsafe，
   事件循环先关的极端窗口静默）+ stream_worker（同步 work(deliver) 进线程池，
   异常收尾投信封——消费侧只认信封不认线程）
@@ -18,42 +18,31 @@ stats ask）、后台任务强引用池四份（asyncio 只持弱引用、无人
 
 import asyncio
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
+
+from sse_starlette import EventSourceResponse, ServerSentEvent
 
 # 无事件保活间隔（秒）——防中间层掐空闲连接（原三处 _PING_SECONDS 单源）
 PING_SECONDS = 30
-
-# SSE 注释帧（连接建立即发，前端 EventSource 进 open 态）
-CONNECTED = ": connected\n\n"
-PING = ": ping\n\n"
-
 
 def sse_frame(event: dict) -> str:
     """事件 data 帧（载荷恒单行 JSON，ensure_ascii=False 保中文原文）。"""
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-async def subscribe_stream(q: asyncio.Queue, *,
-                           ping_s: float = PING_SECONDS,
-                           unsubscribe: Callable | None = None,
-                           ) -> AsyncIterator[str]:
-    """订阅流生成器：connected 头 + 空转 ping 保活 + data 帧；finally 退订。
-
-    消费方断开时 FastAPI 取消本生成器，finally 保证队列退订防泄漏
-    （reminders / workflows 事件流两消费方同协议）。
-    """
-    try:
-        yield CONNECTED
-        while True:
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=ping_s)
-            except asyncio.TimeoutError:
-                yield PING
-                continue
-            yield sse_frame(event)
-    finally:
-        if unsubscribe is not None:
+def subscription_response(subscribe: Callable, unsubscribe: Callable) -> EventSourceResponse:
+    """常驻订阅须在 Uvicorn 等待连接排空时结束，不能等 lifespan shutdown。"""
+    async def frames():
+        q = subscribe()
+        try:
+            yield b': connected\n\n'
+            while True:
+                yield sse_frame(await q.get()).encode("utf-8")
+        finally:
             unsubscribe(q)
+
+    return EventSourceResponse(frames(), sep='\n', ping=PING_SECONDS,
+                               ping_message_factory=lambda: ServerSentEvent(comment="ping", sep='\n'))
 
 
 class StreamDone:

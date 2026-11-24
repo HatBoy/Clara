@@ -31,15 +31,11 @@ def get_target_triple():
 #   启动崩溃，不裁；其余 llms 目录（~90 家小众适配器）与 proxy 子包（49/51，
 #   含独占 20.9MB 的 _experimental）纯惰性——仅用户配置该前缀模型实际调用时
 #   经 PEP 562 __getattr__ → importlib 动态 import，可直接 exclude 零风险
-# - rust_bridge/_native.pyd 是 11.6MB Rust 扩展，loader.get_native_bridge()
-#   对 ImportError 有 try/except → None 优雅回退（Clara 用自写 estimate_tokens，
-#   不依赖 rust 计数）——只排除 _native 本体，.py 桥接层是急切须留
+# - 当前 SDK 启动时从 bindings 直接导入 _native；不得固定裁剪急切依赖。
 # - dashscope 实测不在急切集合，但它是 qwen 前缀的宿主目录（qwencloud.py/
 #   qwen_ai_platform.py）——漏登保留清单即 qwen/ 前缀被裁，教训级条目
-# - PyInstaller 6.22 CLI 无 --exclude-data-files（实测 --help 无此项），
-#   proxy 残留数据文件仅 ~900KB，不值得为此迁 spec 流程——放弃数据剔除
-# - 排除项全是惰性目录，PyInstaller 静态分析本就收不到它们，exclude 实际
-#   只对冲 --collect-submodules=litellm 的全树枚举（6.22 exclude 优先级更高）
+# - 代理管理网页数据由专用 hook 排除；与客户端的 Python 模块裁剪分开。
+# - 排除项同时用于静态清单与依赖图；不要用全树 collect 先导入已排除包。
 #
 # 安全性方向论证：急切探测在 dev 环境（依赖齐全）执行，dev 急切集 ⊇ 冻结态
 # 急切集——探测只用于决定「不裁谁」，偏差方向只会多保留，不会误裁。
@@ -63,7 +59,7 @@ _LITELLM_KEEP_LAZY_PROVIDERS = frozenset({
 
 
 def detect_litellm_import_profile() -> tuple[set[str], Path]:
-    """子进程干净 import litellm → (急切模块集, litellm 包目录)。
+    """子进程测量 SDK 启动与本地模型调用路径 → (须保留模块集, 包目录)。
 
     急/惰集合随 litellm 版本浮动（__init__ 模块级 import 清单与 PEP 562 登记
     表每版都变），写死目录清单必漂移——build 时实测探测是唯一自适配口径。
@@ -77,13 +73,40 @@ def detect_litellm_import_profile() -> tuple[set[str], Path]:
     - check=True：探测失败 fail-fast，不带病静默回退全量打包
     - 取 stdout 末行解析：litellm import 期可能有噪声输出，只认 JSON 行
     """
-    code = ("import json,sys;import litellm;"
-            "print(json.dumps([litellm.__file__]+[m for m in sys.modules"
-            " if m=='litellm' or m.startswith('litellm.')]))")
+    # 模拟一次真实 HTTP 成功响应及鉴权失败，覆盖 completion 延迟加载的公共路径。
+    # 只监听回环、固定假密钥；不调用配置的云模型。
+    code = r"""
+import json, sys, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import litellm
+class LocalModel(BaseHTTPRequestHandler):
+    def log_message(self, *args): pass
+    def do_POST(self):
+        self.rfile.read(int(self.headers['Content-Length']))
+        status = 401 if self.path.startswith('/fail/') else 200
+        body = ({'error': {'message': 'invalid key'}} if status == 401 else
+                {'id':'chatcmpl-test','object':'chat.completion','created':1,'model':'test',
+                 'choices':[{'index':0,'message':{'role':'assistant','content':'pong'},'finish_reason':'stop'}]})
+        data = json.dumps(body).encode()
+        self.send_response(status); self.send_header('Content-Type','application/json')
+        self.send_header('Content-Length',str(len(data))); self.end_headers(); self.wfile.write(data)
+with ThreadingHTTPServer(('127.0.0.1', 0), LocalModel) as server:
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    for model in ('openai/test', 'deepseek/deepseek-chat'):
+        for path in ('/v1', '/fail/v1'):
+            try:
+                result = litellm.completion(model=model, api_key='build-test', timeout=5, num_retries=0,
+                    base_url=f'http://127.0.0.1:{server.server_port}{path}', messages=[{'role':'user','content':'ping'}])
+                assert path == '/v1' and result.choices[0].message.content == 'pong'
+            except litellm.AuthenticationError:
+                if path != '/fail/v1': raise
+    server.shutdown()
+print(json.dumps([litellm.__file__]+[m for m in sys.modules if m=='litellm' or m.startswith('litellm.')]))
+"""
     proc = subprocess.run(
         [sys.executable, "-I", "-X", "utf8", "-c", code],
         capture_output=True, text=True, check=True,
-        env={**os.environ, "LITELLM_LOCAL_MODEL_COST_MAP": "True"})
+        env={**os.environ, "LITELLM_LOCAL_MODEL_COST_MAP": "True", "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1"})
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
     return set(payload[1:]), Path(payload[0]).parent
 
@@ -110,7 +133,7 @@ def build_litellm_excludes(eager_modules: set[str], pkg_dir: Path) -> list[str]:
        db/common_utils/spend_tracking 三子包与 _types.py/types_utils.py/
        proxy_cli.py 三文件；惰性大文件 proxy_server.py 800KB / utils.py
        345KB 等一并裁）
-    ③ litellm.rust_bridge._native 固定项（11.6MB，见文件头注释）
+    ③ 原生扩展仅在实际启动未加载时排除
 
     「惰性 ≠ 无人引用」教训（2026-11-11 首次打包冒烟）：核心层会在运行时
     按需 import 惰性目录（get_llm_provider 每请求先查 litellm.llms.
@@ -139,7 +162,21 @@ def build_litellm_excludes(eager_modules: set[str], pkg_dir: Path) -> list[str]:
 
     return (lazy_subpackages("llms", _LITELLM_KEEP_LAZY_PROVIDERS)
             + lazy_subpackages("proxy", _LITELLM_KEEP_LAZY_PROXY)
-            + ["litellm.rust_bridge._native"])
+            + ([] if "litellm.rust_bridge._native" in eager_modules else ["litellm.rust_bridge._native"]))
+
+
+def litellm_hidden_imports(pkg_dir: Path, eager: set[str], excludes: list[str]) -> list[str]:
+    """静态枚举 SDK 的 Python 模块（含命名空间包），不导入可选代理服务。"""
+    blocked = set(excludes)
+    modules = set(eager)
+    for source in pkg_dir.rglob("*.py"):
+        parts = source.relative_to(pkg_dir).with_suffix("").parts
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        if all(part.isidentifier() for part in parts):
+            modules.add(".".join(("litellm", *parts)))
+    return sorted(name for name in modules if not any(
+        ".".join(name.split(".")[:i]) in blocked for i in range(1, name.count(".") + 2)))
 
 
 def smoke_test(exe_path: Path, log_path: Path) -> None:
@@ -221,9 +258,8 @@ def build_and_move():
     #      litellm/__init__ 顶层读 model_prices_and_context_window_backup.json，
     #      缺了启动即崩——2026-10-11 litellm 引入起就存在的存量打包 bug（此前
     #      打包版从未冒烟过 AI import 链），2026-11-05 减肥冒烟首次暴露
-    #    - lark_oapi 无法精收：lark_oapi/__init__ 顶层 `from .api import *` 且
-    #      api/__init__ 顶层逐域 import——逐域 exclude 会在运行时 ImportError，
-    #      全 api 树（99MB 源码态）只能整收（代码只用 im 域 + ws）
+    #    - 飞书 SDK 根包显式导入的 API 由 Analysis 正常追踪；只额外扫描消息与长连接，
+    #      不执行 SDK 未导入的灰度测试包（部分版本缺少其生成的 department_id）。
     #    - litellm.llms 厂商适配器：2026-11-05 曾有意全保留（模型选择空间），
     #      2026-11-11 用户拍板裁剪——只留国内外常见供应商/聚合商/本地部署
     #      工具栈 + openai/ 前缀 Base URL 通用通道，惰性小众目录动态排除
@@ -243,7 +279,12 @@ def build_and_move():
         "--name", "clara-backend",
         "--collect-submodules=composio",
         "--collect-submodules=composio_client",
-        "--collect-submodules=mcp",
+        # 只遍历 SDK 运行时包；扫描整个 mcp 会导入可选 cli，未装 typer 时直接退出。
+        "--collect-submodules=mcp.client",
+        "--collect-submodules=mcp.server",
+        "--collect-submodules=mcp.shared",
+        "--collect-submodules=mcp.os",
+        "--exclude-module=mcp.cli",
         "--collect-submodules=langchain_mcp_adapters",
         "--collect-submodules=markitdown",
         "--collect-submodules=langgraph",
@@ -252,16 +293,12 @@ def build_and_move():
         # litellm 三件套（import 链散布动态引用与数据文件读取，漏一样启动即崩——
         # 2026-11-05 逐层冒烟剥出：根级 model_prices json → litellm_core_utils.
         # tokenizers 子模块 → tiktoken 编码注册表 → containers/endpoints.json）：
-        # ① 全树子模块 + 单包补扫 litellm_core_utils（collect 对 litellm 全树扫描
-        #    有疏漏，实测 687 个子模块仍漏 core_utils 深层，单包扫 65 个全）
-        # ② collect-data=litellm 收包内全部数据文件（各层 json / tiktoken 编码
-        #    blob / endpoints.json 一次收全，不再逐个 add-data 追）
+        # ① 保留模块从包目录静态枚举（下方写入专用 hook，避免 Windows 命令行超长）。
+        # ② 同一 hook 收集 SDK 数据，只排除代理管理网页；保留价格表、tokenizer 与 endpoints.json。
         # ③ tiktoken_ext 命名空间插件（openai_public 编码注册表）动态发现须全收
-        "--collect-submodules=litellm",
-        "--collect-submodules=litellm.litellm_core_utils",
-        "--collect-data=litellm",
         "--collect-all=tiktoken_ext",
-        "--collect-submodules=lark_oapi",
+        "--collect-submodules=lark_oapi.api.im.v1",
+        "--collect-submodules=lark_oapi.ws",
         "--collect-submodules=dingtalk_stream",
         "--collect-submodules=aibot",
         "--collect-submodules=langchain_core",
@@ -293,8 +330,16 @@ def build_and_move():
     # 机制与教训见文件头注释块
     eager_modules, litellm_pkg_dir = detect_litellm_import_profile()
     litellm_excludes = build_litellm_excludes(eager_modules, litellm_pkg_dir)
-    print(f"✂️ litellm 裁剪：急切 {len(eager_modules)} 模块，"
+    print(f"✂️ litellm 裁剪：启动与客户端调用保留 {len(eager_modules)} 模块，"
           f"exclude {len(litellm_excludes)} 项")
+    hidden = litellm_hidden_imports(litellm_pkg_dir, eager_modules, litellm_excludes)
+    hook_dir = pybuild_dir / "hooks"
+    hook_dir.mkdir(parents=True, exist_ok=True)
+    (hook_dir / "hook-litellm.py").write_text(
+        "from PyInstaller.utils.hooks import collect_data_files\n"
+        "datas = collect_data_files('litellm', excludes=['proxy/_experimental/out'])\n"
+        "hiddenimports = " + json.dumps(hidden, indent=2) + chr(10), encoding="utf-8")
+    args += ["--additional-hooks-dir", str(hook_dir)]
     args += [f"--exclude-module={m}" for m in litellm_excludes]
     # LITELLM_LOCAL_MODEL_COST_MAP=True：collect_submodules 枚举子模块须 import
     # litellm，其顶层会先试拉 GitHub 最新模型价格表（国内网络不通，三次重试

@@ -59,6 +59,12 @@ _AVOID_MONTHEND_RE = re.compile(
     r"[^，。；;！？\s]{0,6}?"
     r"(别排|不排|留空|空着|别安排|不安排|不要排|别放|不留|留白)")
 
+# 钟点红线只认设置页自定义哲学的完整陈述，不能把引用或附带例外的句子当命令。
+_CUSTOM_FRIDAY = re.compile(
+    r"\[自定义哲学\]\s*(?:每(?:个|逢)?)?(?:周五|星期五)\s*(?:下午\s*[4四]点|16[:：]00)"
+    r"\s*(?:以|之)?后[，, ]*(?:绝不安排|禁止安排)任何(?:工作|任务|日程)[。！!]?"
+)
+
 _CLOCK_RE = re.compile(r"[0-9一二两三四五六七八九十]+点")
 
 _GENERIC_OBJ_RE = re.compile(r"^(?:[，。；;！？\s]|$|(?:事|会|任务|日程|安排|活动|东西))")
@@ -105,6 +111,12 @@ def parse_avoid_windows(rules: list[str]) -> list[dict]:
         m_conf = _AI_CONF_RE.search(raw)
         if m_conf is not None and _rule_confidence(m_conf) < _LOW_CONF_HARDGATE_MIN:
             continue
+        if _CUSTOM_FRIDAY.fullmatch(raw.strip()):
+            windows.append({"weekday": 4, "start_min": 960, "end_min": 1440,
+                            "rule": raw.strip(), "hard": True})
+            continue
+        if raw.startswith("[自定义哲学]") and re.search(r"\d{1,2}[:：]\d{2}", raw):
+            continue  # 避免宽松的时段解析截取未识别的钟点句，误判整日禁排
         win: dict | None = None
         # 复杂形态先行（批 6）：「工作日上午不排会」里的「上午…不排」同时命中
         # 基础形态——若基础先行会把工作日语义降级成"每天上午"，A/B 判定须在前
@@ -129,6 +141,9 @@ def parse_avoid_windows(rules: list[str]) -> list[dict]:
                        "start_min": lo, "end_min": hi, "rule": raw.strip()}
                 break  # 一条规则取首个合法表达（规范陈述一句话一窗）
         if win is not None:
+            paused = re.match(r"^\[仅在(\d{4}-\d{2}-\d{2})之后执行\]", raw)
+            if paused:
+                win["pause_until"] = paused[1]
             windows.append(win)
     _CACHE = (key, windows)
     return windows
@@ -167,11 +182,13 @@ def hits_window(start: datetime, duration: int, windows: list[dict]) -> dict | N
         else:
             start_fit = (w.get("weekday") is None
                          or start.weekday() == w["weekday"])
+        if w.get("pause_until", "") >= start.date().isoformat():
+            start_fit = False
         if start_fit and s_min < w["end_min"] and e_min > w["start_min"]:
             return w
         # 跨午夜顺修：次日侧的时段窗按次日分钟判定（周五 23:30 的槽撞周六
         # 上午窗——旧版被起点 weekday 判定短路漏拦）
-        if (cross and w.get("weekday") is not None
+        if (cross and w.get("pause_until", "") < end.date().isoformat() and w.get("weekday") is not None
                 and end.weekday() == w["weekday"]):
             e_next = e_min - 24 * 60
             if 0 < e_next < w["end_min"] and e_next > w["start_min"]:

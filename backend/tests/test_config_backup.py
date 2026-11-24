@@ -36,11 +36,11 @@ def test_roundtrip_restores_all_columns(fresh_db):
     with TestingSessionLocal() as db:
         _fill_config(db)
         snap = cb.dump_config(db)
-        assert snap["model_providers"][0]["api_key"] == "sk-123"
+        assert "api_key" not in snap["model_providers"][0]
         total = cb.restore_config(db, snap)  # 先清后插幂等：原地恢复
         assert total >= 3
         row = db.get(ModelProvider, "m1")
-        assert row.is_active and row.api_key == "sk-123"
+        assert row.is_active and row.api_key is None
         assert row.last_test_at == datetime(2026, 10, 21, 20, 0)
         cli = db.get(CliTool, "custom:x")
         assert cli.custom_argv == ["foo", "--json", "{since}"]  # JSON 列对象往返
@@ -59,7 +59,7 @@ def test_maybe_restore_recovers_after_db_rebuild(monkeypatch, fresh_db, snap_pat
         db.commit()
         rebuilt = cb.maybe_restore_and_snapshot(db)
         assert rebuilt is True
-        assert db.get(ModelProvider, "m1").api_key == "sk-123"   # 四表全空 → 恢复
+        assert db.get(ModelProvider, "m1").api_key is None   # 四表全空 → 恢复
         assert db.get(CliTool, "custom:x").custom_argv is not None
 
 

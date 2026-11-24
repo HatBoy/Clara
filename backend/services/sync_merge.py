@@ -20,6 +20,7 @@ analyze dry-run → 用户选冲突策略 → apply），支持双 zip 格式。
 
 import json
 import logging
+from services.device_secrets import portable, portable_update
 import shutil
 import sqlite3
 import tempfile
@@ -82,7 +83,7 @@ def load_zip_tables(path: str) -> dict[str, list[dict]]:
                 rows = data.get("rows") if isinstance(data, dict) else None
                 if not isinstance(rows, list):
                     raise ValueError(f"表文件格式异常（{name}）")
-                tables[name] = rows
+                tables[name] = [portable(name, row) for row in rows]
         elif app == "clara":
             # 备份格式：zip 内整库 clara.db → tmp 解包只读 dump
             if "clara.db" not in norm:
@@ -142,7 +143,7 @@ def analyze_merge(db: Session, path: str) -> dict:
     from services.sync_engine import NATURAL_KEYS, find_by_natural_key
 
     tables = load_zip_tables(path)
-    new_count = updated_count = 0
+    new_count = updated_count = protected_count = 0
     per_table: dict[str, dict] = {}
     conflicts: list[dict] = []
     for name in SYNC_TABLES:
@@ -167,8 +168,11 @@ def analyze_merge(db: Session, path: str) -> dict:
                 t_new += 1
             elif not row_codec.rows_equal(row, local_row, cols):
                 t_upd += 1
+                protected = name == "memory_rules" and local_row.get("source") in ("chat", "user_manual")
+                protected_count += int(protected)
                 if len(conflicts) < 50:
                     conflicts.append({
+                        "protected_rule": local_row.get("content") if protected else None,
                         "table": name,
                         "pk": str(key)[:12],
                         "local_updated_at": local_row.get("updated_at") or local_row.get("created_at"),
@@ -179,7 +183,7 @@ def analyze_merge(db: Session, path: str) -> dict:
             new_count += t_new
             updated_count += t_upd
     return {"ok": True, "new_count": new_count, "updated_count": updated_count,
-            "tables": per_table, "conflicts": conflicts}
+            "tables": per_table, "conflicts": conflicts, "protected_count": protected_count}
 
 
 def apply_merge(db: Session, path: str, strategy: str) -> dict:
@@ -228,10 +232,15 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
                             skipped += 1
                             continue
                         key, local_row, collided = hit[pk], hit, True
-                if row_codec.rows_equal(row, local_row, body_cols):
-                    continue
-                if strategy != "overwrite":
+                if name == 'proposals' and ('_decisions' in (row.get('payload') or {}) or
+                                            '_decisions' in (local_row.get('payload') or {})):
+                    # 指纹回执是已执行副作用，不是可随旧备份丢弃的普通内容。
+                    from services.proposal_decisions import merge_synced
+                    row = merge_synced(local_row, row, row if strategy == 'overwrite' else local_row)
+                elif strategy != 'overwrite' and not row_codec.rows_equal(row, local_row, body_cols):
                     skipped += 1
+                    continue
+                if row_codec.rows_equal(row, local_row, body_cols):
                     continue
                 if collided:
                     lt, rt = row_codec.row_ts(local_row), row_codec.row_ts(row)
@@ -239,7 +248,7 @@ def apply_merge(db: Session, path: str, strategy: str) -> dict:
                         skipped += 1  # 本地较新：备份让位（LWW）
                         continue
                 # overwrite：备份内容落本地（自然键撞车场景落在本地 pk 上）
-                values = row_codec.writable_row(table, row)
+                values = row_codec.writable_row(table, portable_update(name, row, local_row))
                 values[pk] = key
                 if "updated_at" in cols:
                     values["updated_at"] = now

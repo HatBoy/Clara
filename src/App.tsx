@@ -67,12 +67,9 @@ import {
   entryHasSource,
   ingestItemsOf,
   isIngestProposal,
-  resolveProposal,
-  settleProposalItems,
-  type AiProposal,
+  decideProposal,
+  type ProposalDecision,
   type DraftPlanItem,
-  type EvidenceEntry,
-  type InboxItem,
 } from "./lib/ai";
 import { applyTheme, DEFAULT_SETTINGS, type Settings } from "./lib/settings";
 import { playSound } from "./lib/sound";
@@ -183,8 +180,9 @@ function App() {
   // 仅主窗口内存态（不经 notifyPeer——widget 无画布消费方）
   const [aiDraft, setAiDraft] = useState<{ proposalId: string; items: DraftPlanItem[] } | null>(null);
   // 批量排期弹窗（2026-10-25 功能边界批）：bulk 帧载荷（引擎草案 + 卡行 id），
-  // 确认走 applyDraftItems 改期路径 + 卡行结清；null = 无弹窗
-  const [bulkDraft, setBulkDraft] = useState<{ proposalId: string; items: DraftPlanItem[] } | null>(null);
+  // 草案条目标识随快照保存，重试沿用同一份选择。
+  const [bulkDraft, setBulkDraft] = useState<{ proposalId: string; items: DraftPlanItem[]; ids: string[] } | null>(null);
+  const [decisionError, setDecisionError] = useState("");
   const [bulkSubmitting, setBulkSubmitting] = useState(false);
   // AI 面板刷新信号：工作流事件流收 morning/ingest/nightly 即递增——
   // 建议卡与消息是后端真值，SSE 载荷不携带全量，递增 key 让 CopilotPanel 重拉
@@ -899,457 +897,38 @@ function App() {
 
   // —— AI 排期草案（阶段二）：幽灵方块驱动与采纳落库 ——
 
-  // 草案条目批量落库（当前草案采纳与历史 schedule 提案采纳共用）：有 task_id 且任务
-  // 仍在 = 已有待办改排期（handleScheduleChange 乐观 + 写回 + widget 同步一条龙）；
-  // 否则（无 task_id 或任务已被删）= 新建任务（id 后端生成，await 后 upsert + widget
-  // 同步，模式同 handleCreateTask 尾段）。任一条目失败即中止返回 false——已应用条目
-  // 保留（后端真值已在，刷新自愈），未应用条目随草案重试
-  const applyDraftItems = async (items: DraftPlanItem[]): Promise<boolean> => {
-    for (const item of items) {
-      try {
-        const g = draftToGhost(item);
-        if (item.task_id && tasks.some((t) => t.id === item.task_id)) {
-          handleScheduleChange(item.task_id, g.dateOffset, g.start, g.end);
-        } else {
-          const created = await createTask({
-            title: item.title,
-            start_time: item.start,
-            end_time: scheduleToISO(g.dateOffset, g.end),
-            priority: item.priority, // 明示重要 → 高优直判随采纳落库
-            // 溯源三键透传（2026-10-24 直排批）：数据源页 schedule 条目确认与
-            // inbox 条目手选时间直排不丢来源——教练咨询回放素材的地基
-            ...(item.source_ref?.source_key
-              ? { source_key: item.source_ref.source_key }
-              : {}),
-            // 编辑附加键透传（2026-10-26 收件箱 UI 对齐批）：数据源页编辑态组装的
-            // 备注与重复规则预设（草稿条目量小，非重复建议不影响原通路）
-            ...(item.notes ? { notes: item.notes } : {}),
-            ...(item.recurrence
-              ? { recurrence_rule: toRrule(item.recurrence) ?? undefined }
-              : {}),
-            ...(item.source_ref?.fingerprint
-              ? { source_fingerprint: item.source_ref.fingerprint }
-              : {}),
-            ...(item.evidence ? { source_evidence: item.evidence } : {}),
-          });
-          const frontend = toFrontendTask(created, projectNameById);
-          upsertTasks([frontend]);
-          notifyPeer("main", { kind: "upsert", tasks: [frontend] });
-        }
-      } catch (e) {
-        console.error("应用草案条目失败", e);
-        return false;
-      }
-    }
-    return true;
-  };
-
-  // 当前幽灵方块草案采纳已并入 handleAcceptProposal（2026-10-17 双击重复日程 bug
-  // 修复）：曾存在 isCurrentDraft 分叉——首击走本函数只落库不回写面板卡片状态（按钮
-  // 区不消失），二击换走 handleAcceptProposal 重复 applyDraftItems，createTask 非幂等
-  // 产生两条重复日程。统一单路径 + 下方防重闸后删除本分叉。
-
-  // inbox 建议条目批量落库（M1-②）：不带 start_time 建任务即入收件箱（sort_order
-  // 排末 / ever_scheduled=False 后端自动）。语义与 applyDraftItems 逐字对齐：任一条
-  // 失败返回 false（建议整卡按 rejected 回写——部分成功条目保留，刷新自愈）
-  const applyInboxItems = async (items: InboxItem[]): Promise<boolean> => {
-    for (const item of items) {
-      try {
-        const created = await createTask({
-          title: item.title,
-          ...(item.duration ? { duration_mins: item.duration } : {}),
-          ...(item.notes ? { notes: item.notes } : {}),
-          // 优先级透传（2026-10-24 数据源页样式对齐批）：编辑态可改，null/越界回落库默认 2
-          ...(item.priority ? { priority: item.priority } : {}),
-          // 溯源三键透传（2026-10-23）：采集建议采纳不丢来源——教练咨询该任务时
-          // 按此回放素材摘录
-          ...(item.source_ref?.source_key ? { source_key: item.source_ref.source_key } : {}),
-          ...(item.source_ref?.fingerprint
-            ? { source_fingerprint: item.source_ref.fingerprint } : {}),
-          ...(item.evidence ? { source_evidence: item.evidence } : {}),
-          // 重复规则预设透传（2026-10-26 收件箱 UI 对齐批）：未排期建任务随
-          // recurrence_rule 落库成系列；Reduce 产物不带该键，原通路零影响
-          ...(item.recurrence
-            ? { recurrence_rule: toRrule(item.recurrence) ?? undefined }
-            : {}),
-        });
-        const frontend = toFrontendTask(created, projectNameById);
-        upsertTasks([frontend]);
-        notifyPeer("main", { kind: "upsert", tasks: [frontend] });
-      } catch (e) {
-        console.error("应用收件箱条目失败", e);
-        return false;
-      }
-    }
-    return true;
-  };
-
-  // 高难协助步骤批量落库（2026-10-20）：镜像 applyInboxItems——steps 是纯标题
-  // （拆解步骤，不带估时/备注、不占用 parent_id 墓碑语义），逐条入收件箱；
-  // 任一失败返回 false（整卡 rejected 回写——部分成功条目保留，刷新自愈）
-  const applyHardtaskSteps = async (steps: string[]): Promise<boolean> => {
-    for (const step of steps) {
-      try {
-        const created = await createTask({ title: step });
-        const frontend = toFrontendTask(created, projectNameById);
-        upsertTasks([frontend]);
-        notifyPeer("main", { kind: "upsert", tasks: [frontend] });
-      } catch (e) {
-        console.error("应用协助步骤失败", e);
-        return false;
-      }
-    }
-    return true;
-  };
-
-  // 采纳防重闸（2026-10-17）：面板乐观置徽标卸载按钮已挡住绝大多数重复点击，此闸
-  // 兜底两类窗口——双击竞态（乐观态刷新前二次触发）与"应用失败重拉回待处理后再点"。
-  // 带副作用的分支进入即记 id；应用失败移除放行重试；无副作用分支不占闸（回写幂等）
-  const settledInFlightRef = useRef<Set<string>>(new Set());
-
-  // 建议卡采纳（App 统一处理，2026-10-17 起含当前幽灵方块草案——单路径）：schedule =
-  // 从 payload 重建草案应用；inbox = 逐条建任务入收件箱；delete = 逐条走既有整删
-  // 管线（无 opts；非重复任务安全）；hardtask = 拆解步骤逐条入收件箱（2026-10-20）；
-  // 其余仅回写。面板已乐观置徽标，失败下次重拉自愈回待处理
-  const handleAcceptProposal = (proposal: AiProposal) => {
-    if (settledInFlightRef.current.has(proposal.id)) return;
-    settledInFlightRef.current.add(proposal.id);
-    if (proposal.kind === "schedule") {
-      const items = (proposal.payload.draft_plan as DraftPlanItem[]) ?? [];
-      if (aiDraft?.proposalId === proposal.id) setAiDraft(null);
-      void applyDraftItems(items).then((ok) => {
-        if (!ok) settledInFlightRef.current.delete(proposal.id);
-        void resolveProposal(proposal.id, ok ? "accepted" : "rejected").catch((e) =>
-          console.error("建议回写失败", e),
-        );
-      });
-    } else if (proposal.kind === "delete") {
-      const items = (proposal.payload.tasks as { task_id: string }[]) ?? [];
-      items.forEach((it) => it.task_id && handleDeleteTask(it.task_id));
-      void resolveProposal(proposal.id, "accepted").catch((e) => console.error("建议回写失败", e));
-    } else if (proposal.kind === "inbox") {
-      const items = (proposal.payload.items as InboxItem[]) ?? [];
-      void applyInboxItems(items).then((ok) => {
-        if (!ok) settledInFlightRef.current.delete(proposal.id);
-        void resolveProposal(proposal.id, ok ? "accepted" : "rejected").catch((e) =>
-          console.error("建议回写失败", e),
-        );
-      });
-    } else if (proposal.kind === "hardtask") {
-      // 拆解步骤逐条入收件箱（语义同 inbox：原任务不动，采纳只建步骤待办）
-      const steps = (proposal.payload.steps as string[]) ?? [];
-      void applyHardtaskSteps(steps).then((ok) => {
-        if (!ok) settledInFlightRef.current.delete(proposal.id);
-        void resolveProposal(proposal.id, ok ? "accepted" : "rejected").catch((e) =>
-          console.error("建议回写失败", e),
-        );
-      });
-    } else {
-      settledInFlightRef.current.delete(proposal.id); // 仅回写无副作用，不占闸
-      void resolveProposal(proposal.id, "accepted").catch((e) => console.error("建议回写失败", e));
-    }
-  };
-
-  // 草案卡编辑后采纳（2026-10-25 问题 3 修复）：面板逐条编辑（标题/时间/耗时/
-  // 优先级）的条目走 applyDraftItems 落库 + modified 回写——modified 从旧版
-  // 「点击即回写的假修改」变真（统计口径不再失真）。防重闸同 handleAcceptProposal
-  const handleModifyProposal = (proposal: AiProposal, items: DraftPlanItem[]) => {
-    if (settledInFlightRef.current.has(proposal.id)) return;
-    settledInFlightRef.current.add(proposal.id);
-    if (aiDraft?.proposalId === proposal.id) setAiDraft(null);
-    void applyDraftItems(items).then((ok) => {
-      if (!ok) settledInFlightRef.current.delete(proposal.id);
-      // appliedEntries（优化批 4）：编辑后条目随结算回传——后端比对快照产
-      // modified_diff，夜间反思链学习「用户把建议改成了什么」（改时间=时段
-      // 偏好、改时长=估时修正的最强信号）
-      void resolveProposal(proposal.id, ok ? "modified" : "rejected", undefined,
-        ok ? items : undefined).catch((e) =>
-        console.error("建议回写失败", e),
-      );
-    });
-  };
-
-  // 条目卡编辑后采纳（2026-11-11 三件套统一批）：inbox 卡 / minutes 卡（溯源
-  // 组装同采纳路）/ hardtask 卡（步骤纯标题）——落库通路各复用既有 apply 函数，
-  // modified 回写带 appliedEntries（反思链学习「用户把建议改成了什么」）。防重
-  // 闸同 handleModifyProposal
-  const handleModifyInbox = (proposal: AiProposal, items: InboxItem[]) => {
-    if (settledInFlightRef.current.has(proposal.id)) return;
-    settledInFlightRef.current.add(proposal.id);
-    void applyInboxItems(items).then((ok) => {
-      if (!ok) settledInFlightRef.current.delete(proposal.id);
-      void resolveProposal(proposal.id, ok ? "modified" : "rejected", undefined,
-        ok ? items : undefined).catch((e) =>
-        console.error("建议回写失败", e),
-      );
-    });
-  };
-
-  const handleModifyMinutes = (proposal: AiProposal, items: InboxItem[]) => {
-    if (settledInFlightRef.current.has(proposal.id)) return;
-    settledInFlightRef.current.add(proposal.id);
-    const srcItems = assembleMinutesItems(proposal, items);
-    void applyInboxItems(srcItems).then((ok) => {
-      if (!ok) settledInFlightRef.current.delete(proposal.id);
-      void resolveProposal(proposal.id, ok ? "modified" : "rejected", undefined,
-        ok ? srcItems : undefined).catch((e) =>
-        console.error("建议回写失败", e),
-      );
-    });
-  };
-
-  const handleModifySteps = (proposal: AiProposal, steps: string[]) => {
-    if (settledInFlightRef.current.has(proposal.id)) return;
-    settledInFlightRef.current.add(proposal.id);
-    const applied = steps.map((s) => ({ title: s })); // applied_entries 条目形态（title 可比）
-    void applyHardtaskSteps(steps).then((ok) => {
-      if (!ok) settledInFlightRef.current.delete(proposal.id);
-      void resolveProposal(proposal.id, ok ? "modified" : "rejected", undefined,
-        ok ? applied : undefined).catch((e) =>
-        console.error("建议回写失败", e),
-      );
-    });
-  };
-
-  // 草案卡转收件箱（2026-10-25）：承接「不排期但保留为待办」心智——条目剥时间
-  // 转 InboxItem 形态入收件箱（优先级/溯源透传，source_ref 缺失时从 evidence 按
-  // idx 补——同数据源页口径），整卡按 accepted 结清（建议内容有效只是不排期）
-  const handleSendToInbox = (proposal: AiProposal) => {
-    if (settledInFlightRef.current.has(proposal.id)) return;
-    settledInFlightRef.current.add(proposal.id);
-    if (aiDraft?.proposalId === proposal.id) setAiDraft(null);
-    const drafts = (proposal.payload.draft_plan as DraftPlanItem[]) ?? [];
-    const evidence = (proposal.payload.evidence as EvidenceEntry[] | undefined) ?? [];
-    const items: InboxItem[] = drafts.map((it, i) => {
-      // 溯源：evidence 全键组装 InboxItem.source_ref 形态（条目自带缩形
-      // source_ref 时其 source_key/fingerprint 优先）；chat 轮草案无源 → null
-      const ev = evidence.find((e) => e.idx === i);
-      const ref: InboxItem["source_ref"] = ev
-        ? {
-            source: ev.source,
-            source_key: it.source_ref?.source_key || ev.source_key,
-            item_id: ev.item_id,
-            title: ev.title,
-            time: ev.time,
-            fingerprint: it.source_ref?.fingerprint || ev.fingerprint,
-          }
-        : null;
-      return {
-        title: it.title,
-        ...(it.duration ? { duration: it.duration } : {}),
-        ...(it.priority ? { priority: it.priority } : {}),
-        ...(it.evidence ? { evidence: it.evidence } : {}),
-        source_ref: ref,
-      };
-    });
-    void applyInboxItems(items).then((ok) => {
-      if (!ok) settledInFlightRef.current.delete(proposal.id);
-      void resolveProposal(proposal.id, ok ? "accepted" : "rejected").catch((e) =>
-        console.error("建议回写失败", e),
-      );
-    });
-  };
-
-  // 会后纪要条目溯源组装（采纳与编辑确认两路共用，2026-11-11 提取）：
-  // source_key="minutes:<会议id>"（浮层回看按此前缀匹配）+ notes 来源前缀
-  const assembleMinutesItems = (proposal: AiProposal, items: InboxItem[]): InboxItem[] => {
-    const mtId = typeof proposal.payload.meeting_task_id === "string"
-      ? proposal.payload.meeting_task_id : null;
-    const mtTitle = typeof proposal.payload.meeting_title === "string"
-      ? proposal.payload.meeting_title : null;
-    const originNote = mtTitle ? `来自《${mtTitle}》纪要` : "来自会议纪要";
-    return items.map((it) => ({
-      ...it,
-      notes: it.notes ? `${it.notes}（${originNote}）` : originNote,
-      source_ref: mtId
-        ? {
-            source: "minutes",
-            source_key: `minutes:${mtId}`,
-            item_id: mtId,
-            title: mtTitle ?? "会议",
-            time: null,
-            fingerprint: "", // 无指纹语义（纪要非采集源，无防重诉求），空串落库时被 falsy 跳过
-          }
-        : null,
-    }));
-  };
-
-  // 会后纪要采纳（2026-11-10）：全量条目入收件箱（applyInboxItems 同款通路，
-  // 溯源组装 assembleMinutesItems）；零条目（零行动项卡）= 纯回写 accepted。
-  // 2026-11-11 三件套对齐：卡面勾选与「采纳并安排」直排退役——选择性取舍走
-  // 卡编辑态逐条删除，直排走收件箱单卡智能安排。防重闸同上
-  const handleAcceptMinutes = (proposal: AiProposal, items: InboxItem[]) => {
-    if (settledInFlightRef.current.has(proposal.id)) return;
-    settledInFlightRef.current.add(proposal.id);
-    if (items.length === 0) {
-      settledInFlightRef.current.delete(proposal.id); // 无副作用不占闸（回写幂等）
-      void resolveProposal(proposal.id, "accepted").catch((e) =>
-        console.error("建议回写失败", e),
-      );
-      return;
-    }
-    void applyInboxItems(assembleMinutesItems(proposal, items)).then((ok) => {
-      if (!ok) settledInFlightRef.current.delete(proposal.id);
-      void resolveProposal(proposal.id, ok ? "accepted" : "rejected").catch((e) =>
-        console.error("建议回写失败", e),
-      );
-    });
-  };
-
-  // 数据源页单条结算（2026-10-24）：直接确认（accepted）与编辑后确认（modified）
-  // 共一条通路——先落库该条（既有 apply 通路，溯源三键/优先级随条目透传），成功后
-  // 调 settle-items 收缩卡（失败仅日志：条目已入库，返回仍 true 防用户重试造成
-  // 重复落库——外部重拉若复活该条目属低概率窗口，登记 tech-debt）。防重闸键 =
-  // `${id}#${idx}` 条目级（组头批量与单点并发安全）
-  const handleSettleItem = async (
-    proposal: AiProposal,
-    index: number,
-    item: InboxItem | DraftPlanItem,
-    outcome: "accepted" | "modified",
-  ) => {
-    const gate = `${proposal.id}#${index}`;
-    if (settledInFlightRef.current.has(gate)) return false;
-    settledInFlightRef.current.add(gate);
-    // 路由按条目形态而非 proposal.kind（2026-10-24 直排批）：inbox 条目手选了
-    // 排期时间时面板组装 DraftPlanItem 形态（start 非空）→ 走 applyDraftItems
-    // 直接带 start 建任务进日历；未选时间 → applyInboxItems 入收件箱
-    const ok =
-      proposal.kind === "schedule" || (item as DraftPlanItem).start
-        ? await applyDraftItems([item as DraftPlanItem])
-        : await applyInboxItems([item as InboxItem]);
-    if (!ok) {
-      settledInFlightRef.current.delete(gate);
-      return false;
-    }
+  // 建任务、改期、删除和结算都由同一个后端事务负责。响应丢失也重新拉取两端真值。
+  const handleDecide = async (id: string, items: ProposalDecision[]) => {
+    if (!items.length || items.some(it => !it.item_id)) throw new Error("建议已变更，请刷新");
     try {
-      // appliedEntries（优化批 4）：条目级编辑后确认同享 modified 回流
-      await settleProposalItems(proposal.id, [index], outcome,
-        outcome === "modified" ? [item] : undefined);
-    } catch (e) {
-      console.error("条目结算收缩失败（条目已落库）", e);
-    }
-    return true;
-  };
-
-  // 数据源条目智能排期（2026-10-26 收件箱 UI 对齐批）：有日期（schedule 条目 /
-  // inbox 手选时间）与确认同路径直落日历；无日期 = 先建任务入收件箱（溯源三键 /
-  // 优先级 / 备注与重复规则预设随条目透传）再调统一引擎 auto-schedule——引擎无
-  // 空档（422）或异常时任务留在收件箱不丢，条目照常结清不复活，面板按 scheduled
-  // 区分提示。防重闸键与 handleSettleItem 同口径（条目级 `${id}#${idx}`）
-  const handleSmartScheduleItem = async (
-    proposal: AiProposal,
-    index: number,
-    item: InboxItem | DraftPlanItem,
-  ): Promise<{ ok: boolean; scheduled: boolean }> => {
-    const gate = `${proposal.id}#${index}`;
-    if (settledInFlightRef.current.has(gate)) return { ok: false, scheduled: false };
-    settledInFlightRef.current.add(gate);
-    // 有日期：直落日历（applyDraftItems + settle，镜像 handleSettleItem 的
-    // schedule 分支——不改 outcome 语义，智能排期对已排期条目按原时间落库）
-    if (proposal.kind === "schedule" || (item as DraftPlanItem).start) {
-      const ok = await applyDraftItems([item as DraftPlanItem]);
-      if (!ok) {
-        settledInFlightRef.current.delete(gate);
-        return { ok: false, scheduled: false };
-      }
-      try {
-        await settleProposalItems(proposal.id, [index], "accepted");
-      } catch (e) {
-        console.error("条目结算收缩失败（条目已落库）", e);
-      }
-      return { ok: true, scheduled: true };
-    }
-    // 无日期：建任务 → 引擎排期（失败留收件箱）
-    try {
-      const it = item as InboxItem;
-      const created = await createTask({
-        title: it.title,
-        ...(it.duration ? { duration_mins: it.duration } : {}),
-        ...(it.notes ? { notes: it.notes } : {}),
-        ...(it.priority ? { priority: it.priority } : {}),
-        ...(it.recurrence
-          ? { recurrence_rule: toRrule(it.recurrence) ?? undefined }
-          : {}),
-        ...(it.source_ref?.source_key ? { source_key: it.source_ref.source_key } : {}),
-        ...(it.source_ref?.fingerprint
-          ? { source_fingerprint: it.source_ref.fingerprint }
-          : {}),
-        ...(it.evidence ? { source_evidence: it.evidence } : {}),
-      });
-      const base = toFrontendTask(created, projectNameById);
-      upsertTasks([base]);
-      notifyPeer("main", { kind: "upsert", tasks: [base] });
-      let scheduled = false;
-      try {
-        const updated = await autoScheduleTask(created.id);
-        const frontend = toFrontendTask(updated, projectNameById);
-        upsertTasks([frontend]);
-        notifyPeer("main", { kind: "upsert", tasks: [frontend] });
-        scheduled = true;
-      } catch (e) {
-        // 引擎无空档/异常：任务已留收件箱（不丢），返回降级口径由面板提示
-        console.error("智能排期失败（任务已留收件箱）", e);
-      }
-      try {
-        await settleProposalItems(proposal.id, [index], "accepted");
-      } catch (e) {
-        console.error("条目结算收缩失败（条目已落库）", e);
-      }
-      return { ok: true, scheduled };
-    } catch (e) {
-      console.error("智能排望建任务失败", e);
-      settledInFlightRef.current.delete(gate);
-      return { ok: false, scheduled: false };
+      return await decideProposal(id, items);
+    } finally {
+      reloadTasks();
+      setAiRefreshKey(k => k + 1);
     }
   };
 
-  // 数据源条目拖入日历直排（2026-10-24 需求 2）：落点即排期时间——建任务（溯源
-  // 三键/优先级随 suggest 载荷透传，无耗时只有开始时刻一小时卡）+ upsert 画布即
-  // 现 + settle-items 结算一步完成，不经收件箱中转。结算 await 完成后才递增
-  // aiRefreshKey 触发面板/徽标重拉——顺序执行避开「重拉早于 outcome 回写卡复活」
-  // 的既有竞态（结算路径不触发重拉的纪律不破：这里的重拉在写库之后）
-  const handleSuggestDrop = async (
-    todo: DraggedTodoWithSuggest,
-    dateOffset: number,
-    start: number,
-  ) => {
+  const handleSuggestDrop = async (todo: DraggedTodoWithSuggest, dateOffset: number, start: number) => {
     const s = todo.suggest;
     if (!s) return;
-    const end = s.duration ? start + s.duration / 60 : undefined;
+    setDecisionError("");
     try {
-      const created = await createTask({
-        title: todo.title,
-        start_time: scheduleToISO(dateOffset, start),
-        ...(end !== undefined ? { end_time: scheduleToISO(dateOffset, end) } : {}),
-        ...(s.priority ? { priority: s.priority } : {}),
-        ...(s.notes ? { notes: s.notes } : {}),
-        ...(s.source?.source_key ? { source_key: s.source.source_key } : {}),
-        ...(s.source?.fingerprint ? { source_fingerprint: s.source.fingerprint } : {}),
-      });
-      const frontend = toFrontendTask(created, projectNameById);
-      upsertTasks([frontend]);
-      notifyPeer("main", { kind: "upsert", tasks: [frontend] });
-    } catch (e) {
-      console.error("数据源条目拖拽落库失败", e);
-      setAiRefreshKey((k) => k + 1); // 建库失败：条目仍在面板，重拉恢复可重试
-      return;
+      await handleDecide(s.proposalId, [{ item_id: s.itemId, action: "schedule", entry: {
+        start: scheduleToISO(dateOffset, start), duration: todo.minutes ?? 60,
+      } }]);
+    } catch {
+      setDecisionError("未确认写入，请按刷新后的建议重试。已结算条目不会重复创建。");
     }
-    try {
-      await settleProposalItems(s.proposalId, [s.index], "accepted");
-    } catch (e) {
-      console.error("条目结算收缩失败（条目已落库）", e);
-    }
-    setAiRefreshKey((k) => k + 1);
   };
 
   // 数据源页徽标（2026-10-24 改条目数口径——一卡多条拆条渲染后卡数与页面视觉
   // 对不上）：挂载初拉 + 工作流事件重拉 + 切页重拉（activeView——面板自拉只在
   // 打开时刷新面板 state，徽标若不随切页重拉会出现「页里 6 条徽标 0」的错位）；
-  // 无来源条目不计（entryHasSource，与面板分组过滤同口径）；面板结算走乐观减
-  // （onItemsSettled）不经此通道。失败静默——徽标非关键路径
+  // 徽标只按重新读取的待处理条目计数。
   useEffect(() => {
+    let current = true;
     fetchAiProposals(true)
-      .then((rows) =>
+      .then((rows) => current &&
         setDsPendingCount(
           rows
             .filter(isIngestProposal)
@@ -1360,6 +939,7 @@ function App() {
         ),
       )
       .catch(() => {});
+    return () => { current = false; };
   }, [aiRefreshKey, activeView]);
 
   // chat 的 draft 事件：置幽灵方块（叠画中栏日视图，仅查看日命中项渲染）
@@ -1377,31 +957,21 @@ function App() {
     notifyPeer("main", { kind: "upsert", tasks: frontend });
   };
 
-  // 批量排期弹窗确认（2026-10-25 功能边界批）：勾选条目经 applyDraftItems
-  //（task_id 命中即改期）落库后结清建议行；防重闸同 handleAcceptProposal——
-  // 部分勾选也整卡 accepted（未勾任务不丢，留在收件箱未排期，可再触发批量）
-  const handleBulkConfirm = async (items: DraftPlanItem[]) => {
-    if (!bulkDraft || settledInFlightRef.current.has(bulkDraft.proposalId)) return;
-    const id = bulkDraft.proposalId;
-    settledInFlightRef.current.add(id);
+  // 一次提交整份选择；未勾选是跳过，不是拒绝数据源。
+  const handleBulkConfirm = async (selected: number[] | null) => {
+    if (!bulkDraft || bulkSubmitting) return;
     setBulkSubmitting(true);
-    const ok = await applyDraftItems(items);
-    if (!ok) settledInFlightRef.current.delete(id);
-    void resolveProposal(id, ok ? "accepted" : "rejected").catch((e) =>
-      console.error("批量建议回写失败", e),
-    );
-    setBulkSubmitting(false);
-    setBulkDraft(null);
-  };
-
-  // 批量排期弹窗取消：建议行按 rejected 结清（采纳率统计信号），任务不动
-  const handleBulkCancel = () => {
-    if (bulkDraft) {
-      void resolveProposal(bulkDraft.proposalId, "rejected").catch((e) =>
-        console.error("批量建议回写失败", e),
-      );
-    }
-    setBulkDraft(null);
+    setDecisionError("");
+    try {
+      await handleDecide(bulkDraft.proposalId, bulkDraft.ids.map((item_id, i) => ({
+        item_id, action: selected === null ? "reject" : selected.includes(i) ? "accept" : "skip",
+      })));
+      setBulkDraft(null);
+    } catch (e) {
+      const conflict = (e as {status?: number}).status === 409;
+      setDecisionError(conflict ? "建议已被其他操作更改，请查看最新状态。" : "未收到写入回执，请重试。");
+      if (conflict) setBulkDraft(null);
+    } finally { setBulkSubmitting(false); }
   };
 
   // 设置页打开（助手面板引导卡可指定初始分区直达）
@@ -1529,6 +1099,7 @@ function App() {
   return (
     <div className="app">
       {/* 首拉反馈：新装机后台同步中（数据到达经 SSE reloadTasks 自然接管） */}
+      {decisionError && !bulkDraft && <div className="sync-boot-hint" role="alert">{decisionError} <button onClick={() => setDecisionError("")}>关闭</button></div>}
       {syncBootHint && (
         <div className="sync-boot-hint">正在从云端同步数据，稍候…</div>
       )}
@@ -1637,22 +1208,16 @@ function App() {
         // 「AI 助手已关闭」引导卡 + 输入禁用，总闸效果前端可见
         aiEnabled={settings.aiEnabled}
         draft={aiDraft}
-        // 仅撤幽灵方块（内存态）；建议行回写由面板 settleProposal 负责
+        // 收到结算回执后再撤幽灵方块。
         onDiscardDraft={() => setAiDraft(null)}
         onDraft={handleDraftEvent}
-        onAccept={handleAcceptProposal}
-        onModify={handleModifyProposal}
-        onModifyInbox={handleModifyInbox}
-        onModifyMinutes={handleModifyMinutes}
-        onModifySteps={handleModifySteps}
-        onSendToInbox={handleSendToInbox}
-        onAcceptMinutes={handleAcceptMinutes}
+        onDecide={handleDecide}
         onApplied={handleAppliedEvent}
         // 采集轮收尾（ingest_done 帧）：卡在数据源页对话框零卡片，递增钥匙刷
         // 数据源徽标/面板——chat 轮出卡不递增的既有纪律只对对话框内可见卡成立
         onIngestDone={() => setAiRefreshKey((k) => k + 1)}
         // 批量排期草案（bulk 帧）→ 开弹窗清单确认
-        onBulk={(items, proposalId) => setBulkDraft({ items, proposalId })}
+        onBulk={(items, proposalId, ids) => { setDecisionError(""); setBulkDraft({ items, proposalId, ids }); }}
         // 工作流事件后的重拉信号（morning/ingest/nightly 递增）
         refreshKey={aiRefreshKey}
       />
@@ -1700,11 +1265,9 @@ function App() {
             <DataSourcePanel
               style={{ width: rightWidth, flexShrink: 0 }}
               onCollapse={() => setRightCollapsed(true)}
-              onSettleItem={handleSettleItem}
-              onSmartSchedule={handleSmartScheduleItem}
+              onDecide={handleDecide}
               // 乐观减徽标（2026-10-24 竞态根修）：结算不再触发 aiRefreshKey 重拉——
               // 重拉与后端回写竞态曾致「点两次才消失」；权威对账留给外部事件/切页
-              onItemsSettled={(count) => setDsPendingCount((c) => Math.max(0, c - count))}
               onOpenSettings={() => handleOpenSettings("data")}
               refreshKey={aiRefreshKey}
               syncTrigger={syncNowTick}
@@ -1757,7 +1320,8 @@ function App() {
           items={bulkDraft.items}
           submitting={bulkSubmitting}
           onConfirm={handleBulkConfirm}
-          onCancel={handleBulkCancel}
+          error={decisionError}
+          onCancel={() => void handleBulkConfirm(null)}
         />
       )}
 

@@ -1295,3 +1295,40 @@ def test_maintenance_prunes_telemetry_and_usage_without_reflection():
         assert expired == 0  # 无过期建议，纯清理路径
         assert db.scalar(select(BehaviorEvent.id)) is None
         assert db.scalar(select(AiUsageEvent.id)) is None
+
+
+def test_busy_ingest_preserves_scheduled_slot(monkeypatch):
+    now = datetime(2026, 11, 25, 10)
+    async def scenario():
+        started, finish = asyncio.Event(), asyncio.Event()
+        async def perform(manual):
+            started.set()
+            await finish.wait()
+        monkeypatch.setattr(workflows, '_perform_ingest', perform)
+        with TestingSessionLocal() as db:
+            settings = get_settings(db)
+            settings.ingest_enabled = True
+            settings.ingest_brief_min = 540
+            db.commit()
+            manual = workflows.start_ingest(manual=True)
+            await started.wait()
+            assert workflows.start_ingest(db=db, now=now) is None
+            assert not workflows._has_run(db, 'ingest', now.date())
+            finish.set()
+            await manual
+            await workflows.start_ingest(db=db, now=now)
+            assert workflows._has_run(db, 'ingest', now.date())
+            assert workflows.start_ingest(db=db, now=now) is None
+    asyncio.run(scenario())
+
+
+def test_midnight_maintenance_belongs_to_previous_day():
+    with TestingSessionLocal() as db:
+        settings = get_settings(db)
+        settings.nightly_enabled = True
+        settings.nightly_start_min = 21 * 60
+        db.commit()
+        now = datetime(2026, 11, 25, 0, 1)
+        assert workflows._claim_nightly_maintenance(db, now)
+        assert workflows._has_run(db, 'nightly_maint', now.date() - timedelta(days=1))
+        assert not workflows._claim_nightly_maintenance(db, now)

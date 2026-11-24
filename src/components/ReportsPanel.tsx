@@ -45,6 +45,7 @@ import {
   type StatsSummary,
 } from "../lib/api";
 import { saveStatsImagePath, saveStatsReportPath } from "../lib/tauri";
+import WeeklyCalibration from "./WeeklyCalibration";
 import EnergyCurve from "./EnergyCurve";
 import { HBars } from "./StatsCharts";
 import HealthRadar from "./HealthRadar";
@@ -697,6 +698,7 @@ export default function ReportsPanel({
             </div>
 
             {/* ②′ 精力曲线（2026-11-17 批 3）：行为遥测派生的完成倾向 + 白盒规则 */}
+            <WeeklyCalibration refreshKey={refreshKey} />
             <EnergyCurve days={days} onOpenMemory={onOpenMemory} />
 
             {/* ③ 时间去向：趋势折线 + 习惯热力图同排（两张时间分布图互补）→

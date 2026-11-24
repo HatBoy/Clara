@@ -21,6 +21,8 @@ import {
   type AiMemoryRule,
   type RuleConflict,
 } from "../../lib/ai";
+import { request } from "../../lib/api";
+import { dateKeyOfOffset } from "../../data/tasks";
 import ConfirmPopover from "../ConfirmPopover";
 import "./GeneralSettings.css";
 import "./MemorySettings.css";
@@ -364,6 +366,15 @@ function MemorySettings({ refreshKey = 0 }: { refreshKey?: number }) {
                         </span>
                       </div>
                       <div className="mem-ops">
+                        <button type="button" className="mem-icon-btn" style={{width:"auto"}}
+                          title="仅暂停该规则至本周日，不修改原文和置信度"
+                          onClick={async () => {
+                            const pause = !(r.pause_until && r.pause_until >= dateKeyOfOffset(0));
+                            try {
+                              const next = await request<AiMemoryRule>("POST", `/api/strategy/rules/${r.id}/pause?pause=${pause}`);
+                              setRules(prev => prev.map(x => x.id === r.id ? next : x));
+                            } catch(e) { errText(e, "更新本周例外失败"); }
+                          }}>{r.pause_until && r.pause_until >= dateKeyOfOffset(0) ? `已暂停至 ${r.pause_until} · 恢复` : "本周例外"}</button>
                         <button
                           type="button"
                           className="mem-icon-btn"

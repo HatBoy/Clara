@@ -1,5 +1,6 @@
 # 运行时
 fastapi
+sse-starlette>=3.7.1,<4
 uvicorn
 sqlalchemy
 httpx

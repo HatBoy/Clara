@@ -21,6 +21,8 @@ export type ProposalOutcome = "accepted" | "modified" | "rejected" | "ignored";
 
 // 建议行（GET /proposals）：outcome 空 = 待处理（expired 只由后端夜间整理落）
 export type AiProposal = {
+  settled_count: number;
+  item_ids: string[];
   id: string;
   kind:
     | "schedule"
@@ -105,9 +107,20 @@ export const fetchAiMessages = () => getJson<AiMessage[]>("/api/ai/messages");
 export const fetchAiProposals = (unresolved = false) =>
   getJson<AiProposal[]>(`/api/ai/proposals${unresolved ? "?unresolved=true" : ""}`);
 
-// 建议回写（采纳率统计信号）；拒绝可选填理由（夜间学习信号）；
-// appliedEntries（优化批 4 modified 回流）= 修改后采纳时编辑过的条目清单——
-// 后端与 payload 快照比对生成 modified_diff，夜间反思链学习「用户改成了什么」
+// 决定绑定服务器发给当前视图的条目标识；数组位置仅用于显示，不传回服务端。
+export type ProposalDecision = {
+  item_id: string;
+  action: "accept" | "modify" | "inbox" | "smart" | "schedule" | "reject" | "skip";
+  entry?: Record<string, unknown>;
+  reason?: string;
+};
+export type DecisionResult = {
+  proposal: AiProposal;
+  receipts: { item_id: string; task_id: string | null; scheduled: boolean; action: ProposalDecision["action"] }[];
+};
+export const decideProposal = (id: string, items: ProposalDecision[]) =>
+  request<DecisionResult>("POST", `/api/ai/proposals/${id}/decide`, { items });
+
 export const resolveProposal = (
   id: string,
   outcome: ProposalOutcome,
@@ -120,27 +133,13 @@ export const resolveProposal = (
     applied_entries: appliedEntries ?? undefined,
   });
 
-// 条目级部分结算（2026-10-24 数据源页单条操作）：从待处理卡移除 indexes 条目
-// （后端 payload 收缩，卡清空才回写 outcome）；拒绝只静默被拒条目的指纹；
-// appliedEntries 同上（条目级 modified 的偏离比对）
-export const settleProposalItems = (
-  id: string,
-  indexes: number[],
-  outcome: "accepted" | "modified" | "rejected",
-  appliedEntries?: unknown[],
-) =>
-  request<AiProposal>("POST", `/api/ai/proposals/${id}/settle-items`, {
-    indexes,
-    outcome,
-    applied_entries: appliedEntries ?? undefined,
-  });
-
 // 会后纪要提炼（2026-11-10）：纪要原文 → LLM 提炼行动项 → minutes 建议卡
 // （提取不生成，README 反定位红线）。taskId 可空（聊天纯文本入口无关联会议）；
 // 同步秒级返回建好的建议行，面板消息/广播由后端落
-export const submitMinutes = (taskId: string | null, text: string) =>
+export const submitMinutes = (taskId: string | null, text: string, inviteId?: string) =>
   request<AiProposal>("POST", "/api/ai/meeting-minutes", {
     task_id: taskId ?? undefined,
+    invite_id: inviteId,
     text,
   });
 
@@ -186,6 +185,7 @@ export type AiMemoryRule = {
     rule?: string;
   } | null;
   last_confirmed_at: string | null;
+  pause_until?: string | null;
   observation_count: number; // 同义印证计数（≥3 自动升验证级——置信演化白盒面）
   created_at: string;
   updated_at: string;
@@ -306,11 +306,11 @@ export type ChatEvent =
   | { type: "delta"; text: string } // 回复正文增量（打字机；仅 qa/smalltalk 流式分支产生）
   | { type: "status"; text: string } // 阶段反馈（2026-10-26 提速批 2）：非流式分支重节点入口一帧，替换静态「思考中…」
   | { type: "reply"; content: string } // final_reply 整段（权威文本，替换 delta 累积）
-  | { type: "draft"; proposal_id: string; draft_plan: DraftPlanItem[] } // 幽灵方块草案
-  | { type: "proposal"; proposal_id: string; kind: string; payload: Record<string, unknown> }
+  | { type: "draft"; item_ids: string[]; proposal_id: string; draft_plan: DraftPlanItem[] } // 幽灵方块草案
+  | { type: "proposal"; item_ids: string[]; proposal_id: string; kind: string; payload: Record<string, unknown> }
   | { type: "applied"; proposal_id: string; tasks: ApiTask[] } // 快录直落（origin=user 已写库，App 侧直通画布）
   | { type: "ingest_done"; count: number } // 采集轮收尾（2026-10-25 功能边界）：卡只落数据源页，App 刷徽标
-  | { type: "bulk"; proposal_id: string; draft_plan: DraftPlanItem[] } // 批量排期草案（功能边界批）：App 开弹窗清单确认，对话框零草案卡
+  | { type: "bulk"; item_ids: string[]; proposal_id: string; draft_plan: DraftPlanItem[] } // 批量排期草案（功能边界批）：App 开弹窗清单确认，对话框零草案卡
   | { type: "done" }
   | { type: "error"; code: string; message: string }; // no_model / not_ready / disabled / agent_error
 
@@ -325,8 +325,13 @@ export async function streamChat(
   signal?: AbortSignal,
 ): Promise<void> {
   // 分帧解析单源 lib/sse.ts（2026-11-17 架构批 4，原与 askStats 逐字重复）
+  let terminal = false;
   await streamSsePost<ChatEvent>(
-    `${API_BASE}/api/ai/chat`, { message }, "AI 对话", onEvent, signal);
+    `${API_BASE}/api/ai/chat`, { message }, "AI 对话", ev => {
+      if (ev.type === "done" || ev.type === "error") terminal = true;
+      onEvent(ev);
+    }, signal);
+  if (!terminal && !signal?.aborted) throw new Error("回复在完成前中断");
 }
 
 // —— 幽灵方块（draft 条目 → 中栏时间线几何；口径同 toFrontendTask）——

@@ -85,12 +85,30 @@ def finalize_turn(db: Session, final: dict, *, source: str | None = None) -> lis
     resolved = final.get("resolved_proposal")
     if isinstance(resolved, dict) and resolved.get("proposal_id"):
         outcome = resolved.get("outcome") or "ignored"
-        settled = ai_data.record_proposal_outcome(db, resolved["proposal_id"], outcome)
-        # 对话路径拒绝同样落采集台账（2026-11-17 二轮批 1）：HTTP 结算端点早有
-        # on_proposal_settled 钩子，对话/远程渠道「算了」此前漏挂——拒绝过的指纹
-        # 下轮采集再出卡重复打扰（远程渠道对话确认是唯一路径，受影响最大）
-        if settled is not None:
-            data_ingest.on_proposal_settled(db, settled.kind, settled.payload, outcome)
+        from services import proposal_decisions
+        from models import Proposal
+        row = db.get(Proposal, resolved['proposal_id'])
+        if row and row.kind in ('schedule', 'delete') and outcome in ('accepted', 'rejected'):
+            action = 'accept' if outcome == 'accepted' else 'reject'
+            stable = resolved.get('item_ids') or row.item_ids
+            # 对话／渠道确认使用原卡回执，而不是另建一张已采纳卡。
+            final.pop('applied_plan', None)
+            try:
+                result = proposal_decisions.decide(db, row.id, [{'item_id': i, 'action':action} for i in stable])
+            except ValueError:
+                reply = '这张建议已发生变化，本次没有写入，请刷新后核对。'
+            else:
+                if action == 'accept' and row.kind == 'schedule':
+                    from schemas import TaskOut
+                    from services.tasks import get_task
+                    applied_tasks = [get_task(db, r['task_id']) for r in result['receipts'] if r['task_id']]
+                    events.append({'type':'applied', 'proposal_id':row.id, 'tasks':[
+                        TaskOut.model_validate(t).model_dump(mode='json') for t in applied_tasks if t]})
+                first_proposal_id = row.id
+        else:
+            settled = ai_data.record_proposal_outcome(db, resolved['proposal_id'], outcome)
+            if settled is not None:
+                data_ingest.on_proposal_settled(db, settled.kind, settled.payload, outcome)
 
     question = final.get("question_plan")
     # 幕僚问询（strategist_clarify/memory）无排期条目——entries 空放行
@@ -287,6 +305,10 @@ def finalize_turn(db: Session, final: dict, *, source: str | None = None) -> lis
             {"type": "proposal", "proposal_id": proposal.id, "kind": "delete", "payload": payload}
         )
 
+    for event in events:
+        if event["type"] in ("draft", "proposal", "bulk"):
+            prop = ai_data.get_proposal(db, event["proposal_id"])
+            event["item_ids"] = prop.item_ids
     if reply:
         ai_data.append_message(db, role="assistant", content=reply,
                                proposal_id=first_proposal_id, source=source)

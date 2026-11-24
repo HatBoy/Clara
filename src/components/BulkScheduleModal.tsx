@@ -1,7 +1,7 @@
 // 批量排期确认弹窗（2026-10-25 功能边界批）：对话里说「把所有待办排了」类
 // 批量意图时，引擎产出的 bulk 草案经弹窗清单确认——对话框只沟通，批量确认
 // 收口弹窗（骨架复用 FormModal：Esc/遮罩关闭走取消）。勾选只是核对余地：
-// 确认 = 勾选条目写入日历（App 走 applyDraftItems 改期路径），一条没勾则
+// 确认 = 勾选写入、未勾选跳过，同批原子结算；一条没勾则
 // 确认钮禁用只能取消（建议行整卡结清，任务本身不丢——留在收件箱未排期）
 import { useState } from "react";
 import type { DraftPlanItem } from "../lib/ai";
@@ -20,16 +20,18 @@ function fmtWhen(start: string) {
 export function BulkScheduleModal({
   items,
   submitting,
+  error,
   onConfirm,
   onCancel,
 }: {
   items: DraftPlanItem[];
   submitting: boolean;
-  onConfirm: (items: DraftPlanItem[]) => void;
+  error: string;
+  onConfirm: (indexes: number[]) => void;
   onCancel: () => void;
 }) {
   const [checked, setChecked] = useState<boolean[]>(() => items.map(() => true));
-  const picked = items.filter((_, i) => checked[i]);
+  const picked = items.flatMap((_, i) => checked[i] ? [i] : []);
   const allOn = picked.length === items.length;
   return (
     <FormModal
@@ -40,6 +42,7 @@ export function BulkScheduleModal({
         已为待排期待办生成时间建议（统一排期引擎：避让占用、午休与每日工时预算），
         勾选后写入日历。
       </p>
+      {error && <p role="alert">{error}</p>}
       <ul className="bulk-list">
         {items.map((it, i) => (
           <li key={`${it.task_id ?? it.title}#${i}`}>

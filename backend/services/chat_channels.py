@@ -35,7 +35,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime
 from urllib.parse import quote
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import httpx
 from sqlalchemy import select
@@ -193,17 +193,15 @@ def get_channel(db: Session, provider: str) -> ChatChannel | None:
 
 
 def _row_to_out(row: ChatChannel | None, meta: dict) -> dict:
-    """目录项 + 行状态合并。app_secret 原样回显（Composio key 先例——本地
-    单用户明文定调，编辑表单回填 + 前端密码态/眼睛查看）。"""
+    """目录项 + 行状态合并。仅回显公开应用 ID，微信的 app_id 实际是 bot token。"""
     return {
         "provider": meta["provider"],
         "name": meta["name"],
         "desc": meta["desc"],
         "setup_url": meta["setup_url"],
         "placeholder": meta["placeholder"],
-        "configured": row is not None,
-        "app_id": row.app_id if row else None,
-        "app_secret": row.app_secret if row else None,
+        "configured": bool(row and row.app_id and row.app_secret),
+        "app_id": row.app_id if row and row.provider != "wechat" else None,
         "enabled": row.enabled if row else False,
         "push_enabled": row.push_enabled if row else False,
         "push_ready": bool(row.push_target) if row else False,
@@ -259,6 +257,8 @@ def upsert_channel(db: Session, provider: str, app_id: str, app_secret: str) -> 
     else:
         if not app_id.strip():
             raise ValueError("App ID 不能为空")
+        if app_id.strip() != row.app_id and not secret:
+            raise ValueError("更换应用身份需要重新填写凭证")
         row.app_id = app_id.strip()
         if secret:
             row.app_secret = secret  # 留空 = 沿用旧 secret（编辑形态）
@@ -459,7 +459,7 @@ _closing = False
 _epoch = 0
 # 消息去重 LRU（SDK 可能重投同 message_id；cap 512 防无界增长），线程安全——
 # worker 线程与主循环都可能触达
-_seen: OrderedDict[str, None] = OrderedDict()
+_seen: OrderedDict[tuple[str, str], None] = OrderedDict()
 _seen_lock = threading.Lock()
 _SEEN_CAP = 512
 # 渠道消息与回复的长度闸（平台消息体上限约万级，markdown 渲染后更肥；4000 与
@@ -550,7 +550,7 @@ def _notify_config_changed() -> None:
         _restart_workers()
 
 
-def _dedup(message_id: str) -> bool:
+def _dedup(message_id: str, *, provider: str = "") -> bool:
     """首见放行 True，重投 False；LRU cap 512（最旧的被逐出后允许再次出现——
     超长窗口的重复只在攻击级重放下可能漏，可接受）。
 
@@ -558,11 +558,12 @@ def _dedup(message_id: str) -> bool:
     之后所有空 id 消息（部分网关不返回 id）全被当重投吞掉。"""
     if not message_id:
         return True
+    key = (provider, message_id)
     with _seen_lock:
-        if message_id in _seen:
-            _seen.move_to_end(message_id)
+        if key in _seen:
+            _seen.move_to_end(key)
             return False
-        _seen[message_id] = None
+        _seen[key] = None
         while len(_seen) > _SEEN_CAP:
             _seen.popitem(last=False)
         return True
@@ -616,7 +617,7 @@ def _channel_cards_text(events: list[dict]) -> str:
     return "\n\n".join(parts)[:_MAX_TEXT]
 
 
-def _append_user_sync(provider: str, text: str) -> None:
+def _append_user_sync(provider: str, text: str, message_id: str | None = None) -> bool:
     """远程轮段1：用户消息即时落库（to_thread）。handle_incoming 落库后立即
     broadcast chat_sync——桌面端在轮次开始就显示远程用户消息，而不是等整轮
     跑完才一次性出现（2026-10-23 真机反馈的时序契约：飞书发消息 → 桌面显示
@@ -625,8 +626,20 @@ def _append_user_sync(provider: str, text: str) -> None:
     from services import ai_data
 
     with SessionLocal() as db:
-        ai_data.append_message(db, role="user", content=text, source=provider)
+        if message_id:
+            from sqlalchemy.dialects.sqlite import insert
+            from models import Message
+            # 消息行自身即持久认领；重启或缓存逐出后不再二次驱动同一对话轮。
+            key = str(uuid5(NAMESPACE_URL, f"clara:inbound:{provider}:{message_id}"))
+            row = db.execute(insert(Message).values(id=key, role="user", content=text, source=provider)
+                             .on_conflict_do_nothing(index_elements=[Message.id]))
+            db.commit()
+            if not row.rowcount:
+                return False
+        else:
+            ai_data.append_message(db, role="user", content=text, source=provider)
         logger.info("[chat-channel] %s 新对话轮：%s", provider, text[:60])
+        return True
 
 
 def _run_turn_sync(provider: str, text: str, graph) -> tuple[list[dict], str]:
@@ -654,7 +667,7 @@ _NOT_READY_HINT = "日程助手尚未就绪（智能体管道未装配完成）�
 _TURN_ERROR_HINT = "助手这轮开小差了（运行异常），请稍后重试或到桌面端查看详情。"
 
 
-async def handle_incoming(provider: str, text: str, reply, epoch: int | None = None) -> None:
+async def handle_incoming(provider: str, text: str, reply, epoch: int | None = None, message_id: str | None = None) -> None:
     """远程渠道消息 → 对话轮（主 FastAPI 循环协程；_deliver 投递，测试直调）。
 
     reply: Callable[[str], None] 同步发送（渠道实现：飞书 im API / 钉钉
@@ -686,7 +699,8 @@ async def handle_incoming(provider: str, text: str, reply, epoch: int | None = N
     async with chat_turn.get_turn_lock():
         try:
             # 段1：用户消息即时落库并广播——桌面端立刻显示远程消息（不等整轮）
-            await asyncio.to_thread(_append_user_sync, provider, text)
+            if not await asyncio.to_thread(_append_user_sync, provider, text, message_id):
+                return
             workflows.broadcast({"type": "chat_sync", "provider": provider})
             # 段2：轮次主体 + finalize（与桌面轮同管道）
             events, reply_text = await asyncio.to_thread(
@@ -710,7 +724,7 @@ async def handle_incoming(provider: str, text: str, reply, epoch: int | None = N
     chat_turn.schedule_compaction()
 
 
-def _deliver(provider: str, text: str, reply, epoch: int) -> None:
+def _deliver(provider: str, text: str, reply, epoch: int, message_id: str | None = None) -> None:
     """SDK 回调线程 → 主循环投递（死锁三禁①：run_coroutine_threadsafe 后不等待
     future，立即返回不阻塞 SDK 线程）。旧代失活 / 主循环未设 / 关闭中均直接
     丢弃。异常吞为日志——投递层故障不应炸穿 SDK 回调线程。"""
@@ -720,7 +734,7 @@ def _deliver(provider: str, text: str, reply, epoch: int) -> None:
         # epoch 一并传入（2026-11-16 优化批 2）：投递与协程执行之间配置可能已
         # 变更/渠道已删除，handle_incoming 内的代际复核是双保险。
         asyncio.run_coroutine_threadsafe(
-            handle_incoming(provider, text, reply, epoch=epoch), _MAIN_LOOP)
+            handle_incoming(provider, text, reply, epoch=epoch, message_id=message_id), _MAIN_LOOP)
     except RuntimeError:
         logger.warning("[chat-channel] 主循环不可用，%s 消息丢弃", provider)
 
@@ -741,7 +755,7 @@ def _feishu_extract(event) -> tuple[str, str, str] | tuple[str, None, None] | No
         return None  # 仅单聊（用户定案），群聊不响应
     if getattr(sender, "sender_type", "") == "app":
         return None  # 防自回环：自己发的消息不再进轮
-    if not _dedup(getattr(msg, "message_id", "") or ""):
+    if not _dedup(getattr(msg, "message_id", "") or "", provider="feishu"):
         return None
     open_id = getattr(getattr(sender, "sender_id", None), "open_id", "")
     if getattr(msg, "message_type", "") != "text":
@@ -839,7 +853,7 @@ def _feishu_worker(app_id: str, app_secret: str, epoch: int) -> None:
                 _save_push_target("feishu", {"open_id": open_id})
                 _deliver("feishu", text,
                          lambda t: _feishu_send(app_id, app_secret, open_id, t),
-                         epoch)
+                         epoch, getattr(data.event.message, "message_id", None))
             except Exception:
                 logger.exception("[chat-channel] 飞书回调异常")
 
@@ -897,7 +911,7 @@ def _dingtalk_extract(msg) -> tuple[str, str, str] | tuple[str, None, None] | No
     message_type、msgId → message_id；text 消息时 text 才被填充）。"""
     if getattr(msg, "conversation_type", "") != "1":
         return None  # "1" = 单聊（用户定案），群聊不响应
-    if not _dedup(getattr(msg, "message_id", "") or ""):
+    if not _dedup(getattr(msg, "message_id", "") or "", provider="dingtalk"):
         return None
     mtype = (getattr(msg, "message_type", "") or "").lower()
     webhook = getattr(msg, "session_webhook", "") or ""
@@ -948,7 +962,7 @@ def _dingtalk_worker(app_id: str, app_secret: str, epoch: int) -> None:
                 if staff_id:
                     _save_push_target("dingtalk", {"staff_id": staff_id})
                 _deliver("dingtalk", text,
-                         lambda t: _dingtalk_send(webhook, t), epoch)
+                         lambda t: _dingtalk_send(webhook, t), epoch, getattr(message, "message_id", None))
             except Exception:
                 logger.exception("[chat-channel] 钉钉回调异常")
 
@@ -982,7 +996,7 @@ def _wecom_extract(frame: dict) -> tuple[str, str, dict] | tuple[str, None, None
         return None  # 仅单聊（用户定案），群聊不响应
     if body.get("compat_info") is not None:
         return None  # 智能助理等非普通用户消息
-    if not _dedup(body.get("msgid", "") or ""):
+    if not _dedup(body.get("msgid", "") or "", provider="wecom"):
         return None
     if body.get("msgtype") != "text":
         # 引导回复凭据 = 原帧（2026-11-16 优化批 2，同飞书/钉钉）
@@ -1075,7 +1089,7 @@ def _wecom_worker(bot_id: str, secret: str, epoch: int) -> None:
                 userid = ((cb.get("body") or {}).get("from") or {}).get("userid") or ""
                 if userid:
                     _save_push_target("wecom", {"userid": userid})
-                _deliver("wecom", text, _make_wecom_reply(my_client, loop, cb), epoch)
+                _deliver("wecom", text, _make_wecom_reply(my_client, loop, cb), epoch, (cb.get("body") or {}).get("msgid"))
             except Exception:
                 logger.exception("[chat-channel] 企微回调异常")
 
@@ -1152,7 +1166,7 @@ def _wechat_extract(msg: dict) -> tuple[str, str, str] | tuple[str, None, None] 
     user_id = msg.get("from_user_id") or ""
     if not user_id:
         return None
-    if not _dedup(msg.get("client_id", "") or ""):
+    if not _dedup(msg.get("client_id", "") or "", provider="wechat"):
         return None
     text = ""
     for item in msg.get("item_list") or []:
@@ -1263,7 +1277,7 @@ def _wechat_worker(token: str, baseurl: str, epoch: int) -> None:
                 _save_push_target("wechat", {"user_id": user_id})
                 _deliver("wechat", text,
                          _make_wechat_reply(token, baseurl, user_id,
-                                            _wechat_ctx_tokens), epoch)
+                                            _wechat_ctx_tokens), epoch, msg.get("client_id"))
             except Exception:
                 logger.exception("[chat-channel] 微信消息处理异常")
 
@@ -1304,7 +1318,7 @@ def _restart_workers() -> None:
         rows = db.execute(select(ChatChannel).where(ChatChannel.enabled)).scalars().all()
     for row in rows:
         factory = _WORKER_FACTORIES.get(row.provider)
-        if factory is None:
+        if factory is None or not row.app_id or not row.app_secret:
             continue
         threading.Thread(target=factory, name=f"chat-channel-{row.provider}",
                          args=(row.app_id, row.app_secret, _epoch), daemon=True).start()

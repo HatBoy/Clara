@@ -477,3 +477,22 @@ def test_get_connections_only_enabled_plus_local_folder(tmp_path):
             # 本机回环端点同 _conn_dict 口径禁环境代理
             "httpx_client_factory": mcp_service._direct_http_client_factory,
         }
+
+
+def test_invalidated_handshake_never_repopulates_pool(monkeypatch):
+    import asyncio
+    from services import mcp_session as pool
+    async def scenario():
+        started, finish = asyncio.Event(), asyncio.Event()
+        async def connect(conn):
+            started.set()
+            await finish.wait()
+            return object(), []
+        monkeypatch.setattr(pool, '_connect', connect)
+        job = asyncio.create_task(pool._acquire_and_call({}, '测试握手', None, {}))
+        await started.wait()
+        pool.invalidate('测试握手')
+        finish.set()
+        await job
+        assert '测试握手' not in pool._sessions
+    asyncio.run(scenario())

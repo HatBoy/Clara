@@ -24,6 +24,7 @@ class FakeDav:
     def __init__(self, manifest=None, tables=None):
         self.manifest = manifest
         self.tables: dict = dict(tables or {})  # name -> payload dict
+        self.manifest_puts = 0
         self.push_count = 0
         self.get_count = 0
         self.ensure_count = 0
@@ -46,6 +47,7 @@ class FakeDav:
     def push_manifest(self, manifest, *, if_none_match=False):
         if if_none_match and self.manifest is not None:
             raise WebDavError("__PRECONDITION_412__")
+        self.manifest_puts += 1
         self.manifest = manifest
 
     def put_readme(self, content: str) -> None:
@@ -130,17 +132,15 @@ def test_merge_both_changed_lww():
 
 
 def test_merge_tie_converges_deterministically():
-    """平局按 device_id 字典序（2026-11-16 优化批 3）：双端视角选出同一条物理行，
+    """平局按规范行内容：双端视角选出同一条物理行，
     不再"本地优先"导致 ping-pong。"""
     local_row = _row("a", TS1)
     remote_row = {"id": "a", "title": "远端", "updated_at": TS1}
     out1 = se._merge_table("tasks", local=[local_row], base=[_row("a", TS1)],
-                           remote=[remote_row],
-                           local_device="dev-a", remote_device="dev-b")
+                           remote=[remote_row])
     out2 = se._merge_table("tasks", local=[remote_row], base=[_row("a", TS1)],
-                           remote=[local_row],
-                           local_device="dev-b", remote_device="dev-a")
-    assert out1["merged"] == out2["merged"] == [local_row]  # dev-a 胜
+                           remote=[local_row])
+    assert out1["merged"] == out2["merged"] == [local_row]
 
 
 def test_merge_remote_modify_beats_local_delete():
@@ -871,3 +871,114 @@ def test_cross_table_deletion_children_first():
         n_prop = db.execute(text("SELECT COUNT(*) FROM proposals")).scalar()
         n_msg = db.execute(text("SELECT COUNT(*) FROM messages")).scalar()
         assert (n_prop, n_msg) == (1, 1), (n_prop, n_msg)  # 各删一行、零 FK 异常
+
+
+@pytest.fixture
+def sync_pair(tmp_path, monkeypatch):
+    """独立设备数据库、触发器、基线目录；仅共享内存 DAV。"""
+    from contextlib import ExitStack
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    import database
+
+    dav = FakeDav()
+    with ExitStack() as stack:
+        devices = []
+        for name in ('a', 'b'):
+            folder = tmp_path / name
+            folder.mkdir()
+            engine = create_engine('sqlite:///' + (folder / 'device.db').as_posix())
+            stack.callback(engine.dispose)
+            database.Base.metadata.create_all(engine)
+            database._ensure_updated_at_triggers(engine)
+            db = stack.enter_context(Session(engine))
+
+            def sync(db=db, folder=folder, name=name):
+                monkeypatch.setattr(se, 'get_data_dir', lambda: folder)
+                return se.run_sync(db, dav, type('Cfg', (), {'device_id': name})())
+
+            devices.append((db, sync))
+        yield devices[0], devices[1], dav
+
+
+def test_equal_time_winner_lands_and_next_round_has_no_put(sync_pair):
+    (a, sync_a), (b, sync_b), dav = sync_pair
+    key = _add_task(a, '基线', updated=datetime.fromisoformat(TS1))
+    sync_a()
+    sync_b()
+    for db, title in [(a, 'A指定胜者'), (b, 'B败者')]:
+        db.execute(Task.__table__.update().where(Task.id == key).values(
+            title=title, updated_at=datetime.fromisoformat(TS2)))
+        db.commit()
+    sync_a()
+    sync_b()
+    assert se.table_rows(b, 'tasks') == dav.tables['tasks']['rows'] == se.table_rows(a, 'tasks')
+    assert b.get(Task, key).title == 'A指定胜者'
+    puts = dav.push_count, dav.manifest_puts
+    sync_a()
+    sync_b()
+    assert (dav.push_count, dav.manifest_puts) == puts
+
+
+@pytest.mark.parametrize('local_delete', [False, True], ids=['本地改远端删', '本地删远端改'])
+def test_interleaved_user_write_is_not_overwritten(sync_pair, monkeypatch, local_delete):
+    from sqlalchemy.orm import Session
+    (a, sync_a), (b, sync_b), dav = sync_pair
+    key = _add_task(a, '待交错')
+    _add_task(a, '保留行')
+    sync_a()
+    sync_b()
+    if local_delete:
+        a.get(Task, key).title = '对端更新'
+    else:
+        a.delete(a.get(Task, key))
+    a.commit()
+    sync_a()
+    original = dav.fetch_table
+
+    def interleave(name):
+        if name == 'tasks':
+            with Session(b.get_bind()) as editor:
+                row = editor.get(Task, key)
+                if local_delete:
+                    editor.delete(row)
+                else:
+                    row.title = '刚刚更新'
+                editor.commit()
+        return original(name)
+
+    monkeypatch.setattr(dav, 'fetch_table', interleave)
+    puts = dav.push_count, dav.manifest_puts
+    with pytest.raises(se.SyncAbort, match='规划期间'):
+        sync_b()
+    row = b.get(Task, key)
+    assert row is None if local_delete else row.title == '刚刚更新'
+    assert (dav.push_count, dav.manifest_puts) == puts
+
+
+def test_clear_proof_is_bound_to_receivers_base(sync_pair):
+    (a, sync_a), (b, sync_b), dav = sync_pair
+    _add_task(a, '主动清空')
+    sync_a()
+    sync_b()
+    sync_a()  # 切回 A 的基线目录
+    a.query(Task).delete()
+    a.commit()
+    se.note_table_cleared('tasks')
+    sync_a()
+    payload = dav.tables['tasks']
+    proof = payload['cleared_from']
+    payload['cleared_from'] = '旧基线'
+    with pytest.raises(se.SyncAbort, match='已被清空'):
+        sync_b()
+    assert _tasks_titles(b) == ['主动清空']
+    payload['cleared_from'] = proof
+    sync_b()
+    assert _tasks_titles(b) == []
+
+
+def test_missing_timestamps_tie_is_symmetric():
+    first = {"id": "k", "title": "甲"}
+    second = {"id": "k", "title": "乙"}
+    for local, remote in [(first, second), (second, first)]:
+        assert se._merge_table("tasks", [local], None, [remote])["merged"] == [second]

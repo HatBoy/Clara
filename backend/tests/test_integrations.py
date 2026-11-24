@@ -223,7 +223,7 @@ def test_key_get_creates_row(client: TestClient):
     resp = client.get("/api/integrations/key")
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"api_key": None, "key_ok": None, "key_error": None, "key_checked_at": None}
+    assert body == {"api_key_set": False, "key_ok": None, "key_error": None, "key_checked_at": None}
     with TestingSessionLocal() as db:  # 空库 GET 已 get_or_create 落行
         assert db.get(IntegrationSettings, 1) is not None
 
@@ -233,7 +233,7 @@ def test_key_put_verifies_and_builds_client(monkeypatch, client: TestClient):
     resp = client.put("/api/integrations/key", json={"api_key": _TEST_KEY})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["api_key"] == _TEST_KEY and body["key_ok"] is True
+    assert body["api_key_set"] and "api_key" not in body and body["key_ok"] is True
     assert body["key_error"] is None and body["key_checked_at"] is not None
     # 客户端构造参数透传（timeout / max_retries 抑制久挂与长重试）
     assert parts.init_kwargs == [
@@ -250,7 +250,7 @@ def test_key_put_invalid_key_is_data_not_error(monkeypatch, client: TestClient):
     # 验证失败也是 200：失败是数据（key_ok=False + 摘要），同模型探测口径
     assert resp.status_code == 200
     body = resp.json()
-    assert body["api_key"] == "cs_bad" and body["key_ok"] is False
+    assert body["api_key_set"] and "api_key" not in body and body["key_ok"] is False
     assert "无效" in body["key_error"]
 
 
@@ -268,7 +268,7 @@ def test_key_put_blank_clears_and_resets(monkeypatch, client: TestClient):
     _save_key(client)
     resp = client.put("/api/integrations/key", json={"api_key": ""})  # 空串归一 None = 清除
     assert resp.status_code == 200
-    assert resp.json() == {"api_key": None, "key_ok": None, "key_error": None, "key_checked_at": None}
+    assert resp.json() == {"api_key_set": False, "key_ok": None, "key_error": None, "key_checked_at": None}
 
 
 def test_key_verify_rechecks_stored_key(monkeypatch, client: TestClient):
@@ -278,7 +278,7 @@ def test_key_verify_rechecks_stored_key(monkeypatch, client: TestClient):
     resp = client.post("/api/integrations/key/verify")  # 手动重验 → 翻转为失败
     assert resp.status_code == 200
     body = resp.json()
-    assert body["api_key"] == _TEST_KEY and body["key_ok"] is False
+    assert body["api_key_set"] and "api_key" not in body and body["key_ok"] is False
     assert "无效" in body["key_error"]
 
 

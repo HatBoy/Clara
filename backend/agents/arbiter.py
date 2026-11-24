@@ -111,7 +111,7 @@ def arbitrate_rules(db: Session, *, candidates: list[dict]) -> list[dict] | None
     out = call_llm_aux(
         [{"role": "system", "content": RESOLVE_PROMPT},
          {"role": "user", "content": json.dumps(
-             {"candidates": [{"idx": i, **c} for i, c in enumerate(candidates)],
+             {"candidates": [{"idx": i, **{k: v for k, v in c.items() if k != "source_ids"}} for i, c in enumerate(candidates)],
               "existing": [{"id": r.id, "category": r.category, "content": r.content,
                             "source": r.source} for r in existing]}, ensure_ascii=False)}],
         json_mode=True, max_tokens=_ARBITER_MAX_TOKENS)
@@ -132,6 +132,8 @@ def arbitrate_rules(db: Session, *, candidates: list[dict]) -> list[dict] | None
                 and 0 <= idx < len(candidates) else None)
         if cand is None:
             continue  # 候选对应断裂（idx 缺失/越界/幻觉）
+        if action == "keep" and rule_id is not None and (not isinstance(rule_id, str) or rule_id not in valid_ids):
+            continue
         if action in ("replace", "merge"):
             if not (isinstance(rule_id, str) and rule_id in valid_ids):
                 continue
@@ -154,5 +156,6 @@ def arbitrate_rules(db: Session, *, candidates: list[dict]) -> list[dict] | None
             "evidence": evidence.strip()[:_CAND_EVIDENCE_CHARS],
             "confidence": cand["confidence"],  # 继承候选已钳值，不信回抄
             "signal": cand.get("signal"),
+            "source_ids": cand.get("source_ids") or [],
         })
     return actions

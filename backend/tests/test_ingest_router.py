@@ -50,11 +50,11 @@ def test_run_now_202_and_409(client: TestClient, monkeypatch):
     async def _fake_run(manual: bool = False):
         fired.append("run")
 
-    monkeypatch.setattr(workflows, "run_ingest_now", _fake_run)
+    monkeypatch.setattr(workflows, "_perform_ingest", _fake_run)
     resp = client.post("/api/ingest/run")
     assert resp.status_code == 202 and resp.json() == {"started": True}
     # 在途闸占用 → 409（不动真闸的模块态，patch 只读窥视的返回）
-    monkeypatch.setattr(workflows, "ingest_in_flight", lambda: True)
+    monkeypatch.setattr(workflows, "try_begin_ingest", lambda: False)
     assert client.post("/api/ingest/run").status_code == 409
 
 
@@ -120,7 +120,7 @@ def test_run_now_wait_returns_summary(client: TestClient, monkeypatch):
         return {"skipped": None, "silent": True, "drafts": 0, "inbox": 0,
                 "direct_calendar": 0, "direct_inbox": 0}
 
-    monkeypatch.setattr(workflows, "run_ingest_now", _fake_silent)
+    monkeypatch.setattr(workflows, "_perform_ingest", _fake_silent)
     resp = client.post("/api/ingest/run?wait=true")
     assert resp.status_code == 202 and resp.json()["silent"] is True  # 端点装饰器恒 202，摘要随体返回
 
@@ -128,7 +128,7 @@ def test_run_now_wait_returns_summary(client: TestClient, monkeypatch):
         return {"skipped": None, "silent": False, "drafts": 2, "inbox": 1,
                 "direct_calendar": 3, "direct_inbox": 4}
 
-    monkeypatch.setattr(workflows, "run_ingest_now", _fake_produced)
+    monkeypatch.setattr(workflows, "_perform_ingest", _fake_produced)
     resp = client.post("/api/ingest/run?wait=true")
     body = resp.json()
     assert (body["drafts"], body["inbox"], body["direct_calendar"],
@@ -139,5 +139,5 @@ def test_run_now_wait_returns_summary(client: TestClient, monkeypatch):
         return {"skipped": "not_ready", "silent": False, "drafts": 0, "inbox": 0,
                 "direct_calendar": 0, "direct_inbox": 0}
 
-    monkeypatch.setattr(workflows, "run_ingest_now", _fake_skipped)
+    monkeypatch.setattr(workflows, "_perform_ingest", _fake_skipped)
     assert client.post("/api/ingest/run?wait=true").json()["skipped"] == "not_ready"

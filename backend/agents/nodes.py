@@ -216,15 +216,13 @@ def confirm_shortcut(state: AgentState) -> dict:
     确认走 applied_plan（apply_plan_entries 同款落库）、拒绝走 resolved_proposal
     rejected（契约域内值——早版写 "declined" 超出 ProposalOutcome Literal，该行
     进 GET /api/ai/proposals 会炸响应模型 500，2026-11-17 二轮批 1）；删除
-    确认在节点内调 services.tasks.delete_task 真删（锚点行已
-    锁定目标，等价于桌面点「确认删除」；classifier memory-agree 节点内写库
-    同款先例），行 outcome 由壳 finalize 回写。锚点唯一（消息锚点机制）保证
+    确认在此只绑定原始条目标识；壳 finalize 用与桌面相同的命令同时提交任务与回执。锚点唯一（消息锚点机制）保证
     draft 与 delete 互斥、不与问询 pending 抢轮。不命中返回 {} 走
     center_router 正常七分类。LLM 调用数 0。
 
     输入：state["user_input"]。输出：{resolved_proposal, applied_plan,
     final_reply} 或 {}。"""
-    from services import ai_data, tasks as tasks_svc
+    from services import ai_data
     # SessionLocal 函数内 import（非模块级）：conftest autouse 替换的是
     # database 模块属性，调用时解析才吃到测试库（center_router 同款纪律）
     from database import SessionLocal
@@ -242,7 +240,7 @@ def confirm_shortcut(state: AgentState) -> dict:
                 logger.info("[shortcut] 草案确认短路：%d 条落库（行 %s）",
                             len(entries), draft["proposal_id"])
                 return {
-                    "resolved_proposal": {"proposal_id": draft["proposal_id"],
+                    "resolved_proposal": {"proposal_id": draft["proposal_id"], "item_ids":draft["item_ids"],
                                           "outcome": "accepted"},
                     "applied_plan": entries,
                     "final_reply": f"已安排：{titles}{more}，已写入日历。",
@@ -250,35 +248,23 @@ def confirm_shortcut(state: AgentState) -> dict:
             if _DRAFT_DECLINE_RE.match(raw):
                 logger.info("[shortcut] 草案拒绝短路（行 %s）", draft["proposal_id"])
                 return {
-                    "resolved_proposal": {"proposal_id": draft["proposal_id"],
+                    "resolved_proposal": {"proposal_id": draft["proposal_id"], "item_ids":draft["item_ids"],
                                           "outcome": "rejected"},
                     "final_reply": "好的，草案先撤下，需要时随时再说。",
                 }
         if pending_delete is not None:
             if _DELETE_ACK_RE.match(raw):
-                deleted, missing = [], []
-                for t in pending_delete["tasks"]:
-                    if tasks_svc.delete_task(db, t["task_id"]):
-                        deleted.append(str(t.get("title") or t["task_id"]))
-                    else:
-                        missing.append(str(t.get("title") or t["task_id"]))
-                logger.info("[shortcut] 删除确认短路：删 %d 条（行 %s）",
-                            len(deleted), pending_delete["proposal_id"])
-                reply = ""
-                if deleted:
-                    reply += f"已删除：{'、'.join(deleted)}。"
-                if missing:
-                    reply += f"未找到：{'、'.join(missing)}（可能已被删除）。"
+                titles = '、'.join(t.get('title') or t['task_id'] for t in pending_delete['tasks'])
                 return {
-                    "resolved_proposal": {"proposal_id": pending_delete["proposal_id"],
-                                          "outcome": "accepted"},
-                    "final_reply": reply or "没有可删除的任务。",
+                    'resolved_proposal': {'proposal_id':pending_delete['proposal_id'], 'outcome':'accepted',
+                                          'item_ids':pending_delete['item_ids']},
+                    'final_reply':f'已删除：{titles}。',
                 }
             if _DRAFT_DECLINE_RE.match(raw):
                 logger.info("[shortcut] 删除拒绝短路（行 %s）",
                             pending_delete["proposal_id"])
                 return {
-                    "resolved_proposal": {"proposal_id": pending_delete["proposal_id"],
+                    "resolved_proposal": {"proposal_id": pending_delete["proposal_id"], "item_ids":pending_delete["item_ids"],
                                           "outcome": "rejected"},
                     "final_reply": "好的，不删了，任务保留。",
                 }

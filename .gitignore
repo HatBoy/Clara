@@ -19,6 +19,7 @@ backend/build/
 .pybuild/
 .pytest_cache/
 backend/data/
+backend/data-backup-*/
 *.spec
 release/
 

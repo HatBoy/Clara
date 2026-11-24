@@ -6,7 +6,6 @@ agent_loop 同在事件循环，同步路由拿不到 loop）：202 立即返回
 枚举与更新，校验在 service / schema 层，这里只翻译状态码。
 """
 
-import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -15,7 +14,6 @@ from sqlalchemy.orm import Session
 from database import get_db
 from schemas import IcsImportOut, IcsImportRequest, IngestSourceOut, IngestSourceUpdate
 from services import data_ingest, ics_import, workflows
-from services import sse_kit
 from services.llm import check_ai
 from services.settings import get_settings
 
@@ -28,7 +26,7 @@ router = APIRouter(prefix="/api/ingest", tags=["ingest"])
 async def run_ingest_now(wait: bool = False, db: Session = Depends(get_db)):
     """手动立即采集：前置快查（采集开关 / AI 开关 / 零激活 → 422 引导去设置）→
     在途窥视（409）→ create_task(run_ingest_now) 并出。注意当日调度认领与手动在跑
-    撞车时，调度侧静默让位（认领行已落不重试，登记 docs/tech-debt.md）。
+    撞车时，定时槽不被消费，下个 tick 重试。
 
     wait=true（2026-11-04 手动刷新批，数据源页刷新钮）：等待本轮完成后返回
     结果摘要 {skipped, silent, drafts, inbox, direct_calendar, direct_inbox}
@@ -40,15 +38,12 @@ async def run_ingest_now(wait: bool = False, db: Session = Depends(get_db)):
     gate = check_ai(db, settings=settings)
     if gate is not None:
         raise HTTPException(status_code=422, detail=gate.message)
-    if workflows.ingest_in_flight():
+    task = workflows.start_ingest(manual=True)
+    if task is None:
         raise HTTPException(status_code=409, detail="上一轮采集仍在进行中，请稍后再试")
     if wait:
         logger.info("手动触发数据采集（等待完成）")
-        summary = await workflows.run_ingest_now(manual=True)
-        return summary
-    # 强引用池托管（sse_kit.spawn 单源：asyncio 弱引用 GC 坑，
-    # 旧「手动采集偶发无后续」的真身）
-    sse_kit.spawn(asyncio.create_task(workflows.run_ingest_now(manual=True)))
+        return await task
     logger.info("手动触发数据采集")
     return {"started": True}
 

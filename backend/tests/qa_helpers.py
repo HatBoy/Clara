@@ -223,32 +223,16 @@ def first_of(events, ev_type: str) -> dict | None:
 def settle_draft(client, proposal_id: str, entries: list[dict], *,
                  outcome: str = "accepted",
                  modified_entries: list[dict] | None = None) -> list[dict]:
-    """模拟前端 applyDraftItems 两步结算：逐条落任务 → 回写 proposal 结果。
-    entries 为 draft_plan 形态 {task_id, title, start, duration}；有 task_id 走
-    PATCH 改期。outcome="modified" 时 modified_entries 为用户编辑后的条目清单
-    （随 applied_entries 回写生成 modified_diff）。返回实际落库的任务行。"""
-    from datetime import datetime as _dt
-
-    created: list[dict] = []
-    for e in entries:
-        start = _dt.fromisoformat(e["start"])
-        end = start + timedelta(minutes=e.get("duration") or 60)
-        if e.get("task_id"):
-            resp = client.patch(f"/api/tasks/{e['task_id']}", json={
-                "start_time": start.isoformat(), "end_time": end.isoformat()})
-        else:
-            resp = client.post("/api/tasks", json={
-                "title": (e.get("title") or "未命名")[:30],
-                "duration_mins": e.get("duration") or 60,
-                "start_time": start.isoformat(), "end_time": end.isoformat()})
-        assert resp.status_code in (200, 201), resp.text[:300]
-        created.append(resp.json())
-    body: dict = {"outcome": outcome}
-    if modified_entries is not None:
-        body["applied_entries"] = modified_entries
-    oc = client.post(f"/api/ai/proposals/{proposal_id}/outcome", json=body)
-    assert oc.status_code == 200, oc.text[:300]
-    return created
+    """与桌面同路：按原卡稳定 ID 提交决定，然后按回执核对真实任务。"""
+    url = f'/api/ai/proposals/{proposal_id}'
+    stable = client.get(url).json()['item_ids']
+    assert len(stable) == len(entries)
+    resp = client.post(url + '/decide', json={'items': [
+        {'item_id': identity, 'action':'accept'} if outcome == 'accepted' else
+        {'item_id': identity, 'action':'modify', 'entry':(modified_entries or entries)[i]}
+        for i, identity in enumerate(stable)]})
+    assert resp.status_code == 200, resp.text[:300]
+    return [client.get(f"/api/tasks/{r['task_id']}").json() for r in resp.json()['receipts']]
 
 
 def inject_rule(db, content: str, *, source: str = "user_manual",
@@ -286,6 +270,7 @@ def qa_report_path(name: str):
     dev 数据目录随 gitignore 不入库）。"""
     from pathlib import Path
 
-    out_dir = Path(__file__).resolve().parents[1] / "data" / "qa-reports"
+    import os
+    out_dir = Path(os.environ.get("CLARA_QA_REPORT_DIR") or (Path(__file__).resolve().parents[2] / ".pybuild" / "qa-reports"))
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir / name

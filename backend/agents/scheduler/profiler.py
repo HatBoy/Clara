@@ -57,6 +57,28 @@ _GOV_TITLE_RE = re.compile(
     r"护照|签证|办证|出入境|车管所|社保|公积金|银行|政务|民政局|派出所|身份证|户口")
 
 
+def _fasting_checkup(title: str, text: str) -> bool:
+    """只认用户原话中的空腹体检，不用模型画像推断检查要求。"""
+    return ("体检" in title and "体检" in text and "空腹" in text
+            and not re.search(r"(?:非|不(?:必|用|需(?:要)?)?|无[须需]|无需保持)空腹|"
+                              r"(?:医嘱|医生|医院|体检机构|体检中心).{0,12}(?:指定|安排|要求|预约|通知|下午|午后)", text))
+
+
+def _fasting_choice(reply: str, entry: dict, now: datetime) -> str | None:
+    """仅接受原时刻或明确的上午钟点，日期缺省沿用原预约。"""
+    reply = reply.strip().rstrip("。！!")
+    if _INSIST_CONFIRM_RE.fullmatch(reply) or reply in ("保留下午", "保留原时间"):
+        return entry["start"]
+    if not re.fullmatch(r"(?:改到|改至|改成|安排在|就)?(?:今天|明天|后天|大后天)?上午"
+                        r"(?:[0-9一二两三四五六七八九十]+[:：点时](?:[0-9一二三四五六七八九十]+分?|半)?)", reply):
+        return None
+    clock = clock_from_text(reply)
+    if clock is None or clock[0] >= 12:
+        return None
+    day = _hint_to_not_before(reply, now) or datetime.fromisoformat(entry["start"])
+    return day.replace(hour=clock[0], minute=clock[1], second=0, microsecond=0).isoformat()
+
+
 def _bulk_intent(text: str) -> bool:
     """批量排期意图判定（规则层零 LLM）。"""
     if _BULK_MUTATE_RE.search(text):
@@ -108,7 +130,7 @@ def _two_minute_hit(data: dict, philosophy_ids: list[str]) -> str | None:
     if "two-minute" not in philosophy_ids:
         return None
     entries = _raw_entries(data)
-    if not entries or any(e.get("task_id") for e in entries):
+    if not entries or any(e.get("task_id") or e.get("explicit_time") for e in entries):
         return None  # 空/改既有任务排期不适用
     for e in entries:
         p = e.get("profile") if isinstance(e.get("profile"), dict) else {}
@@ -117,6 +139,8 @@ def _two_minute_hit(data: dict, philosophy_ids: list[str]) -> str | None:
             return None
     titles = "、".join(f"「{(e.get('title') or '').strip()[:30]}」"
                       for e in entries if isinstance(e.get("title"), str))
+    if "deep-work" in philosophy_ids:
+        return f"{titles}只需两分钟，留到下一个休息窗口处理，不打断当前工作。"
     return (f"{titles}这类两分钟内的小事不用排进日历——现在立刻做掉更省心，"
             "做完随时告诉我。")
 
@@ -216,7 +240,16 @@ def profiler_node(state: SchedulerState) -> dict:
     # 问询消费失败死循环）。pending 活跃 + 词形完全匹配 → 零 LLM 直判
     # insisted（_DRAFT_ACK_RE 确认词表短路先例）；限定三种核心形态+语气
     # 前缀防误吞（「坚持每天跑步」类新表达不含在内），条目从 pending 快照取
-    if pending and _INSIST_CONFIRM_RE.match(state.get("user_input") or ""):
+    pending_entries = (pending or {}).get("entries") or []
+    fasting = [e for e in pending_entries if e.get("fasting_time_choice")]
+    choice = (_fasting_choice(state["user_input"], fasting[0], now)
+              if fasting and len(pending_entries) == 1 else None)
+    if choice:
+        entry = dict(fasting[0], start=choice)
+        del entry["fasting_time_choice"]
+        pending = {**pending, "entries": [entry]}
+        data = {"resolution": {"action": "confirmed"}}
+    elif pending and _INSIST_CONFIRM_RE.match(state.get("user_input") or ""):
         logger.info("[scheduler] profiler：坚持确认词短路 insisted（零 LLM）")
         data = {"resolution": {"action": "insisted", "entries": []},
                 "draft_plan": [], "reply": ""}
@@ -254,9 +287,7 @@ def profiler_node(state: SchedulerState) -> dict:
                         if isinstance(e.get("duration"), int) and e["duration"] > 0:
                             e["duration"] = hint
     if pending is None:
-        # 两分钟短路先于一切分流（用户明说时间也劝导直接做——两分钟法则的
-        # 精神就是"别为小事花排期成本"）；pending 活跃轮不触发（回复语义是
-        # 结算问询，2026-10-21 批 4 取舍）
+        # 用户给定时间或正在回答问询时，不以“两分钟法则”覆盖意图。
         shortcut = _two_minute_hit(data, state.get("philosophy_ids") or [])
         if shortcut:
             return {"task_profile": data, "draft_plan": [], "final_reply": shortcut}
@@ -272,6 +303,7 @@ def profiler_node(state: SchedulerState) -> dict:
     # 偏好避让窗（批 5）：直落条目撞窗不拦（用户明给时间，意志优先）但附注
     # 提醒——引擎/finder 侧才是硬闸（模糊排期不再落窗内）
     avoid = parse_avoid_windows(state.get("memory_rules") or [])
+    hard_windows = [w for w in avoid if w.get("hard")]
     prefer_clash: list[str] = []
     conflict_queue: list[dict] = []  # 撞期条目（建议时间统一由引擎一轮算出）
     agent_entries: list[dict] = []   # 时间待引擎定的 agent 草案
@@ -333,6 +365,11 @@ def profiler_node(state: SchedulerState) -> dict:
                 "开放，建议先确认网点营业时间")
         if start < now:
             raise_question("past", [entry])
+        elif hits_window(start, duration, hard_windows):
+            raise_question("no_time", [entry], hard_window=True)
+        elif (not insist and start.hour >= 12
+              and _fasting_checkup(entry["title"], state["user_input"])):
+            raise_question("no_time", [{**entry, "fasting_time_choice": True}])
         elif insist:
             if any(_overlaps(start, start + timedelta(minutes=duration), b0, b1)
                    for b0, b1 in busy):
@@ -420,6 +457,11 @@ def profiler_node(state: SchedulerState) -> dict:
     if pending:
         res = data.get("resolution")
         action = res.get("action") if isinstance(res, dict) else None
+        # 时间问询快照保留原钟点。仅从本轮明确选择生成新时间，模型不能代用户确认。
+        if fasting and not choice and action not in ("cancelled", "inbox"):
+            raise_question("no_time", pending_entries)
+            turn_consumed = True
+            action = None
         if action == "displace" and pending.get("kind") != "conflict":
             action = None  # 形态错配：非 conflict 问询没有"挤开"对象
         if action in ("inbox", "cancelled") \

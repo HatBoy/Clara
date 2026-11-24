@@ -107,6 +107,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
   const [dataExport, setDataExport] = useState<DataExportState>({ kind: "idle" });
   const [merge, setMerge] = useState<MergeState>({ kind: "idle" });
   const [version, setVersion] = useState<string | null>(null);
+  const [passwordRevision, setPasswordRevision] = useState(0);
   const pollTimer = useRef<number | null>(null);
   const mounted = useRef(true);
   // 输入草稿（未失焦保存的最新值）：测试连接/立即同步读它，消除 blur 竞态
@@ -187,6 +188,10 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
     try {
       const next = await updateSyncConfig(patch);
       if (!mounted.current) return;
+      if ("webdav_password" in patch && draftRef.current.password === (patch.webdav_password ?? "")) {
+        delete draftRef.current.password;
+        setPasswordRevision((v) => v + 1);
+      }
       setCfg(next);
       setSaveError(null);
     } catch (e) {
@@ -204,7 +209,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
       const res = await testWebdav({
         url: draftRef.current.url ?? cfg.webdav_url ?? undefined,
         username: draftRef.current.username ?? cfg.webdav_username ?? undefined,
-        password: draftRef.current.password ?? cfg.webdav_password ?? undefined,
+        password: draftRef.current.password ?? undefined,
       });
       if (!mounted.current) return;
       setTest({ kind: "done", ok: res.ok, ms: res.ms, message: res.message });
@@ -454,7 +459,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                 手动压成 zip，经下方「导入导出」恢复——设备丢失时的灾备路径
               </span>
               <span className="settings-row-desc sync-error">
-                云端表文件为明文 JSON，包含模型 API Key 与聊天记录，请使用可信的
+                云端业务数据为明文 JSON，包含聊天记录；专用凭证字段不会上传，请使用可信的
                 HTTPS 服务；本机定时任务执行记录不参与同步。
               </span>
             </div>
@@ -479,6 +484,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                 maxLength={300}
                 onChange={(v) => save({ webdav_url: v || null })}
                 onDraft={(v) => {
+                  delete draftRef.current.password;
                   draftRef.current.url = v;
                 }}
               />
@@ -488,7 +494,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
             <div className="settings-row-info">
               <span className="settings-row-name">账号与密码</span>
               <span className="settings-row-desc">
-                用户名（匿名服务可留空）+ 应用密码（坚果云等请在服务端生成；本地明文存储）
+                用户名（匿名服务可留空）+ 应用密码（坚果云等请在服务端生成；仅本机 Windows 用户可解密）
               </span>
             </div>
             <div className="settings-row-control sync-cred-group">
@@ -498,19 +504,27 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                 maxLength={100}
                 onChange={(v) => save({ webdav_username: v || null })}
                 onDraft={(v) => {
+                  delete draftRef.current.password;
                   draftRef.current.username = v;
                 }}
               />
               <SetInput
                 type="password"
-                value={cfg.webdav_password ?? ""}
-                placeholder="密码"
+                key={`${cfg.webdav_url}-${cfg.webdav_username}-${passwordRevision}`}
+                value=""
+                placeholder={cfg.webdav_password_set ? "已配置，输入可替换" : "密码"}
                 maxLength={200}
                 onChange={(v) => save({ webdav_password: v || null })}
                 onDraft={(v) => {
                   draftRef.current.password = v;
                 }}
               />
+              {cfg.webdav_password_set && (
+                <button type="button" className="about-link" onClick={() => {
+                  draftRef.current.password = "";
+                  save({ webdav_password: null });
+                }}>清除密码</button>
+              )}
             </div>
           </div>
           <div className="settings-row">
@@ -655,6 +669,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                   分析结果：新增 {merge.result.new_count} 项 · 冲突 {merge.result.updated_count} 项
                 </span>
                 <span className="settings-row-desc">
+                  {merge.result.protected_count > 0 && `其中 ${merge.result.protected_count} 条是你明确确认的偏好。选择覆盖将以备份版本为准。`}
                   冲突 = 同一条目两侧内容不同（下表最多展示 50 条；无冲突时直接导入）
                 </span>
               </div>
@@ -690,7 +705,7 @@ export default function SyncSettings({ refreshKey = 0 }: { refreshKey?: number }
                 {merge.result.conflicts.map((c, i) => (
                   <div className="sync-conflict-row" key={i}>
                     <span>{c.table}</span>
-                    <span>{c.pk}</span>
+                    <span title={c.protected_rule ?? c.pk}>{c.protected_rule ? `明确偏好：${c.protected_rule}` : c.pk}</span>
                     <span>{c.local_updated_at?.slice(0, 19).replace("T", " ") || "—"}</span>
                     <span>{c.backup_updated_at?.slice(0, 19).replace("T", " ") || "—"}</span>
                   </div>

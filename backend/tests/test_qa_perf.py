@@ -185,3 +185,134 @@ def test_reflection_pipeline_fast(monkeypatch):
         reflection.run_reflection(db)
         wall = time.perf_counter() - t0
     assert wall < 0.5, f"reflection 管线 {wall:.2f}s 超 500ms"
+
+
+@pytest.mark.parametrize('days', [180, 365])
+def test_long_history_retention_and_short_query(days, tmp_path):
+    """文件库测保留窗口与短词召回；记录耗时和空间，不把 CI 机器绝对性能写成 SLA。"""
+    from sqlalchemy import create_engine, insert, select, func
+    from sqlalchemy.orm import Session
+    from database import Base, _ensure_episodic_fts
+    from models import BehaviorEvent, EpisodicFact
+    from services import episodic, ai_data
+    engine = create_engine(f'sqlite:///{tmp_path / "年度测试.db"}')
+    Base.metadata.create_all(engine)
+    _ensure_episodic_fts(engine)
+    now = datetime.now()
+    try:
+        with Session(engine) as db:
+            db.connection().exec_driver_sql('PRAGMA journal_mode=WAL')
+            db.execute(insert(BehaviorEvent), [{'kind':'resize','created_at':now-timedelta(days=n)} for n in range(days)])
+            db.execute(insert(EpisodicFact), [{'topic':'行程','fact':'常规事项','source':'chat','created_at':now} for _ in range(550)])
+            db.add(EpisodicFact(topic='出差', fact='永久样本', source='chat', created_at=now-timedelta(days=days)))
+            db.add(EpisodicFact(topic='出差', fact='过期样本', source='chat', expires_at=now-timedelta(days=1)))
+            db.commit()
+            assert ai_data.prune_behavior_events(db) == days - 90
+            assert episodic.expire_episodic_facts(db) == 1
+            elapsed = []
+            for _ in range(20):
+                start = time.perf_counter()
+                assert episodic.search_facts(db, '出差')[0].fact == '永久样本'
+                elapsed.append((time.perf_counter()-start)*1000)
+            assert db.scalar(select(func.count()).select_from(BehaviorEvent)) == 90
+            print(f'{days} 天：短词 P95={sorted(elapsed)[18]:.1f}ms，库和 WAL 共 {sum(f.stat().st_size for f in tmp_path.glob("年度测试.db*"))} 字节')
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize('batch', [1, 3])
+def test_schedule_stream_stage_percentiles(monkeypatch, batch):
+    """从请求入口到各 SSE 帧产出时计时；不将 ASGI 测试客户端的整包缓冲算作首帧。"""
+    import asyncio
+    from math import ceil
+    from routers.ai_coach import chat
+    from schemas import ChatIn
+    from qa_helpers import activate_model
+    from services import chat_turn
+
+    activate_model()
+    cap = MultiKeyLLMCapture({
+        KEY_PROFILER: _prof([{'task_id': None, 'origin': 'agent', 'title': f'验收事项{i}', 'duration': 30} for i in range(batch)]),
+        KEY_ADJUDICATOR: '{"selections":[],"explanation":""}',
+        '意图路由器': '{"intent":"schedule","reason":"测试"}',
+    })
+    monkeypatch.setattr(llm, 'call_llm', cap)
+    monkeypatch.setattr(chat_turn, 'schedule_compaction', lambda: None)
+    patch_scheduler_inputs(monkeypatch, patch_settings=False)
+    samples = {key: [] for key in ('status', 'draft', 'done')}
+
+    async def collect():
+        for iteration in range(101):
+            first = {}
+            with TestingSessionLocal() as db:
+                t0 = time.perf_counter()
+                response = await chat(ChatIn(message='安排写周报'), db=db)
+                async for frame in response.body_iterator:
+                    if not frame.startswith('data: '):
+                        continue
+                    ev = json.loads(frame[6:])
+                    if ev['type'] in samples:
+                        if ev['type'] == 'draft':
+                            assert len(ev['draft_plan']) == batch
+                            assert all(entry['start'] for entry in ev['draft_plan'])
+                        first.setdefault(ev['type'], (time.perf_counter() - t0) * 1000)
+                assert first.keys() == samples.keys(), first
+                assert first['status'] <= first['draft'] <= first['done']
+                if iteration:  # 第一轮预热不计时
+                    for key in samples:
+                        samples[key].append(first[key])
+    asyncio.run(collect())
+    assert cap.count(KEY_PROFILER) == cap.count(KEY_ADJUDICATOR) == 101
+    for key, values in samples.items():
+        values.sort()
+        p95 = values[ceil(.95 * len(values)) - 1]
+        print(f'排期 {batch} 项 {key}：P50 {statistics.median(values):.1f} ms，P95 {p95:.1f} ms，n={len(values)}')
+        assert p95 < 2000, (key, values)
+
+
+def test_memory_workload_5000_events_500_facts(tmp_path):
+    """文件 WAL；校验 FTS 实际命中而非回退后碰巧找对，再测热查询。"""
+    from database import Base, _ensure_episodic_fts
+    from models import BehaviorEvent, EpisodicFact, MemoryRule
+    from services import ai_data, episodic
+    from sqlalchemy import create_engine, event, insert
+    from sqlalchemy.orm import Session
+
+    path = tmp_path / '容量.db'
+    engine = create_engine(f'sqlite:///{path}')
+    try:
+        Base.metadata.create_all(engine)
+        _ensure_episodic_fts(engine)
+        with Session(engine) as db:
+            assert db.connection().exec_driver_sql('PRAGMA journal_mode=WAL').scalar() == 'wal'
+            db.execute(insert(BehaviorEvent), [{'kind': 'resize'} for _ in range(5000)])
+            db.execute(insert(EpisodicFact), [dict(topic='项目', source='chat', fact=
+                '目标项目验收会议' if i == 0 else f'无关事实{i}') for i in range(500)])
+            db.add(MemoryRule(source='user_manual', category='边界', content='周三下午不开会', slot='boundary'))
+            db.commit()
+            sql = []
+            def capture(conn, cursor, statement, params, context, many):
+                sql.append(statement)
+            event.listen(engine, 'before_cursor_execute', capture)
+            try:
+                assert episodic.search_facts(db, '目标项目')[0].fact == '目标项目验收会议'
+                assert any(' MATCH ' in q for q in sql)
+                assert not any('ORDER BY episodic_facts.created_at DESC' in q for q in sql)
+            finally:
+                event.remove(engine, 'before_cursor_execute', capture)
+            for name, read in [('FTS', lambda: episodic.search_facts(db, '目标项目')[0].fact),
+                               ('核心槽位', lambda: ''.join(ai_data.injected_rules(db).core))]:
+                samples = []
+                for i in range(101):
+                    start = time.perf_counter()
+                    result = read()
+                    elapsed = (time.perf_counter() - start) * 1000
+                    assert ('目标项目' if name == 'FTS' else '周三下午不开会') in result
+                    if i:
+                        samples.append(elapsed)
+                p95 = sorted(samples)[94]
+                print(f'{name}: n=100 P50={statistics.median(samples):.3f}ms P95={p95:.3f}ms')
+                assert p95 < 100
+            print(f'容量：库={path.stat().st_size}B WAL={path.with_suffix(".db-wal").stat().st_size}B')
+    finally:
+        engine.dispose()

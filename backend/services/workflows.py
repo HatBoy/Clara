@@ -283,13 +283,13 @@ def _claim_nightly_maintenance(db: Session, now: datetime) -> bool:
     settings = get_settings(db)
     if not settings.nightly_enabled:
         return False
-    started = now.hour * 60 + now.minute
-    start_min = min(settings.nightly_start_min, 1410)
-    if started < start_min + _NIGHTLY_MAINTENANCE_DEADLINE_MIN:
+    deadline = settings.nightly_start_min + _NIGHTLY_MAINTENANCE_DEADLINE_MIN
+    anchor = now.date() - timedelta(days=deadline // 1440)
+    if now < datetime.combine(anchor, time.min) + timedelta(minutes=deadline):
         return False
-    if _has_run(db, "nightly", now.date()):
-        return False  # 正常夜间整理已跑，维护已在其中完成
-    return _claim_run(db, "nightly_maint", now.date())
+    if _has_run(db, "nightly", anchor):
+        return False
+    return _claim_run(db, "nightly_maint", anchor)
 
 
 def _claim_prep(db: Session, now: datetime) -> bool:
@@ -540,7 +540,7 @@ async def _run_morning() -> None:
         payload = (result or {}).get("preflight") or {}
         reply = (result or {}).get("final_reply") or ""
         with SessionLocal() as db:
-            proposal = create_proposal(db, kind="preflight", payload=payload)
+            proposal = create_proposal(db, kind="preflight", payload={**payload, "workflow_label": f"{date.today()} 晨间概览 · 只读"})
             # 问询锚点优先（Track B 批 6）：简报若带 memory 问询，assistant 消息
             # 必须挂问询行——挂 preflight 行会把 active_pending 锚点顶替，问询失活
             anchor = (result or {}).get("question_proposal_id") or proposal.id
@@ -824,7 +824,33 @@ def ingest_in_flight() -> bool:
     return _ingest_in_flight
 
 
-async def run_ingest_now(manual: bool = False) -> None:
+def start_ingest(*, manual=False, db=None, now=None):
+    """同一事件循环内先占执行权，再认领并派发；任务未开始被取消也会释放。"""
+    if not try_begin_ingest():
+        return None
+    try:
+        if db is not None and not _claim_ingest(db, now):
+            _end_ingest()
+            return None
+        from services.sse_kit import spawn
+        task = asyncio.create_task(_perform_ingest(manual))
+        task.add_done_callback(lambda _: _end_ingest())
+        spawn(task)
+        return task
+    except BaseException:
+        _end_ingest()
+        raise
+
+
+async def run_ingest_now(manual: bool = False) -> dict:
+    task = start_ingest(manual=manual)
+    if task is None:
+        return {"skipped": "in_flight", "silent": False, "drafts": 0, "inbox": 0,
+                "direct_calendar": 0, "direct_inbox": 0}
+    return await task
+
+
+async def _perform_ingest(manual: bool) -> dict:
     """数据采集提炼：手写区 run_ingest 独立入口产出排期草案 / 收件箱清单 / 综述 →
     schedule 卡（evidence 溯源并入 payload，M1-①）+ inbox 卡（M1-②）+ ingest 广播。
     ai_enabled 关 / 零激活 / 手写区未就绪 → 静默跳过（降级矩阵），认领行
@@ -860,9 +886,6 @@ async def run_ingest_now(manual: bool = False) -> None:
         base.update(kw)
         return base
 
-    if not try_begin_ingest():
-        logger.info("数据采集：上一轮仍在途，本次跳过（防重入闸）")
-        return _summary(skipped="in_flight")
     try:
         with SessionLocal() as db:
             settings = get_settings(db)
@@ -1004,8 +1027,6 @@ async def run_ingest_now(manual: bool = False) -> None:
     except Exception:
         logger.exception("数据采集工作流异常")
         return _summary(skipped="error")
-    finally:
-        _end_ingest()
 
 
 def _collect_priority_plan(db: Session, now: datetime) -> dict | None:
@@ -1132,6 +1153,7 @@ async def _run_nightly() -> None:
         tomorrow = (now + timedelta(days=1)).date()
         proposal_id = None
         pieces = 0
+        focus_note = None
         with SessionLocal() as db:
             settings = get_settings(db)
             # 补账轮静默（2026-10-25 启动收敛）：20 点后启动的应用首 tick 即命中，
@@ -1147,7 +1169,10 @@ async def _run_nightly() -> None:
                 payload = None
             if payload is not None:
                 try:
+                    payload = {**payload, "workflow_label": "夜间预排 · 待确认"}
                     pieces = len(payload["draft_plan"])
+                    from services.time_strategy import nightly_focus_note
+                    focus_note = nightly_focus_note(db, payload["draft_plan"], tomorrow)
                     proposal = create_proposal(db, kind="schedule", payload=payload)
                     proposal_id = proposal.id
                     append_message(
@@ -1180,8 +1205,10 @@ async def _run_nightly() -> None:
                         try:
                             eve = await asyncio.to_thread(eve_fn, db, tomorrow)
                             eve_payload = (eve or {}).get("preflight") or {}
+                            if focus_note:
+                                eve_payload = {**eve_payload, "checklist": [focus_note, *(eve_payload.get("checklist") or [])]}
                             eve_reply = (eve or {}).get("final_reply") or ""
-                            eve_proposal = create_proposal(db, kind="preflight", payload=eve_payload)
+                            eve_proposal = create_proposal(db, kind="preflight", payload={**eve_payload, "workflow_label": f"{tomorrow} 明日概览 · 只读"})
                             # 问询锚点优先（Track B 批 6，同晨间）
                             eve_anchor = (eve or {}).get("question_proposal_id") or eve_proposal.id
                             append_message(db, role="assistant",
@@ -1315,38 +1342,22 @@ async def agent_loop() -> None:
         try:
             now = datetime.now()
             with SessionLocal() as db:
-                morning = _claim_morning(db, now)
-                ingest = _claim_ingest(db, now)
-                nightly = _claim_nightly(db, now)
-                prep = _claim_prep(db, now)
-                hardtask = _claim_hardtask(db, now)
-                weekly = _claim_weekly_report(db, now)
-                nightly_maint = _claim_nightly_maintenance(db, now)
-                minutes_invite = _claim_minutes_invite(db, now)
-                briefs = _claim_custom_briefs(db, now)
-                autobackup = _claim_autobackup(db, now)
-            if morning:
-                asyncio.create_task(_run_morning())
-            if ingest:
-                asyncio.create_task(run_ingest_now())
-            if nightly:
-                asyncio.create_task(_run_nightly())
-            if prep:
-                asyncio.create_task(_run_prep())
-            if hardtask:
-                asyncio.create_task(_run_hardtask())
-            if minutes_invite:
-                asyncio.create_task(_run_minutes_invite())
-            if weekly:
-                asyncio.create_task(_run_weekly_report(now))
-            if nightly_maint:
-                asyncio.create_task(_run_nightly_maintenance())
-            for brief_id in briefs:
-                asyncio.create_task(_run_custom_brief(brief_id))
+                from services.sse_kit import spawn
+                # 每次认领后立即派发，后续认领异常不吞掉已提交的工作。
+                for claim, runner in ((_claim_morning, _run_morning), (_claim_nightly, _run_nightly),
+                                      (_claim_prep, _run_prep), (_claim_hardtask, _run_hardtask),
+                                      (_claim_nightly_maintenance, _run_nightly_maintenance),
+                                      (_claim_minutes_invite, _run_minutes_invite),
+                                      (_claim_autobackup, _run_autobackup)):
+                    if claim(db, now):
+                        spawn(asyncio.create_task(runner()))
+                start_ingest(db=db, now=now)
+                if _claim_weekly_report(db, now):
+                    spawn(asyncio.create_task(_run_weekly_report(now)))
+                for brief_id in _claim_custom_briefs(db, now):
+                    spawn(asyncio.create_task(_run_custom_brief(brief_id)))
             if _claim_heartbeat(now):
-                asyncio.create_task(_run_heartbeat())
-            if autobackup:
-                asyncio.create_task(_run_autobackup())
+                spawn(asyncio.create_task(_run_heartbeat()))
         except Exception:
             logger.exception("工作流调度循环异常")
         await asyncio.sleep(AGENT_TICK_SECONDS)

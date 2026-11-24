@@ -77,12 +77,21 @@ def adjudicator_node(state: SchedulerState) -> dict:
     for note in state.get("displace_notes") or []:
         parts.append(f"（{note}）")
     if question is not None:
-        parts.append(question_text(question))
+        fasting = [e["title"] for e in question.get("entries") or [] if e.get("fasting_time_choice")]
+        if not fasting or len(fasting) != len(question["entries"]):
+            parts.append(question_text(question))
+        if question.get("hard_window"):
+            parts.append("你设置了周五 16:00 后不排工作的红线，请选择不跨线的时段。")
+        if fasting:
+            parts.append(f"「{'、'.join(fasting)}」提到了空腹。常规空腹体检可优先考虑上午，"
+                         "具体以体检机构要求为准。尚未写入；请回复“保留下午”或给出上午的具体钟点。")
     if clean:
         bits = [f"「{e['title']}」{fmt_when(datetime.fromisoformat(e['start']))}" for e in clean]
         parts.append("已出草案：" + "、".join(bits) + "，确认后写入日历。")
         if explanation:  # 裁决器秘书口吻"为何此时段"附注（一句话说人话）
             parts.append(f"（{explanation}）")
+    if final_decision.get("unplaced"):
+        parts.append("以下事项没有可用时段，未加入草案：" + "、".join(final_decision["unplaced"]) + "。")
     if insist_clash:
         # insisted 落库但撞既有日程：不拦（用户意志优先），如实附注提醒
         parts.append(f"（按你的坚持安排；注意「{'、'.join(insist_clash[:3])}」与既有日程时间重叠）")
@@ -185,7 +194,7 @@ def _adjudicate(state, clean, conflict_queue, slots, question,
             except ValueError:
                 adj_dt = None
             # 微调仅同日 ±90 分钟内生效；越界/跨日丢弃回落候选原值
-            if (adj_dt and adj_dt.date() == target.date()
+            if (adj_dt and adj_dt.tzinfo is None and adj_dt.date() == target.date()
                     and abs((adj_dt - target).total_seconds()) <= _ADJUST_MAX_MIN * 60):
                 target = adj_dt
         chosen[s["key"]] = target
@@ -217,19 +226,26 @@ def _adjudicate(state, clean, conflict_queue, slots, question,
                                       ctx.get("busy_meta"))
         load_v = (day_busy_minutes(base_busy)
                   if ctx["day_budget"] is not None else None)
+        accepted = []
         for i, e in enumerate(clean):
             key = f"a{i}"
             target = chosen.get(key)
             if target is None:
                 target = datetime.fromisoformat(slot_by_key[key]["slot"])
-            ok, duration = valid(e, target, busy_v, load_v)
+            # 未处理条目的主荐已对用户有意义；先保留，不能被前项微调挤掉。
+            reserved = [(t, t + timedelta(minutes=_eff_duration(later, philosophy)))
+                        for j, later in enumerate(clean[i + 1:], i + 1)
+                        for t in [datetime.fromisoformat(slot_by_key[f"a{j}"]["slot"])]]
+            ok, duration = valid(e, target, busy_v + reserved, load_v)
             if not ok:
                 base = datetime.fromisoformat(slot_by_key[key]["slot"])
                 if base != target:
                     ok, duration = valid(e, base, busy_v, load_v)
                     if ok:
                         target = base
-            if not ok and e.get("_from_user"):
+            if (not ok and e.get("_from_user") and target >= now and not any(
+                    target < end and begin < target + timedelta(minutes=duration)
+                    for begin, end in busy_v + reserved)):
                 # 用户明示钟点优先（2026-11-16 优化批 2）：午休/避让/就医上午
                 # 这些"Clara 的排期约束"不推翻用户原话；保留该条并在回复里
                 # 说明冲突（过去时间仍由 valid 的 now 闸拒绝，仅在 base 回退成功
@@ -237,11 +253,18 @@ def _adjudicate(state, clean, conflict_queue, slots, question,
                 user_kept.append(str(e.get("title") or ""))
                 ok, duration = True, _eff_duration(e, philosophy)
             if not ok:
-                continue  # 主荐也过不了（同批竞态）→ 保持该条主荐原样不追加
+                final_decision.setdefault("unplaced", []).append(e["title"])
+                chosen.pop(key, None)
+                continue
+            accepted.append(e)
+            if key in chosen:
+                chosen[key] = target
             e["start"] = target.isoformat()
             busy_v.append((target, target + timedelta(minutes=duration)))
             if load_v is not None:
                 load_v[target.date()] = load_v.get(target.date(), 0) + duration
+
+        clean[:] = accepted
 
     # conflict 首条 suggestion 换槽（问询文案只挂首条建议；conflict 不占 busy）
     if (question is not None and question.get("kind") == "conflict"

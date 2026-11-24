@@ -18,7 +18,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 
 from config import HOST, PORT
 from database import SessionLocal, init_db
-from routers import about, ai_coach, chat_channels, cli_tools, export, ingest, integrations, jobs, mcp_servers, model_providers, onboarding, projects, reminders, search, settings, stats, sync, tasks, undo
+from routers import time_strategy, about, ai_coach, chat_channels, cli_tools, export, ingest, integrations, jobs, mcp_servers, model_providers, onboarding, projects, reminders, search, settings, stats, sync, tasks, undo
 from services import chat_channels as chat_channel_workers
 from services import local_folder
 from services.ai_data import seed_memory_rules_if_empty
@@ -56,7 +56,8 @@ async def lifespan(app: FastAPI):
     # 备份恢复第二阶段（2026-11-06 批 A）：宿主重启后端进程后，staging 里有
     # PENDING 标记则原子替换库/配置——须先于 init_db 与一切数据库访问（此刻
     # 本进程尚未连接库文件，无锁可直覆；详见 services/backup.py 模块头）
-    if apply_pending_restore():
+    restored = apply_pending_restore()
+    if restored:
         logger.info("备份恢复已应用（restore_staging → 数据目录替换完成）")
     init_db()
     logger.info("数据库初始化完成")  # 详细两态日志（首次建库/核对无变化）由 init_db 内部打
@@ -64,7 +65,7 @@ async def lifespan(app: FastAPI):
         # 配置快照自愈（2026-10-22）：删库重灌 seed 不会再连坐清空模型/数据
         # 接入等配置——启动时检测库刚重建特征则从 data/config_snapshot.json 恢复，
         # 随后无条件覆盖写新快照（services/config_backup.py 模块头有机制说明）
-        maybe_restore_and_snapshot(db)
+        maybe_restore_and_snapshot(db, allow_restore=not restored)
         # 2026-11-15 用户拍板：任何模式（含 dev）启动一律不灌测试数据——启动时
         # 重灌对程序测试干扰大；测试数据改由 backend/gen_test_data.py 手动生成。
         # seed_if_empty 仅供 pytest 的 seeded_db fixture 使用（services/seed.py）。
@@ -99,7 +100,7 @@ async def lifespan(app: FastAPI):
     # 退出前最终冲刷（2026-11-15 迭代四）：防抖 3s 窗口内改完就关应用的最后一波
     # 本地变更推出去（三端一致）；拿不到锁（恰在同步中）或超时/失败不阻塞退出
     try:
-        await asyncio.wait_for(asyncio.to_thread(sync_engine._sync_once), timeout=20)
+        await asyncio.wait_for(asyncio.to_thread(sync_engine.flush_on_exit), timeout=20)
     except Exception as exc:
         # busy（在途轮持锁）是可解释形态：在途轮自身可能被退出硬杀于中途，靠
         # manifest 自愈收敛无最终丢失（docs/sync-backup.md）；留痕便于排障
@@ -177,6 +178,7 @@ app.include_router(sync.router)
 app.include_router(undo.router)
 app.include_router(onboarding.router)
 app.include_router(export.router)
+app.include_router(time_strategy.router)
 
 
 @app.get("/api/health")
@@ -186,4 +188,13 @@ def health_check():
 
 if __name__ == "__main__":
     # 作为 Sidecar 运行时，通过 uvicorn 启动在固定的本地端口
-    uvicorn.run(app, host=HOST, port=PORT)
+    import sys
+    import threading
+
+    server = uvicorn.Server(uvicorn.Config(app, host=HOST, port=PORT, timeout_graceful_shutdown=2))
+    if "--host-managed" in sys.argv and sys.stdin is not None:
+        def watch_host():
+            if sys.stdin.readline().strip() == "clara:quit":
+                server.should_exit = True
+        threading.Thread(target=watch_host, name="宿主退出监听", daemon=True).start()
+    server.run()

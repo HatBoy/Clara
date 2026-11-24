@@ -15,6 +15,7 @@ from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Index, 
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
+from services.device_secrets import SecretMap, SecretText
 
 
 def _new_uuid() -> str:
@@ -366,7 +367,11 @@ class ModelProvider(Base):
     # LiteLLM 模型标识，须带 provider/ 前缀（如 deepseek/deepseek-chat、openai/gpt-4o、ollama/qwen3）
     model_name: Mapped[str] = mapped_column(String(100), nullable=False, comment="LiteLLM 模型标识（provider/模型名）")
     # 空 = 本地免鉴权服务（如 Ollama），探测与将来推理请求均不带 Authorization
-    api_key: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="API 密钥；空 = 本地免鉴权服务")
+    api_key: Mapped[str | None] = mapped_column(SecretText(200), nullable=True, comment="API 密钥；空 = 本地免鉴权服务")
+    @property
+    def api_key_set(self) -> bool:
+        return bool(self.api_key)
+
     # 深度思考模式开关（调用时映射 litellm reasoning_effort 统一思考参数；阶段二消费，探测不带）
     thinking_mode: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"), comment="深度思考模式开关（映射 reasoning_effort）")
     # 上下文长度（token 数，档位枚举在契约层 ContextLength）
@@ -396,7 +401,7 @@ class IntegrationSettings(Base):
 
     存放第三方集成凭证与验证状态。与 app_settings 分表：凭证域与通用偏好域隔离，
     不混入 /api/settings 契约；将来 MCP 接入配置同表加列（宽表先例同 app_settings）。
-    api_key 明文存库 + 原样回显：本地单用户桌面应用（同 ModelProvider.api_key 口径）。
+    api_key 由设备凭证库保存，设置页本机回显（同 ModelProvider.api_key 口径）。
     已连接应用列表不落库——真源在 Composio 云端实时拉取（见 services/integrations.py）。
     """
 
@@ -404,7 +409,7 @@ class IntegrationSettings(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     # Composio 云端 API Key（控制台 Settings → Project Settings → API Keys 申请）；空 = 未配置
-    composio_api_key: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="Composio API Key；空 = 未配置")
+    composio_api_key: Mapped[str | None] = mapped_column(SecretText(200), nullable=True, comment="Composio API Key；空 = 未配置")
     # 上次验证结果：True=有效 / False=无效 / None=从未验证（配置行徽标口径）
     composio_key_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True, comment="上次 Key 验证结果；空 = 从未验证")
     # 上次验证失败的中文摘要；验证成功置空（比 ModelProvider 多存一列：重开设置页仍能看到失败原因）
@@ -461,11 +466,11 @@ class McpServer(Base):
     # stdio 命令参数（每项一个参数，如 ["-y", "dingtalk-mcp@latest"]）
     args: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, comment="stdio 命令参数")
     # stdio 环境变量（与父进程环境合并而非替换；含敏感凭据）
-    env: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True, comment="stdio 环境变量（含凭据）")
+    env: Mapped[dict[str, str] | None] = mapped_column(SecretMap(), nullable=True, comment="stdio 环境变量（含凭据）")
     # http/sse 服务端点；空 = stdio
     url: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="http/sse 端点；空 = stdio")
     # http/sse 请求头（含认证凭据，如 Authorization: Bearer xxx）
-    headers: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True, comment="http/sse 请求头（含凭据）")
+    headers: Mapped[dict[str, str] | None] = mapped_column(SecretMap(), nullable=True, comment="http/sse 请求头（含凭据）")
     # 装载开关：阶段二 agent 构造 MultiServerMCPClient 时只取 enabled 行
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"), comment="装载开关")
     # 上次连通性测试结果：True=在线 / False=离线 / None=从未测试（卡片徽标口径）
@@ -548,8 +553,8 @@ class ChatChannel(Base):
     # feishu / dingtalk（wechat 恒无行）
     provider: Mapped[str] = mapped_column(String(20), nullable=False, unique=True, comment="渠道标识")
     # 开放平台应用 ID（飞书 App ID / 钉钉 Client ID）
-    app_id: Mapped[str] = mapped_column(String(100), nullable=False, comment="开放平台应用 ID")
-    app_secret: Mapped[str] = mapped_column(String(200), nullable=False, comment="应用密钥（明文，本地单用户定调）")
+    app_id: Mapped[str] = mapped_column(SecretText(100, missing=""), nullable=False, comment="开放平台应用 ID")
+    app_secret: Mapped[str] = mapped_column(SecretText(200, missing=""), nullable=False, comment="应用密钥的本机引用")
     # worker 装载开关：False = 不监听该渠道消息（卡片「停用」）
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"), comment="worker 装载开关")
     # 定时任务推送开关（2026-10-23 二批）：True = 晨报/会前准备等主动推送也发
@@ -593,6 +598,15 @@ class Proposal(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, comment="处理时刻；空 = 未处理")
     # 同步地基（2026-11-14 同步备份）：行级 LWW 时间判据；触发器单点盖章（同 StatsReport.updated_at 注）
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, comment="更新时间")
+
+    @property
+    def settled_count(self) -> int:
+        return len((self.payload.get('_decisions') or {}).get('receipts', self.payload.get('accepted_indexes', [])))
+
+    @property
+    def item_ids(self) -> list[str]:
+        from services.proposal_decisions import visible_ids
+        return visible_ids(self)
 
     def __repr__(self) -> str:
         return f"<Proposal id={self.id} {self.kind} {self.outcome!r}>"
@@ -683,6 +697,9 @@ class MemoryRule(Base):
                                                            comment="高置信规则的结构化避让窗锚")
     # 最近一次被印证的时刻（时间衰减锚：超 90 天未印证由学习降 confidence）
     last_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, comment="最近印证时刻")
+    pause_until: Mapped[date | None] = mapped_column(Date, nullable=True)
+    last_decay_day: Mapped[date | None] = mapped_column(Date, nullable=True)
+    confirmed_sources: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # 同义印证计数（2026-11-03 记忆重构置信演化）：夜间反思 keep 印证 +1；
     # ≥3 次且置信 <0.8 自动升档（行为验证级）——读取零成本的列方案（非聚合查询）
     observation_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0",
@@ -727,6 +744,14 @@ class MemoryDismissal(Base):
 
     def __repr__(self) -> str:
         return f"<MemoryDismissal {self.fingerprint[:12]}>"
+
+
+class EstimatePreference(Base):
+    """用户采纳的计划时长，按规范标题匹配，不代表实耗。"""
+    __tablename__ = "estimate_preferences"
+    title_key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now)
 
 
 class EpisodicFact(Base):
@@ -981,8 +1006,8 @@ class SyncSettings(Base):
     # 服务地址（可含子目录，如 https://dav.example.com/dav/clara/；同步根=URL+/clara-sync/）
     webdav_url: Mapped[str | None] = mapped_column(String(300), nullable=True, comment="WebDAV 服务地址；空=未配置")
     webdav_username: Mapped[str | None] = mapped_column(String(100), nullable=True, comment="WebDAV 用户名；空=匿名")
-    # 明文存库（本地单用户定调，同 app_secret 口径）
-    webdav_password: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="WebDAV 密码（明文，本地单用户定调）")
+    # 数据库仅存本机凭证库引用（同 app_secret 口径）
+    webdav_password: Mapped[str | None] = mapped_column(SecretText(200), nullable=True, comment="WebDAV 密码的本机引用")
     # 自动备份（默认开——2026-11-14 需求：每天早/中/晚三次，详见 workflows._claim_autobackup）
     auto_backup_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("1"), comment="自动备份开关（默认开）")
     # 备份目录；空 = 默认 get_data_dir()/backups（与 pre-restore 安全副本同目录）

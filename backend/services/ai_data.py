@@ -93,10 +93,12 @@ def rule_label(row: MemoryRule) -> str:
     source = getattr(row, "source", "ai_reflect")
     category = getattr(row, "category", "")
     content = getattr(row, "content", "")
+    until = getattr(row, "pause_until", None)
+    prefix = f"[仅在{until.isoformat()}之后执行] " if until and until >= date.today() else ""
     if source in ("user_manual", "chat"):
-        return f"[{category}·用户设定] {content}"
+        return prefix + f"[{category}·用户设定] {content}"
     confidence = getattr(row, "confidence", None) or 0.0
-    return f"[{category}·AI学习·置信{round(confidence, 2)}] {content}"
+    return prefix + f"[{category}·AI学习·置信{round(confidence, 2)}] {content}"
 
 
 def format_memory_lines(db: Session, *, personality: list[str] | None = None
@@ -260,6 +262,8 @@ def aggregate_deviations(db: Session, *, days: int = 14) -> list[dict]:
     buckets: dict[tuple, list[BehaviorEvent]] = {}
     for ev in rows:
         ctx = ev.context or {}
+        if ctx.get("temporary_exception"):
+            continue
         key = (ev.kind, ctx.get("weekday"), ctx.get("period"))
         buckets.setdefault(key, []).append(ev)
     out: list[dict] = []
@@ -269,6 +273,7 @@ def aggregate_deviations(db: Session, *, days: int = 14) -> list[dict]:
             continue
         deltas = [e.delta_min for e in evs if e.delta_min is not None]
         out.append({
+            "event_ids": [ev.id for ev in evs],
             "kind": kind, "weekday": weekday, "period": period,
             "count": len(evs),
             "avg_delta": round(sum(deltas) / len(deltas)) if deltas else None,
@@ -407,6 +412,11 @@ def upsert_memory_rule(
         )
     )
     if existing is not None:
+        if source == "ai_reflect" and (existing.source in ("user_manual", "chat")
+                                      or (existing.pause_until and existing.pause_until >= date.today())):
+            return existing
+        if source in ("chat", "user_manual") and existing.source == "ai_reflect":
+            existing.source = source
         existing.confidence = confidence
         existing.evidence = evidence
         existing.last_confirmed_at = last_confirmed_at or datetime.now()
@@ -461,12 +471,15 @@ def decay_stale_rules(db: Session, *, stale_days: int = _DECAY_STALE_DAYS,
 
     衰减后再被归纳印证（upsert 同 category+content）会重设 confidence 并刷新
     last_confirmed_at——衰减周期重新起算，语义正确。"""
-    cutoff = datetime.now() - timedelta(days=stale_days)
+    now = datetime.now()
+    cutoff = now - timedelta(days=stale_days)
     decayed = removed = 0
     for row in list_memory_rules(db):
         if (row.source != "ai_reflect" or row.last_confirmed_at is None
-                or row.last_confirmed_at >= cutoff):
+                or row.last_confirmed_at >= cutoff or row.last_decay_day == now.date()
+                or (row.pause_until and row.pause_until >= now.date())):
             continue
+        row.last_decay_day = now.date()
         new_conf = round(row.confidence - step, 2)
         if new_conf <= _DECAY_FLOOR:
             db.delete(row)
@@ -593,65 +606,6 @@ def record_proposal_outcome(
     return row
 
 
-def settle_proposal_items(
-    db: Session, proposal_id: str, indexes: list[int], outcome: str,
-    applied_entries: list[dict] | None = None,
-) -> tuple[Proposal, dict] | None:
-    """条目级部分结算（2026-10-24 数据源页单条操作批）：从待处理卡中移除指定
-    条目（payload 收缩），剩余条目继续待审；全部清空才回写 outcome 结束整卡。
-    返回 (行, 被结算条目的 mini payload)——路由层用它调 on_proposal_settled，
-    使拒绝只静默被拒条目的指纹（同卡其余条目不受牵连；整卡拒绝牵连全部是旧口径）。
-    错误用 ValueError 携带码：行不存在 → None；已决或非卡形态 → "settled"；
-    序号越界/空 → "index"。evidence.idx 与 draft_plan 序对齐是溯源契约，收缩后
-    同步重排；mini 的 evidence 保留原 idx（钩子只读指纹不看 idx）。
-
-    modified 回流（2026-11-01 优化批 4）：条目级 modified 且带 applied_entries
-    时，偏离记入 payload.item_diffs（卡未清空的暂存形态——整卡结算后反思链
-    经 payload 一并读到；清空单条卡则同时落 modified_diff 常规键）。
-
-    kind 扩展（2026-11-11 确认卡三件套统一批）：minutes 卡条目键同 inbox
-    （items，条目 dict）；hardtask 卡条目键 steps（纯标题字符串数组——
-    _modified_diff 对非 dict 条目自然跳过、evidence 重排仅 schedule、台账
-    钩子只认 schedule/inbox，均不受字符串条目影响）。"""
-    row = db.get(Proposal, proposal_id)
-    if row is None:
-        return None
-    if row.outcome is not None or row.kind not in (
-            "inbox", "schedule", "minutes", "hardtask"):
-        raise ValueError("settled")
-    items_key = ("draft_plan" if row.kind == "schedule"
-                 else "steps" if row.kind == "hardtask" else "items")
-    payload = dict(row.payload or {})
-    items = list(payload.get(items_key) or [])
-    drop = set(indexes)
-    if not drop or any(i < 0 or i >= len(items) for i in drop):
-        raise ValueError("index")
-    settled_items = [items[i] for i in sorted(drop)]
-    payload[items_key] = [it for i, it in enumerate(items) if i not in drop]
-    mini: dict = {items_key: settled_items}
-    if row.kind == "schedule":
-        kept, mini_evs = [], []
-        for ev in payload.get("evidence") or []:
-            (mini_evs if ev.get("idx") in drop else kept).append(ev)
-        for new_idx, ev in enumerate(kept):
-            ev["idx"] = new_idx
-        payload["evidence"] = kept
-        mini["evidence"] = mini_evs
-    if outcome == "modified" and applied_entries:
-        diff = _modified_diff(applied_entries, items, indexes)
-        if diff:
-            payload.setdefault("item_diffs", []).extend(diff)
-            if not payload[items_key]:
-                payload["modified_diff"] = payload.pop("item_diffs")
-    row.payload = payload  # JSON 列整体替换 setattr（record_proposal_outcome 惯例）
-    if not payload[items_key]:
-        row.outcome = outcome
-        row.resolved_at = datetime.now()
-    db.commit()
-    db.refresh(row)
-    return row, mini
-
-
 def get_proposal(db: Session, proposal_id: str) -> Proposal | None:
     """单条建议（active_pending 的锚点行读取）。"""
     return db.get(Proposal, proposal_id)
@@ -678,9 +632,11 @@ def expire_stale_proposals(db: Session, *, before: datetime,
     for row in rows:
         if ingest is not None and bool((row.payload or {}).get("from_ingest")) != ingest:
             continue
-        row.outcome = "expired"
-        row.resolved_at = now
-        n += 1
+        # 人工结算可能恰好完成：在 UPDATE 条件中复核，不能用旧 ORM 快照覆盖终态。
+        from sqlalchemy import update
+        n += db.execute(update(Proposal).where(Proposal.id == row.id, Proposal.outcome.is_(None),
+                                                Proposal.payload == row.payload)
+                        .values(outcome='expired', resolved_at=now)).rowcount
     db.commit()
     if n:
         logger.info("过期未决建议 %d 条已置 expired（ingest=%s）", n, ingest)
@@ -974,7 +930,7 @@ def active_draft(db: Session) -> dict | None:
                if isinstance(e, dict) and e.get("title")]
     if not entries:
         return None
-    return {"proposal_id": row.id, "draft_plan": entries}
+    return {"proposal_id": row.id, "draft_plan": entries, "item_ids": row.item_ids}
 
 
 def active_delete(db: Session) -> dict | None:
@@ -988,7 +944,7 @@ def active_delete(db: Session) -> dict | None:
              if isinstance(t, dict) and t.get("task_id")]
     if not tasks:
         return None
-    return {"proposal_id": row.id, "tasks": tasks}
+    return {"proposal_id": row.id, "tasks": tasks, "item_ids": row.item_ids}
 
 
 # —— 信任渐进统计（PRD §10：样本 ≥10 且采纳率 ≥60% 解锁主动推送；<30% 回退） ——

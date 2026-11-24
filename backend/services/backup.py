@@ -39,6 +39,7 @@ import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from services.device_secrets import portable, strip_database
 from config import DATABASE_PATH, IS_PACKAGED, get_data_dir
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,7 @@ def create_backup(dest: str, version: str | None = None) -> dict:
         tmp_zip = out.with_name(out.name + ".tmp")
         try:
             _snapshot_db_to(tmp_db)
+            strip_database(tmp_db)
             files: list[str] = ["manifest.json", "clara.db"]
             with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
                 manifest = {
@@ -119,8 +121,12 @@ def create_backup(dest: str, version: str | None = None) -> dict:
                 zf.write(tmp_db, "clara.db")
                 snapshot = data_dir / "config_snapshot.json"
                 if snapshot.is_file():
-                    zf.write(snapshot, "config_snapshot.json")
+                    from services.config_backup import _CONFIG_TABLES
+                    snap = json.loads(snapshot.read_text(encoding="utf-8"))
+                    clean = {t: [portable(t, row) for row in snap[t]] for t in _CONFIG_TABLES if t in snap}
+                    zf.writestr("config_snapshot.json", json.dumps(clean, ensure_ascii=False))
                     files.append("config_snapshot.json")
+                _check_member_sizes(zf, _normalize_members(zf.namelist()))
             os.replace(tmp_zip, out)
         finally:
             tmp_db.unlink(missing_ok=True)
@@ -153,6 +159,28 @@ def prepare_restore(src: str) -> dict:
     archive = Path(src)
     if not archive.is_file() or not zipfile.is_zipfile(archive):
         raise ValueError("所选文件不是有效的备份包")
+    data_dir = get_data_dir()
+    staging = data_dir / _STAGING_DIR
+    with _backup_lock, tempfile.TemporaryDirectory(dir=data_dir) as work:
+        if (staging / _PENDING_FLAG).exists():
+            raise ValueError("已有待应用的恢复，请先重启后端")
+        candidate = Path(work) / "staging"
+        candidate.mkdir()
+        _prepare_archive(archive, candidate)
+        backups_dir = data_dir / "backups"
+        backups_dir.mkdir(exist_ok=True)
+        safe_copy = backups_dir / f"pre-restore-{datetime.now():%Y%m%d-%H%M%S-%f}.db"
+        _snapshot_db_to(safe_copy)
+        (candidate / _PENDING_FLAG).write_text(
+            json.dumps({"safe_copy": str(safe_copy)}, ensure_ascii=False), encoding="utf-8")
+        if staging.exists():  # 无标记的旧版残留
+            shutil.rmtree(staging)
+        os.replace(candidate, staging)
+    return {"ok": True, "requires_restart": True,
+            "message": "备份校验通过，已预写安全副本，等待重启后端应用恢复"}
+
+
+def _prepare_archive(archive: Path, staging: Path) -> None:
     with zipfile.ZipFile(archive) as zf:
         norm = _normalize_members(zf.namelist())
         if not norm:
@@ -163,27 +191,27 @@ def prepare_restore(src: str) -> dict:
         except (KeyError, ValueError, OSError):
             raise ValueError("备份包 manifest 损坏，无法恢复")
 
-        data_dir = get_data_dir()
-        staging = data_dir / _STAGING_DIR
-        if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir(parents=True)
-
+        if not isinstance(manifest, dict):
+            raise ValueError("备份包 manifest 格式异常")
         if manifest.get("app") == "clara-sync":
+            declared = manifest.get("tables", {})
+            if not isinstance(declared, dict):
+                raise ValueError("同步清单的表目录格式异常")
+            missing = [t for t in declared if f"tables/{t}.json" not in norm]
+            if missing:
+                raise ValueError(f"同步备份缺少清单声明的表：{missing[:3]}")
             _materialize_sync_zip(zf, staging, norm)
         elif manifest.get("app") == "clara":
             illegal = set(norm) - _ZIP_MEMBERS
             if illegal:
-                shutil.rmtree(staging, ignore_errors=True)
                 raise ValueError(f"备份包含未知成员，拒绝恢复：{sorted(illegal)[:3]}")
             if "clara.db" not in norm:
-                shutil.rmtree(staging, ignore_errors=True)
                 raise ValueError("备份包缺少数据库文件，无法恢复")
             # 按归一名落盘（成员已全量白名单校验，无穿越风险）
             for norm_name, orig in norm.items():
-                (staging / norm_name).write_bytes(zf.read(orig))
+                with zf.open(orig) as source, (staging / norm_name).open("wb") as target:
+                    shutil.copyfileobj(source, target)
         else:
-            shutil.rmtree(staging, ignore_errors=True)
             raise ValueError("这不是 Clara 的备份包")
 
     # 快照完整性探测：能开且 sqlite_master 可查即认（旧版本备份表少些无妨，
@@ -191,28 +219,14 @@ def prepare_restore(src: str) -> dict:
     try:
         probe = sqlite3.connect(staging / "clara.db")
         try:
-            probe.execute("SELECT count(*) FROM sqlite_master").fetchone()
+            if (probe.execute("PRAGMA integrity_check").fetchall() != [("ok",)]
+                    or not probe.execute("SELECT 1 FROM sqlite_master WHERE type='table'").fetchone()
+                    or probe.execute("PRAGMA foreign_key_check").fetchone()):
+                raise ValueError("备份数据库未通过完整性校验")
         finally:
             probe.close()
     except sqlite3.DatabaseError as e:
-        shutil.rmtree(staging, ignore_errors=True)
         raise ValueError(f"备份数据库无法读取：{e}")
-
-    # 安全体：恢复前把当前库快照一份（恢复失败 / 误恢复的找回出口）
-    backups_dir = data_dir / "backups"
-    backups_dir.mkdir(exist_ok=True)
-    safe_copy = backups_dir / f"pre-restore-{datetime.now():%Y%m%d-%H%M%S}.db"
-    _snapshot_db_to(safe_copy)
-
-    (staging / _PENDING_FLAG).write_text(
-        json.dumps({"safe_copy": str(safe_copy)}, ensure_ascii=False), encoding="utf-8"
-    )
-    logger.info("恢复已就绪（staging 落盘），等待后端重启应用；安全副本 %s", safe_copy)
-    return {
-        "ok": True,
-        "requires_restart": True,
-        "message": "备份校验通过，已预写安全副本，等待重启后端应用恢复",
-    }
 
 
 def _materialize_sync_zip(zf: zipfile.ZipFile, staging: Path,
@@ -348,53 +362,61 @@ def apply_pending_restore() -> bool:
         return False
 
     new_db = staging / "clara.db"
-    if not new_db.is_file():  # PENDING 在但库不在：脏 staging，直接清退
-        shutil.rmtree(staging, ignore_errors=True)
-        logger.warning("恢复标记存在但备份数据库缺失，已丢弃 staging")
-        return False
+    if not new_db.is_file():
+        raise ValueError("待恢复数据库缺失，保留标记供排查")
 
-    # 清残留 wal/shm（宿主强杀旧进程时可能遗留，与新库不匹配会致读取错乱）
-    for suffix in ("-wal", "-shm"):
-        stale = Path(str(DATABASE_PATH) + suffix)
-        if stale.exists():
-            stale.unlink()
-
-    # 恢复前留存本机 sync_settings（raw sqlite 只读——此刻尚无 ORM 连接）
+    # 让 SQLite 合并上次启动遗留的 WAL，而不是手删其中尚未回写的提交。
+    if DATABASE_PATH.exists():
+        _standalone_db(DATABASE_PATH)
     local_sync = _read_sync_settings_row(DATABASE_PATH)
-    shutil.copy2(new_db, DATABASE_PATH)
-    snapshot = staging / "config_snapshot.json"
-    if snapshot.is_file():
-        shutil.copy2(snapshot, get_data_dir() / "config_snapshot.json")
-    shutil.rmtree(staging, ignore_errors=True)
-    _reconcile_sync_settings_after_restore(local_sync)
-    # 同步快照失效（2026-11-14 同步备份）：数据回到过去，旧 Base 与现库不再同源，
-    # 下轮同步按冷启动语义重新对齐（防旧数据凭旧快照被判定为「远端已删」）。
-    # 局部导入防环（backup ← sync_engine 的 import 链在函数体内闭环）
-    from services.sync_engine import clear_snapshot
+    with tempfile.TemporaryDirectory(dir=staging) as work:
+        candidate = Path(work) / "clara.db"
+        shutil.copy2(new_db, candidate)
+        strip_database(candidate)
+        _reconcile_sync_settings_after_restore(local_sync, candidate)
+        _standalone_db(candidate)
+        os.replace(candidate, DATABASE_PATH)
+
+    # 原始输入和标记一直留到附属状态失效；失败不得进入正常启动。
+    (get_data_dir() / "config_snapshot.json").unlink(missing_ok=True)
+    from services.sync_engine import clear_snapshot, snapshot_dir
 
     clear_snapshot()
-    logger.info("已从备份恢复数据（clara.db / 配置快照），同步快照已重置")
+    if snapshot_dir().exists():
+        raise OSError("恢复后未能清理旧同步快照")
+    pending.unlink()
+    shutil.rmtree(staging, ignore_errors=True)
+    logger.info("已从备份恢复数据，同步与配置快照已重置")
     return True
+
+
+def _standalone_db(path: Path) -> None:
+    """转为完整单文件；有其它连接占用 WAL 时失败重试，绝不删除旁路文件。"""
+    conn = sqlite3.connect(path)
+    try:
+        if conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":
+            raise sqlite3.OperationalError("无法安全关闭数据库 WAL")
+    finally:
+        conn.close()
 
 
 def _read_sync_settings_row(db_path: Path) -> dict | None:
     """只读取库内 sync_settings 首行（列名随库）；表/库缺失（首装或同步格式
     物化库）返回 None。"""
-    try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-        try:
-            cur = conn.execute("SELECT * FROM sync_settings LIMIT 1")
-            row = cur.fetchone()
-            if row is None:
-                return None
-            return dict(zip([d[0] for d in cur.description], row))
-        finally:
-            conn.close()
-    except sqlite3.Error:
+    if not db_path.exists():
         return None
+    conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
+    try:
+        if not conn.execute("PRAGMA table_info(sync_settings)").fetchone():
+            return None
+        cur = conn.execute("SELECT * FROM sync_settings LIMIT 1")
+        row = cur.fetchone()
+        return dict(zip([d[0] for d in cur.description], row)) if row else None
+    finally:
+        conn.close()
 
 
-def _reconcile_sync_settings_after_restore(local_row: dict | None) -> None:
+def _reconcile_sync_settings_after_restore(local_row: dict | None, db_path: Path) -> None:
     """恢复后的 sync_settings 对账（2026-11-17 二轮批 1）：
 
     - **device_id 恒保本机**（本机无则新生成）：备份格式 zip 原样带回原机的
@@ -406,8 +428,8 @@ def _reconcile_sync_settings_after_restore(local_row: dict | None) -> None:
     """
     import uuid as _uuid
 
-    restored = _read_sync_settings_row(DATABASE_PATH)
-    conn = sqlite3.connect(DATABASE_PATH)
+    restored = _read_sync_settings_row(db_path)
+    conn = sqlite3.connect(db_path)
     try:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(sync_settings)")}
         if not cols:
@@ -419,12 +441,12 @@ def _reconcile_sync_settings_after_restore(local_row: dict | None) -> None:
             from database import Base
 
             table = Base.metadata.tables["sync_settings"]
-            eng = create_engine(f"sqlite:///{DATABASE_PATH}")
+            eng = create_engine(f"sqlite:///{db_path}")
             try:
                 table.create(eng, checkfirst=True)
             finally:
                 eng.dispose()
-            conn = sqlite3.connect(DATABASE_PATH)
+            conn = sqlite3.connect(db_path)
             cols = {r[1] for r in conn.execute("PRAGMA table_info(sync_settings)")}
         if local_row is None:
             # 本机首装：备份带来的行只换 device_id（防署名复用），凭证照单全收
@@ -434,9 +456,11 @@ def _reconcile_sync_settings_after_restore(local_row: dict | None) -> None:
                 conn.commit()
             return
         if restored is not None and (restored.get("webdav_url") or "").strip():
-            # 备份格式（凭证跟随备份）：只回写本机署名
-            conn.execute("UPDATE sync_settings SET device_id = ?",
-                         (local_row.get("device_id") or str(_uuid.uuid4()),))
+            # 只沿用同地址且同账号的本机授权，不从灾备包继承秘密。
+            same = all(local_row.get(k) == restored.get(k) for k in ("webdav_url", "webdav_username"))
+            conn.execute("UPDATE sync_settings SET device_id = ?, webdav_password = ?",
+                         (local_row.get("device_id") or str(_uuid.uuid4()),
+                          local_row.get("webdav_password") if same else None))
         else:
             # 同步格式 / 备份无凭证：本机行整行回写（INSERT OR REPLACE——表可能
             # 刚补建为空；列交集取键，旧备份列少不炸）

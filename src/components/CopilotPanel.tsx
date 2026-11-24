@@ -1,3 +1,4 @@
+import { dispatchCanvasJump } from "../lib/shortcuts";
 import { memo, useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { ArrowUp, Check, ChevronDown, Flag, HelpCircle, PanelRightClose, Pencil, RotateCcw, Sparkles, Timer, Trash2, X } from "lucide-react";
@@ -9,7 +10,8 @@ import {
   fetchAiMessages,
   fetchAiProposals,
   resolveProposal,
-  settleProposalItems,
+  type ProposalDecision,
+  type DecisionResult,
   streamChat,
   submitMinutes,
   type AiProposal,
@@ -98,45 +100,11 @@ const EDITABLE_KINDS = new Set(["schedule", "inbox", "hardtask", "minutes"]);
 // 建议卡（assistant 气泡下结构化卡片）：待处理时按 kind 出按钮——schedule 草案
 // 采纳 / 修改 / 拒绝 + 条件「转收件箱」，inbox/hardtask/delete 两钮（采纳有
 // 落库副作用：收件箱条目落库 / 步骤入收件箱 / 确认删除），报告类无按钮；
-// 已决渲染徽标。「修改」进卡内逐条编辑（2026-10-25 问题 3 修复：旧"修改后
-// 采纳"无编辑入口点击即回写，modified 口径失真），编辑后条目经 onModify 走
-// App 落库 + modified 回写；「转收件箱」承接"不排期但保留为待办"心智
-// （onSendToInbox），仅含新建条目（无 task_id）的卡显示——条目本就来自收件箱
-// 时（夜间重要整理预排 / 批量排期）该按钮无意义，隐藏（2026-10-26）。
-// 回写统一经 onSettle 上抛父组件（乐观改行 + 异步落库都在一处）
-function ProposalCard({
-  proposal,
-  onAccept,
-  onSettle,
-  onModify,
-  onModifyInbox,
-  onModifyMinutes,
-  onModifySteps,
-  onRemoveEntries,
-  onSendToInbox,
-  onAcceptMinutes,
-  onInviteSubmit,
-}: {
+// 编辑、删除和采纳都针对用户正在看的同一组条目，一次提交整组决定。
+function ProposalCard({ proposal, onDecision, onPreviewDay, onInviteSubmit }: {
   proposal: AiProposal;
-  onAccept: () => void;
-  onSettle: (outcome: "modified" | "rejected", reason?: string) => void;
-  // 编辑后条目上抛（schedule 专属）：App applyDraftItems 落库 + modified 回写
-  onModify: (items: DraftPlanItem[]) => void;
-  // 编辑后条目上抛（2026-11-11 确认卡三件套统一批）：inbox / minutes 走
-  // applyInboxItems、hardtask 走 applyHardtaskSteps，均 modified 回写
-  onModifyInbox?: (items: InboxItem[]) => void;
-  onModifyMinutes?: (items: InboxItem[]) => void;
-  onModifySteps?: (steps: string[]) => void;
-  // 编辑态删除条目上抛（四类条目卡通用，2026-11-11）：settle-items(rejected)
-  // 收缩卡 payload（有 task_id 的任务本体不动、自然回未排期收件箱；agent 新建
-  // 条目不落库；hardtask 步骤不建）；卡清空由后端自动回写整卡 rejected
-  onRemoveEntries?: (indexes: number[]) => Promise<boolean>;
-  // 条目剥时间转收件箱（schedule 专属）：App applyInboxItems + accepted 回写
-  onSendToInbox: () => void;
-  // 会后纪要采纳（minutes 专属，2026-11-10）：全量条目上抛，App 溯源组装后
-  // applyInboxItems 入收件箱 + accepted 回写；2026-11-11 三件套对齐——勾选
-  // 与「采纳并安排」直排退役，选择性取舍统一走编辑态逐条删除
-  onAcceptMinutes?: (items: InboxItem[]) => void;
+  onDecision: (items: ProposalDecision[], emptyOutcome?: "accepted" | "rejected", reason?: string) => Promise<boolean>;
+  onPreviewDay: (items: DraftPlanItem[], day: string) => void;
   // 邀请卡补记提交（minutes_invite 专属，批 3）：纪要原文直提 → 新 minutes 卡；
   // 返回错误文案或 null（成功），卡内显示
   onInviteSubmit?: (text: string) => Promise<string | null>;
@@ -151,7 +119,7 @@ function ProposalCard({
   const [editing, setEditing] = useState(false);
   const [edits, setEdits] = useState<{ title: string; minutes: number; priority: number; start: string }[]>([]);
   // 编辑态删除标记（2026-11-11）：标删行灰化划线可恢复（钮变 RotateCcw），确认
-  // 时走 onRemoveEntries（settle rejected）+ 保留条目照常 modified；取消编辑全弃
+  // 时被删与保留条目按稳定标识合并为一组决定；取消编辑全弃
   const [removed, setRemoved] = useState<Set<number>>(new Set());
   // 多条目时日期月历单开（同时至多一条的 WhenPicker 展开，互斥下标记录）
   const [whenIdx, setWhenIdx] = useState<number | null>(null);
@@ -161,6 +129,17 @@ function ProposalCard({
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const pending = proposal.outcome === null;
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  const submit = async (items: ProposalDecision[], emptyOutcome?: "accepted" | "rejected", reason?: string) => {
+    if (busyRef.current) return false;
+    busyRef.current = true;
+    setBusy(true);
+    try { return await onDecision(items, emptyOutcome, reason); }
+    finally { busyRef.current = false; setBusy(false); }
+  };
+  const all = (action: "accept" | "reject" | "inbox", reason?: string) =>
+    submit(proposal.item_ids.map(item_id => ({item_id, action, reason})), action === "reject" ? "rejected" : "accepted", reason);
 
   // 问询行不渲染卡（2026-10-17）：排期问询只留 assistant 文字气泡，回复即确认
   // （"可以"/新时间）——出卡会把确认引导成按钮点击，破坏对话流；重拉历史时
@@ -220,42 +199,17 @@ function ProposalCard({
     setEditing(true);
   };
 
-  // 确认编辑：标删条目先走 onRemoveEntries（settle rejected 收缩卡——先收缩再
-  // modified 回写，applied_entries 与收缩后快照对位反而更准），保留条目按卡分流
-  // 上抛：schedule 走 onModify（applyDraftItems 带时间落库）、inbox/minutes 走
-  // applyInboxItems、hardtask 走 applyHardtaskSteps。编辑值统一规则：标题空串
-  // 回落原值、耗时空档位回落原值（不落 0）、start 空/清除回落原值（拼秒还原），
-  // 原条目展开保留 task_id / source_ref（改期路径与溯源透传不断）。
-  // 全删光 = 卡清空由后端自动回写 rejected，不再上抛保留条目
   const confirmEdit = async () => {
-    const kept = editSource
-      .map((it, i) => ({ it, d: edits[i], i }))
-      .filter(({ i }) => !removed.has(i));
-    const delIndexes = [...removed].sort((a, b) => a - b);
-    setEditing(false);
-    setWhenIdx(null);
-    if (delIndexes.length) await onRemoveEntries?.(delIndexes);
-    if (!kept.length) return;
-    if (proposal.kind === "schedule") {
-      onModify(kept.map(({ it, d }) => ({
-        ...it,
+    const items = proposal.item_ids.map((item_id, i): ProposalDecision => {
+      if (removed.has(i)) return { item_id, action: "reject" };
+      const it = editSource[i], d = edits[i];
+      return { item_id, action: "modify", entry: {
         title: d.title.trim() || it.title,
-        duration: d.minutes || it.duration,
-        priority: d.priority,
-        start: d.start ? `${d.start}:00` : it.start,
-      })) as DraftPlanItem[]);
-    } else if (proposal.kind === "hardtask") {
-      onModifySteps?.(kept.map(({ it, d }) => d.title.trim() || it.title));
-    } else {
-      const items = kept.map(({ it, d }) => ({
-        ...it,
-        title: d.title.trim() || it.title,
-        duration: d.minutes || it.duration,
-        priority: d.priority,
-      })) as InboxItem[];
-      if (proposal.kind === "minutes") onModifyMinutes?.(items);
-      else onModifyInbox?.(items);
-    }
+        ...(proposal.kind === "hardtask" ? {} : { duration: d.minutes || it.duration, priority: d.priority }),
+        ...(proposal.kind === "schedule" ? { start: d.start ? `${d.start}:00` : it.start } : {}),
+      } };
+    });
+    if (await submit(items)) { setEditing(false); setWhenIdx(null); }
   };
 
   // 「转收件箱」条件（2026-10-26 删除批）：条目全带 task_id = 本就来自收件箱
@@ -302,6 +256,8 @@ function ProposalCard({
                             ? "纪要邀请"
                             : "建议"}
         </span>
+        {typeof proposal.payload.workflow_label === "string" && <small>{proposal.payload.workflow_label}</small>}
+        {pending && proposal.item_ids.length > 0 && <small>{proposal.settled_count > 0 ? `已处理 ${proposal.settled_count} 条 · ` : ""}待处理 {proposal.item_ids.length} 条</small>}
         {hasTrace && (
           <button
             type="button"
@@ -317,6 +273,9 @@ function ProposalCard({
         )}
       </div>
 
+      {pending && proposal.kind === "schedule" && !editing && [...new Set(draftItems.map(item => item.start.slice(0, 10)))].map(day => (
+        <button key={day} type="button" className="copilot-proposal-trace-toggle" onClick={() => onPreviewDay(draftItems, day)}>查看 {day} 预览</button>
+      ))}
       {proposal.kind === "schedule" && !editing && (
         <ul className="copilot-proposal-items">
           {draftItems.map((item, i) => (
@@ -332,7 +291,7 @@ function ProposalCard({
           UI 对齐；2026-11-11 三件套统一批扩到四类条目卡——schedule 全字段
           （标题/WhenPicker/耗时/优先级）、inbox 与 minutes 无时间（标题/耗时/
           优先级）、hardtask 纯标题（标题）；统一条目删除：标删行灰化划线可恢复，
-          确认时先 settle 收缩被删条目再走保留条目 modified */}
+          确认时整组在后端同时提交 */}
       {editing && (
         <div className="copilot-edit">
           {edits.map((d, i) => {
@@ -416,7 +375,7 @@ function ProposalCard({
             <button type="button" className="copilot-prop-btn ghost" onClick={() => setEditing(false)}>
               取消
             </button>
-            <button type="button" className="copilot-prop-btn primary" onClick={() => void confirmEdit()}>
+            <button type="button" className="copilot-prop-btn primary" disabled={busy} onClick={() => void confirmEdit()}>
               {removed.size === 0
                 ? "确认采纳"
                 : editSource.length - removed.size > 0
@@ -631,7 +590,7 @@ function ProposalCard({
                   <Check size={13} strokeWidth={2} />
                   补记纪要
                 </button>
-                <button type="button" className="copilot-prop-btn ghost" onClick={() => onSettle("rejected")}>
+                <button type="button" className="copilot-prop-btn ghost" onClick={() => void all("reject")}>
                   本次不用
                 </button>
               </div>
@@ -655,13 +614,13 @@ function ProposalCard({
               onChange={(e) => setReason(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.nativeEvent.isComposing)
-                  onSettle("rejected", reason.trim() || undefined);
+                  void all("reject", reason.trim() || undefined);
               }}
             />
             <button
               type="button"
               className="copilot-prop-btn danger"
-              onClick={() => onSettle("rejected", reason.trim() || undefined)}
+              onClick={() => void all("reject", reason.trim() || undefined)}
             >
               确认拒绝
             </button>
@@ -676,35 +635,22 @@ function ProposalCard({
           </div>
         ) : (
           <div className="copilot-prop-actions">
-            {proposal.kind === "minutes" && onAcceptMinutes ? (
-              // 会后纪要采纳（2026-11-10；2026-11-11 三件套对齐）：全量采纳
-              // 入收件箱，选择性取舍统一走编辑态；零行动项卡退「知道了」纯回写
-              <button
-                type="button"
-                className="copilot-prop-btn primary"
-                onClick={() => onAcceptMinutes(minutesItems)}
-              >
-                <Check size={13} strokeWidth={2} />
-                {minutesItems.length === 0 ? "知道了" : "采纳"}
-              </button>
-            ) : (
-              <button type="button" className="copilot-prop-btn primary" onClick={onAccept}>
-                <Check size={13} strokeWidth={2} />
-                {proposal.kind === "delete" ? "删除" : "采纳"}
-              </button>
-            )}
-            {EDITABLE_KINDS.has(proposal.kind) && editSource.length > 0 && (
+            <button type="button" disabled={busy} className="copilot-prop-btn primary" onClick={() => void all("accept")}>
+              <Check size={13} strokeWidth={2} />
+              {busy ? "提交中…" : proposal.kind === "delete" ? "删除" : proposal.kind === "minutes" && !minutesItems.length ? "知道了" : "采纳"}
+            </button>
+            {!busy && EDITABLE_KINDS.has(proposal.kind) && editSource.length > 0 && (
               <button type="button" className="copilot-prop-btn secondary" onClick={openEdit}>
                 <Pencil size={13} strokeWidth={2} />
                 编辑
               </button>
             )}
-            {proposal.kind === "schedule" && !inboxNative && (
-              <button type="button" className="copilot-prop-btn ghost" onClick={onSendToInbox}>
+            {!busy && proposal.kind === "schedule" && !inboxNative && (
+              <button type="button" className="copilot-prop-btn ghost" onClick={() => void all("inbox")}>
                 转收件箱
               </button>
             )}
-            <button type="button" className="copilot-prop-btn danger" onClick={() => setRejecting(true)}>
+            <button type="button" className="copilot-prop-btn danger" disabled={busy} onClick={() => setRejecting(true)}>
               拒绝
             </button>
           </div>
@@ -772,13 +718,7 @@ function CopilotPanel({
   draft,
   onDiscardDraft,
   onDraft,
-  onAccept,
-  onModify,
-  onModifyInbox,
-  onModifyMinutes,
-  onModifySteps,
-  onSendToInbox,
-  onAcceptMinutes,
+  onDecide,
   onApplied,
   onIngestDone,
   onBulk,
@@ -794,22 +734,7 @@ function CopilotPanel({
   onDiscardDraft: () => void;
   // draft 事件上抛（App 置幽灵方块）
   onDraft: (items: DraftPlanItem[], proposalId: string) => void;
-  // 采纳建议（schedule 从 payload 重建草案应用；其余仅回写）——App 统一处理
-  onAccept: (proposal: AiProposal) => void;
-  // 草案编辑后采纳（2026-10-25 问题 3 修复）：面板逐条编辑的条目上抛，App
-  // applyDraftItems 落库 + modified 回写（modified 从「假修改」变真）
-  onModify: (proposal: AiProposal, items: DraftPlanItem[]) => void;
-  // 条目卡编辑后采纳（2026-11-11 三件套统一批）：inbox/minutes 走
-  // applyInboxItems、hardtask 走 applyHardtaskSteps，均 modified 回写
-  onModifyInbox?: (proposal: AiProposal, items: InboxItem[]) => void;
-  onModifyMinutes?: (proposal: AiProposal, items: InboxItem[]) => void;
-  onModifySteps?: (proposal: AiProposal, steps: string[]) => void;
-  // 草案转收件箱（2026-10-25）：条目剥时间转待办入收件箱，App applyInboxItems
-  // + accepted 回写（承接「不排期但保留为待办」心智）
-  onSendToInbox: (proposal: AiProposal) => void;
-  // 会后纪要采纳（2026-11-10）：卡内勾选后的条目上抛，App applyInboxItems
-  // 入收件箱 + accepted 回写（勾选项可能为空 = 零行动项卡纯回写）
-  onAcceptMinutes?: (proposal: AiProposal, items: InboxItem[]) => void;
+  onDecide: (id: string, items: ProposalDecision[]) => Promise<DecisionResult>;
   // 快录直落（applied 帧，2026-10-17）：origin=user 已由后端写库任务直通 App 刷画布——
   // 不入面板本地列表（finally 重拉纠偏），面板自身零卡片零按钮
   onApplied: (tasks: ApiTask[]) => void;
@@ -818,7 +743,7 @@ function CopilotPanel({
   onIngestDone?: () => void;
   // 批量排期草案（bulk 帧，2026-10-25 功能边界）：App 开弹窗清单确认——
   // 对话框只沟通，批量确认收口弹窗（引擎时间建议经 applyDraftItems 落库）
-  onBulk?: (items: DraftPlanItem[], proposalId: string) => void;
+  onBulk?: (items: DraftPlanItem[], proposalId: string, ids: string[]) => void;
   // 工作流广播递增键（晨/夜/采集 SSE 完成后 App 递增 → 重拉纠偏；overload 除外）
   refreshKey?: number;
 }) {
@@ -829,6 +754,7 @@ function CopilotPanel({
   // 阶段反馈（2026-10-26 提速批 2）：status 帧文案替换静态「思考中…」；
   // 帧频极低（每重节点一帧）直接 setState 无渲染压力，轮始/轮末清空
   const [statusText, setStatusText] = useState("");
+  const [streamNotice, setStreamNotice] = useState("");
   // 零激活引导（挂载拉一次模型表判定；拉取失败不误报——保持 true 不显引导卡）
   const [modelReady, setModelReady] = useState(true);
   const [guideDismissed, setGuideDismissed] = useState(false);
@@ -883,9 +809,14 @@ function CopilotPanel({
       .catch(() => {});
 
   // 重拉会话历史 / 建议列表（挂载、发送收尾、工作流广播递增 refreshKey 三处复用）
+  const proposalRead = useRef(0);
+  const refreshProposals = () => {
+    const gen = ++proposalRead.current;
+    void fetchAiProposals().then(rows => { if (gen === proposalRead.current) setProposals(rows); }).catch(() => {});
+  };
   const refreshAll = () => {
     void fetchAiMessages().then((rows) => setMessages(toPanelMessages(rows))).catch(() => {});
-    void fetchAiProposals().then(setProposals).catch(() => {});
+    refreshProposals();
   };
 
   // 挂载拉取会话历史 / 建议列表 / 模型激活态；卸载中断在途流
@@ -936,7 +867,7 @@ function CopilotPanel({
             { key: `local-${++keySeqRef.current}`, role: "user", content: name, proposalId: null },
             { key: `local-${++keySeqRef.current}`, role: "assistant", content: "已清空会话历史", proposalId: null },
           ]);
-          void fetchAiProposals().then(setProposals).catch(() => {});
+          refreshProposals();
         })
         .catch(() => {
           setMessages((prev) => [
@@ -1014,6 +945,7 @@ function CopilotPanel({
     }
     stopFlagRef.current = false;
     setSending(true);
+    setStreamNotice("");
     setStatusText(""); // 轮始清残留（上轮 status 短路后可能滞留）
     // 乐观 user 气泡（后端 message 回显帧跳过防重复；finally 重拉以真值纠偏）
     setMessages((prev) => [
@@ -1085,6 +1017,8 @@ function CopilotPanel({
           setProposals((prev) => [
             {
               id: ev.proposal_id,
+              item_ids: ev.item_ids,
+              settled_count: 0,
               kind: "schedule",
               payload: { draft_plan: ev.draft_plan },
               outcome: null,
@@ -1097,6 +1031,8 @@ function CopilotPanel({
           setProposals((prev) => [
             {
               id: ev.proposal_id,
+              item_ids: ev.item_ids,
+              settled_count: 0,
               kind: ev.kind as AiProposal["kind"],
               payload: ev.payload,
               outcome: null,
@@ -1113,7 +1049,7 @@ function CopilotPanel({
           onIngestDone?.();
         } else if (ev.type === "bulk") {
           // 批量排期草案：上抛 App 开弹窗（面板零卡片零幽灵方块）
-          onBulk?.(ev.draft_plan, ev.proposal_id);
+          onBulk?.(ev.draft_plan, ev.proposal_id, ev.item_ids);
         } else if (ev.type === "error") {
           dropStreamBubble();
           push({ role: "assistant", content: ev.message, proposalId: null, error: true });
@@ -1126,7 +1062,7 @@ function CopilotPanel({
         // fetch 网络层失败（后端未起等）——显示为警示气泡；卸载中断不算错
         if (e instanceof DOMException && e.name === "AbortError") return;
         dropStreamBubble();
-        push({ role: "assistant", content: "连接助手服务失败，请稍后重试", proposalId: null, error: true });
+        setStreamNotice("助手连接中断，回复可能不完整。已请求核对结果，不会自动重发。");
       })
       .finally(() => {
         // 正常路径 reply 已转正（streaming=false 此处零动作）；异常/中断路径兜底清残留
@@ -1137,7 +1073,7 @@ function CopilotPanel({
         // 用户 /stop 中止：本轮 assistant 已丢弃，消息重拉会整组替换抹掉本地
         // 停止反馈——只重拉建议纠偏（半途 draft/proposal 本地行的真值对账）
         if (stopFlagRef.current) {
-          void fetchAiProposals().then(setProposals).catch(() => {});
+          refreshProposals();
         } else {
           // 重拉真值纠偏（id 关联与时间戳落定、乐观临时键替换、模型态刷新）
           refreshAll();
@@ -1153,84 +1089,29 @@ function CopilotPanel({
     sendText(text);
   };
 
-  // 建议回写（本地乐观改行 + 异步落库；当前草案被决则同步撤幽灵方块）
-  const settleProposal = (id: string, outcome: "modified" | "rejected", reason?: string) => {
-    setProposals((prev) => prev.map((p) => (p.id === id ? { ...p, outcome } : p)));
-    void resolveProposal(id, outcome, reason).catch(() => {});
-    if (draft?.proposalId === id) onDiscardDraft();
-  };
-
-  // 采纳：乐观置徽标，应用与落库由 App 统一处理（schedule 应用失败时下次重拉自愈回待处理）
-  const acceptProposal = (p: AiProposal) => {
-    setProposals((prev) => prev.map((pp) => (pp.id === p.id ? { ...pp, outcome: "accepted" } : pp)));
-    onAccept(p);
-  };
-
-  // 编辑后采纳 / 转收件箱（2026-10-25）：乐观置徽标 + 撤幽灵方块（当前草案被决），
-  // 落库与回写由 App 统一处理（失败重拉自愈回待处理，同采纳口径）
-  const modifyProposal = (p: AiProposal, items: DraftPlanItem[]) => {
-    setProposals((prev) => prev.map((pp) => (pp.id === p.id ? { ...pp, outcome: "modified" } : pp)));
-    if (draft?.proposalId === p.id) onDiscardDraft();
-    onModify(p, items);
-  };
-
-  const sendToInboxProposal = (p: AiProposal) => {
-    setProposals((prev) => prev.map((pp) => (pp.id === p.id ? { ...pp, outcome: "accepted" } : pp)));
-    if (draft?.proposalId === p.id) onDiscardDraft();
-    onSendToInbox(p);
-  };
-
-  // 会后纪要采纳（2026-11-10）：乐观置徽标，落库由 App 统一处理（口径同采纳）
-  const acceptMinutesProposal = (p: AiProposal, items: InboxItem[]) => {
-    setProposals((prev) => prev.map((pp) => (pp.id === p.id ? { ...pp, outcome: "accepted" } : pp)));
-    onAcceptMinutes?.(p, items);
-  };
-
-  // 条目编辑态删除（2026-11-11 三件套统一批，四类条目卡通用）：settle-items
-  // (rejected) 收缩卡 payload（响应行回填本地——条目少一条/outcome 或已回写）；
-  // 全删光（卡清空自动回写 rejected）时撤当前幽灵方块（schedule 的 modify 链
-  // 不再被调，撤除责任在此；非 schedule 卡的 id 不会命中幽灵锚点，天然安全）
-  const removeEntries = async (p: AiProposal, indexes: number[]) => {
+  const commitDecision = async (p: AiProposal, items: ProposalDecision[], emptyOutcome?: "accepted" | "rejected", reason?: string) => {
     try {
-      const updated = await settleProposalItems(p.id, indexes, "rejected");
-      setProposals((prev) => prev.map((pp) => (pp.id === p.id ? updated : pp)));
-      if (draft?.proposalId === p.id && !((updated.payload.draft_plan as unknown[] | undefined)?.length)) {
-        onDiscardDraft();
-      }
+      const updated = items.length ? (await onDecide(p.id, items)).proposal
+        : await resolveProposal(p.id, emptyOutcome ?? "accepted", reason);
+      ++proposalRead.current; // 更旧的列表请求不能覆盖已确认的结果。
+      setProposals(prev => prev.map(row => row.id === p.id ? updated : row));
+      if (draft?.proposalId === p.id && updated.outcome) onDiscardDraft();
+      setStreamNotice("");
       return true;
     } catch (e) {
-      console.error("条目删除失败", e);
+      setStreamNotice((e as {status?:number}).status === 409 ? "建议已由其他操作变更，正在刷新。" : "未收到结算回执，请核对结果后重试，不会重复写入。");
+      refreshAll();
       return false;
     }
   };
 
-  // 编辑后采纳（2026-11-11 三件套统一批）：inbox / minutes / hardtask 三类条目
-  // 卡与 schedule 的 modifyProposal 同款（乐观置 modified + 落库回写由 App 统一）
-  const modifyInboxProposal = (p: AiProposal, items: InboxItem[]) => {
-    setProposals((prev) => prev.map((pp) => (pp.id === p.id ? { ...pp, outcome: "modified" } : pp)));
-    onModifyInbox?.(p, items);
-  };
-
-  const modifyMinutesProposal = (p: AiProposal, items: InboxItem[]) => {
-    setProposals((prev) => prev.map((pp) => (pp.id === p.id ? { ...pp, outcome: "modified" } : pp)));
-    onModifyMinutes?.(p, items);
-  };
-
-  const modifyStepsProposal = (p: AiProposal, steps: string[]) => {
-    setProposals((prev) => prev.map((pp) => (pp.id === p.id ? { ...pp, outcome: "modified" } : pp)));
-    onModifySteps?.(p, steps);
-  };
-
-  // 邀请卡补记提交（批 3）：调 submitMinutes 出新 minutes 卡 → 本卡 accepted
-  // 结算（邀请达成目的）+ 重拉面板；错误文案返给卡内显示
+  // 纪要邀请传入邀约 ID，服务端原子完成子卡创建与邀请结算。
   const submitInviteMinutes = async (p: AiProposal, text: string): Promise<string | null> => {
     try {
       const tid = typeof p.payload.meeting_task_id === "string"
         ? p.payload.meeting_task_id : null;
-      await submitMinutes(tid, text);
-      setProposals((prev) => prev.map((pp) => (pp.id === p.id ? { ...pp, outcome: "accepted" } : pp)));
-      void resolveProposal(p.id, "accepted").catch(() => {});
-      void fetchAiProposals().then(setProposals).catch(() => {});
+      await submitMinutes(tid, text, p.id);
+      refreshAll();
       return null;
     } catch (e) {
       return (e as { detail?: string }).detail || "提炼失败，请稍后重试";
@@ -1344,17 +1225,9 @@ function CopilotPanel({
               {m.role === "assistant" && linked && (
                 <ProposalCard
                   proposal={linked}
-                  onAccept={() => acceptProposal(linked)}
-                  onSettle={(outcome, reason) => settleProposal(linked.id, outcome, reason)}
-                  onModify={(items) => modifyProposal(linked, items)}
-                  onModifyInbox={onModifyInbox ? (items) => modifyInboxProposal(linked, items) : undefined}
-                  onModifyMinutes={onModifyMinutes ? (items) => modifyMinutesProposal(linked, items) : undefined}
-                  onModifySteps={onModifySteps ? (steps) => modifyStepsProposal(linked, steps) : undefined}
-                  onRemoveEntries={(indexes) => removeEntries(linked, indexes)}
-                  onSendToInbox={() => sendToInboxProposal(linked)}
-                  onAcceptMinutes={
-                    onAcceptMinutes ? (items) => acceptMinutesProposal(linked, items) : undefined
-                  }
+                  key={`${linked.id}:${linked.item_ids.join(",")}`}
+                  onDecision={(items, outcome, reason) => commitDecision(linked, items, outcome, reason)}
+                  onPreviewDay={(items, day) => { onDraft(items, linked.id); dispatchCanvasJump(`${day}T12:00:00`); }}
                   onInviteSubmit={(text) => submitInviteMinutes(linked, text)}
                 />
               )}
@@ -1364,6 +1237,7 @@ function CopilotPanel({
 
         {/* 流式气泡已在打字时不再叠加「思考中」（流式气泡恒为末位消息）；
             status 帧到达后替换为当前阶段文案（非流式分支过程反馈，提速批 2） */}
+        {streamNotice && <div role="status" className="copilot-typing">{streamNotice}</div>}
         {sending && !messages[messages.length - 1]?.streaming && (
           <div className="copilot-typing">{statusText || "思考中…"}</div>
         )}

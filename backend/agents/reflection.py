@@ -48,7 +48,6 @@ from services.ai_data import (
     aggregate_deviations,
     day_user_excerpts,
     decay_stale_rules,
-    delete_memory_rule,
     list_memory_rules,
     list_proposals,
     prune_behavior_events,
@@ -177,10 +176,10 @@ def _reflect_candidates(decisions: list[dict], existing_rules: list[str],
         [{"role": "system", "content": REFLECT_PROMPT},
          {"role": "user", "content": json.dumps(
              {"today": day.isoformat(),
-              "decisions": decisions,
+              "decisions": [{k: v for k, v in d.items() if k != "id"} for d in decisions],
               "chat_excerpts": chat_excerpts,
               "existing_rules": existing_rules,
-              "deviations": deviations or []}, ensure_ascii=False)}],
+              "deviations": [{k: v for k, v in d.items() if k != "event_ids"} for d in deviations or []]}, ensure_ascii=False)}],
         json_mode=True, max_tokens=_REFLECT_MAX_TOKENS)
     data = loads_obj(out)
     if data is None:
@@ -210,7 +209,14 @@ def _reflect_candidates(decisions: list[dict], existing_rules: list[str],
             value = min(value, _CHAT_CANDIDATE_CONFIDENCE_CAP)
         elif signal == "behavior":
             value = max(_BEHAVIOR_CONF_MIN, min(value, _BEHAVIOR_CONF_MAX))
+        sources = ((deviations or []) if signal == "behavior" else decisions if signal == "adjudication" else [])
+        idx = c.get("source_idx", 0 if len(sources) == 1 else None)
+        refs = []
+        if type(idx) is int and 0 <= idx < len(sources):
+            record = sources[idx]
+            refs = record.get("event_ids", []) if signal == "behavior" else [record.get("id")]
         candidates.append({
+            "source_ids": [key for key in refs if key],
             "category": category.strip() if isinstance(category, str) and category.strip() else "其他",
             "content": content.strip()[:_CAND_CONTENT_CHARS],
             "evidence": evidence.strip()[:_CAND_EVIDENCE_CHARS],
@@ -252,6 +258,14 @@ def _apply_actions(db: Session, actions: list[dict], report: ReflectionReport) -
             report.kept += 1
             row = db.get(MemoryRule, a.get("rule_id")) if a.get("rule_id") else None
             if row is not None:
+                today = datetime.now().date()
+                seen = {k: v for k, v in (row.confirmed_sources or {}).items()
+                        if (today - date.fromisoformat(v)).days <= 90}
+                fresh = set(a.get("source_ids") or ()) - seen.keys()
+                if (not fresh or row.source != "ai_reflect"
+                        or (row.pause_until and row.pause_until >= today)):
+                    continue
+                row.confirmed_sources = {**seen, **dict.fromkeys(fresh, today.isoformat())}
                 row.observation_count = (getattr(row, "observation_count", 0) or 0) + 1
                 row.last_confirmed_at = datetime.now()
                 if (row.source == "ai_reflect"
@@ -267,10 +281,22 @@ def _apply_actions(db: Session, actions: list[dict], report: ReflectionReport) -
                 db.commit()
             continue
         if a["action"] in ("replace", "merge"):
-            delete_memory_rule(db, a["rule_id"])
-        row = upsert_memory_rule(db, category=a["category"], content=a["content"],
-                                 confidence=a["confidence"], evidence=a["evidence"])
-        if row is None:  # 满员且无可淘汰（全用户规则）：本条放弃，不计数
+            from sqlalchemy import delete
+            # 删除和新增由 upsert 的同一次提交生效；在 SQL 条件内保护刚被手改的规则。
+            deleted = db.execute(delete(MemoryRule).where(
+                MemoryRule.id == a["rule_id"], MemoryRule.source == "ai_reflect",
+                MemoryRule.pause_until.is_(None) | (MemoryRule.pause_until < date.today())))
+            if not deleted.rowcount:
+                db.rollback()
+                continue
+        try:
+            row = upsert_memory_rule(db, category=a["category"], content=a["content"],
+                                     confidence=a["confidence"], evidence=a["evidence"])
+        except Exception:
+            db.rollback()
+            raise
+        if row is None or (row.source != "ai_reflect" and a["action"] in ("replace", "merge")):
+            db.rollback()
             continue
         if a["action"] == "new":
             report.created += 1
@@ -319,7 +345,7 @@ def run_reflection(db: Session) -> ReflectionReport:
     # 行形态）——REFLECT 输入的字符串形态与 arbitrate 的 existing 共用同一份切片
     existing_capped = slice_existing_rules(db)
     rows = [{
-        "kind": p.kind,
+        "id": p.id, "kind": p.kind,
         "titles": proposal_titles(p.kind, p.payload or {}),
         "outcome": p.outcome,
         "reject_reason": (p.payload or {}).get("reject_reason"),

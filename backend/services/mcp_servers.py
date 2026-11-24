@@ -199,6 +199,10 @@ def update_server(db: Session, server_id: str, patch: McpServerUpdate) -> McpSer
     if merged["transport"] != "stdio" and not merged["url"]:
         raise ValueError("该传输方式必须填写服务 URL")
 
+    if any(k in data and data[k] != getattr(row, k) for k in ("transport", "url", "command", "args")):
+        data.setdefault("headers", None)
+        data.setdefault("env", None)
+    old_name = row.name
     old_transport = row.transport
     for key, value in data.items():
         setattr(row, key, value)
@@ -221,6 +225,8 @@ def update_server(db: Session, server_id: str, patch: McpServerUpdate) -> McpSer
     if "enabled" in data:
         data_ingest.mirror_source_enabled(db, row.name, bool(row.enabled))
     mcp_session.invalidate(row.name)
+    if old_name != row.name:
+        mcp_session.invalidate(old_name)
     logger.info("更新 MCP 服务 %s：字段 %s", row.name, sorted(data))
     return row
 

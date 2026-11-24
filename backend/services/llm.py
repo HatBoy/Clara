@@ -470,6 +470,8 @@ def call_llm_aux(
         msg = client.invoke(messages)
         out = msg.content or ""
         _record_usage(client, msg, "aux", tag, t0)
+        if not isinstance(out, str) or not out.strip():
+            raise ValueError("辅助模型返回空正文")
     except NoActiveModelError:
         raise
     except Exception as exc:

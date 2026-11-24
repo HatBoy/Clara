@@ -9,10 +9,10 @@ exclude_unset=True 取数），因此禁用 exclude_none。Create/Update 的长�
 """
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 # 枚举集中定义，service / 测试都从这里取（与前端 PRIORITY_COLORS 键对齐）
 Priority = Literal["high", "medium", "low"]
@@ -446,7 +446,7 @@ _BASE_URL_PATTERN = re.compile(r"^(https?://\S+)?$")
 
 
 class ModelProviderOut(BaseModel):
-    """模型接入响应体。api_key 原样回显——本地单用户桌面应用，编辑表单免重填。"""
+    """模型接入响应体。密钥只写不回显。"""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -454,7 +454,7 @@ class ModelProviderOut(BaseModel):
     name: str
     base_url: Optional[str] = None  # 空 = LiteLLM 官方路由
     model_name: str
-    api_key: Optional[str] = None  # 空 = 本地免鉴权服务
+    api_key_set: bool
     thinking_mode: bool
     context_length: int
     is_active: bool
@@ -542,12 +542,11 @@ class ModelProviderTestOut(BaseModel):
 
 
 class ComposioKeyOut(BaseModel):
-    """Composio Key 配置响应（GET/PUT/POST verify 共用）。api_key 原样回显——
-    本地单用户桌面应用，编辑免重填（同 ModelProviderOut.api_key 口径）。
+    """Composio Key 配置响应（GET/PUT/POST verify 共用）。仅返回设置状态，不回显密钥。
     由 service 显式映射构造：ORM 列名带 composio_ 前缀与字段名不一致，
     from_attributes 按字段名取属性会静默落 None。"""
 
-    api_key: Optional[str] = None  # 空 = 未配置
+    api_key_set: bool
     key_ok: Optional[bool] = None  # 空 = 从未验证
     key_error: Optional[str] = None  # 失败摘要；验证成功为 None
     key_checked_at: Optional[datetime] = None
@@ -956,10 +955,7 @@ class CliAuthStatusOut(BaseModel):
 
 
 class ChatChannelOut(BaseModel):
-    """聊天通讯渠道响应体：目录声明 + 接入行状态合并。app_secret 原样回显
-    供编辑表单回填（Composio key 先例：本地单用户、明文存库随快照导出，
-    GET 本地回环无新增暴露面）；前端密码态显示 + 眼睛按需查看。
-    placeholder=True 为「建设中」占位渠道（微信，恒 configured=False）。"""
+    """聊天通讯渠道响应体：不回显鉴权密钥或微信登录令牌。"""
 
     provider: str
     name: str
@@ -968,7 +964,6 @@ class ChatChannelOut(BaseModel):
     placeholder: bool = False
     configured: bool  # DB 行存在 = 已填凭据
     app_id: Optional[str] = None  # 未配置恒空；编辑表单回填用
-    app_secret: Optional[str] = None  # 同上；未配置恒空
     enabled: bool
     push_enabled: bool = False  # 定时任务推送开关（卡片独立小开关）
     push_ready: bool = False  # 推送目标已缓存（用户与机器人有过对话）
@@ -1078,6 +1073,7 @@ class MemoryRuleOut(BaseModel):
     evidence: Optional[str] = None
     structured_anchor: Optional[dict] = None
     last_confirmed_at: Optional[datetime] = None
+    pause_until: date | None = None
     observation_count: int = 0
     created_at: datetime
     updated_at: datetime
@@ -1198,6 +1194,7 @@ class MinutesIn(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     task_id: Optional[str] = None
+    invite_id: str | None = None
     text: str = Field(min_length=10, max_length=8000)
 
 
@@ -1218,10 +1215,47 @@ class ProposalOut(BaseModel):
 
     id: str
     kind: ProposalKind
+    item_ids: list[str] = Field(default_factory=list)
+    settled_count: int = 0
     payload: dict
     outcome: Optional[ProposalOutcome] = None  # 空 = 待处理
     created_at: datetime
     resolved_at: Optional[datetime] = None
+
+
+    @field_serializer('payload')
+    def public_payload(self, payload: dict) -> dict:
+        # 回执摘要和可见条目标识已有公开字段；不要把内部原始清单/signature 复制给 WebView。
+        return {k: v for k, v in payload.items() if k != '_decisions'}
+
+
+class ProposalDecisionItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    item_id: str = Field(min_length=1, max_length=64)
+    action: Literal["accept", "modify", "inbox", "smart", "schedule", "reject", "skip"]
+    entry: dict | None = None
+    reason: str | None = Field(default=None, max_length=200)
+
+
+class ProposalDecideIn(BaseModel):
+    items: list[ProposalDecisionItem] = Field(min_length=1, max_length=200)
+
+
+class ProposalReceipt(BaseModel):
+    item_id: str
+    action: str
+    task_id: str | None
+    scheduled: bool
+
+
+class ProposalDecideOut(BaseModel):
+    proposal: ProposalOut
+    receipts: list[ProposalReceipt]
+
+
+class ProposalAcceptItemIn(BaseModel):
+    index: int = Field(ge=0)
+    expected: list[dict | str] = Field(min_length=1, max_length=200)
 
 
 class ProposalOutcomeIn(BaseModel):
@@ -1437,8 +1471,7 @@ class RestoreOut(BaseModel):
 
 
 class SyncConfigOut(BaseModel):
-    """同步备份配置行（GET /api/sync）。密码明文回显——本地单用户定调
-    （同 ChatChannel.app_secret 口径，docs/sync-backup.md 安全注记）。
+    """同步备份配置行（GET /api/sync）。密码只写，读侧仅返回已配置标志。
     auto_backup_dir_resolved / auto_backup_last_at / syncing 是 GET 组装字段
     （非库列）：目录解析默认值、最近一次自动备份文件时刻、同步互斥锁状态。"""
 
@@ -1447,7 +1480,7 @@ class SyncConfigOut(BaseModel):
     webdav_enabled: bool
     webdav_url: Optional[str] = None
     webdav_username: Optional[str] = None
-    webdav_password: Optional[str] = None
+    webdav_password_set: bool = False
     auto_backup_enabled: bool
     auto_backup_dir: Optional[str] = None
     auto_backup_dir_resolved: str = ""
@@ -1516,6 +1549,7 @@ class MergeConflictOut(BaseModel):
 
     table: str
     pk: str
+    protected_rule: Optional[str] = None
     local_updated_at: Optional[str] = None
     backup_updated_at: Optional[str] = None
 
@@ -1528,6 +1562,7 @@ class MergeAnalyzeOut(BaseModel):
     new_count: int
     updated_count: int
     tables: dict[str, dict]  # {表名: {new: n, updated: n}}
+    protected_count: int = 0
     conflicts: list[MergeConflictOut]
 
 

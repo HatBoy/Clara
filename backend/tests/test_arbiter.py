@@ -178,6 +178,13 @@ def test_apply_preference_keep_upgrades_existing(monkeypatch):
         assert len(rules) == 1 and rules[0].id == old.id
         assert rules[0].source == "chat" and rules[0].confidence == 1.0
 
+        from services.ai_data import create_proposal
+        from services.chat_config import undo_last_change
+        create_proposal(db, kind="settings_change", payload={"actions": [result["journal"]]})
+        assert undo_last_change(db)["ok"]
+        restored = list_memory_rules(db)[0]
+        assert (restored.id, restored.source, restored.evidence) == (old.id, "ai_reflect", "旧证据")
+
 
 def test_apply_preference_falls_back_to_direct_write(monkeypatch):
     """仲裁异常（LLM 不可用）→ 降级直写 source=chat（用户意图必须落）。"""

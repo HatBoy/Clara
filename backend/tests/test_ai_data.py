@@ -381,14 +381,12 @@ def test_settle_items_modified_diff_item_level():
         row = ai_data.create_proposal(db, kind="inbox", payload={
             "items": [{"title": "A", "duration": 30},
                       {"title": "B", "duration": 30}]})
-        out, _mini = ai_data.settle_proposal_items(
-            db, row.id, [0], "modified",
-            applied_entries=[{"title": "A", "duration": 60}])
-        assert out.payload["item_diffs"][0]["changes"]["duration"] == [30, 60]
-        assert out.outcome is None  # 卡未清空继续待审
-
-        ai_data.settle_proposal_items(db, row.id, [0], "modified",
-                                      applied_entries=[{"title": "B", "duration": 45}])
+        from services.proposal_decisions import decide
+        first, second = row.item_ids
+        out = decide(db,row.id,[{'item_id': first, 'action':'modify', 'entry':{'duration':60}}])['proposal']
+        assert out.payload['item_diffs'][0]['changes']['duration'] == [30, 60]
+        assert out.outcome is None
+        decide(db,row.id,[{'item_id':second, 'action':'modify', 'entry':{'duration':45}}])
         out2 = ai_data.get_proposal(db, row.id)
         assert out2.outcome == "modified"
         assert "modified_diff" in out2.payload and "item_diffs" not in out2.payload

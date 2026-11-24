@@ -187,11 +187,12 @@ def test_minutes_parse_all_empty_503_no_card(client, monkeypatch):
 # —— 批 2：聊天预路由 / minutes_extractor / 去重注入 / finalize 建卡 ——————————
 
 
-def test_router_preroutes_minutes_long_text():
+def test_router_preroutes_minutes_long_text(monkeypatch):
     """纪要词 + 长文本（>80 字或含换行）→ 直判 minutes 零 LLM；短句（代笔
     诉求）不命中。"""
     from agents.nodes import center_router
 
+    monkeypatch.setattr(llm_svc, "call_llm_aux", lambda *args, **kw: '{"intent":"coach"}')
     long_minutes = "开完会了，纪要如下：\n1. 项目排期对齐到下月 15 号\n2. 张三负责客户反馈"
     out = center_router({"user_input": long_minutes, "memory_rules": []})
     assert out["intent"] == "minutes"
@@ -415,3 +416,21 @@ def test_prep_payload_carries_minutes_leftover(client, monkeypatch):
     assert entry["minutes_carryover"]["total"] == 2
     assert entry["minutes_carryover"]["done"] == 1
     assert entry["minutes_carryover"]["leftover"] == ["预约下次评审"]
+
+
+def test_invite_same_text_replay_returns_same_card_and_message(client, monkeypatch):
+    _activate_model()
+    calls = []
+    monkeypatch.setattr(llm_svc, 'call_llm', _fake_llm(calls, {'headline':'评审结果','items':[],'reply':'无需行动'}))
+    with TestingSessionLocal() as db:
+        task = Task(title='周会'); db.add(task); db.commit()
+        invite = ai_data.create_proposal(db,kind='minutes_invite',payload={'meeting_task_id':task.id})
+        body = {'invite_id': invite.id,'task_id':task.id,'text':'团队完成了评审，没有遗留行动项。'}
+    result = client.post('/api/ai/meeting-minutes',json=body)
+    assert result.status_code == 201, result.text
+    assert client.post('/api/ai/meeting-minutes',json=body).json()['id'] == result.json()['id']
+    assert len(calls) == 1
+    assert client.post('/api/ai/meeting-minutes',json={**body,'text':'换一份会议纪要试图重新提交。'}).status_code == 409
+    with TestingSessionLocal() as db:
+        assert len(ai_data.list_messages(db)) == 1
+        assert ai_data.get_proposal(db,body['invite_id']).outcome == 'accepted'

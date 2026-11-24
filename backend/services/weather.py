@@ -36,7 +36,9 @@ _geo_cache: dict[str, tuple[float, float]] = {}
 # 预报缓存 {城市名(lower): (取数时刻, 预报行列表)}
 _forecast_cache: dict[str, tuple[datetime, list[dict]]] = {}
 # 后台刷新去重集合（SWR：同 key 并发调用只投一个刷新线程）
-_refreshing: set[str] = set()
+_refreshing: dict[str, threading.Event] = {}
+_refresh_lock = threading.Lock()
+_INTERACTIVE_WAIT_S = 0.25
 
 # WMO weather interpretation code → 中文文案（Open-Meteo daily.weather_code 取值
 # 子集；未覆盖码回落"天气码 N"——LLM 仍可结合 precip 降水概率判断）
@@ -114,7 +116,7 @@ def forecast_for_city(city: str | None) -> list[dict] | None:
     stale-while-revalidate（2026-10-26 增）：缓存过期（6h~24h）时返回旧值 +
     后台线程刷新——8s 同步外呼不再横在 qa/intake/refine/context_fetcher 关键
     路径上（排期链被网络抖动卡住的唯一通路根除）；超过 _STALE_LIMIT 或无缓存
-    才同步等待（首拉语义不变）。
+    共享后台刷新；调用方只等交互预算，超时先回 None。
     """
     if not city or not city.strip():
         return None
@@ -123,22 +125,29 @@ def forecast_for_city(city: str | None) -> list[dict] | None:
     age = datetime.now() - hit[0] if hit else None
     if hit is not None and age < _TTL:
         return hit[1]
+    with _refresh_lock:
+        ready = _refreshing.get(key)
+        if ready is None:
+            ready = threading.Event()
+            _refreshing[key] = ready
+            threading.Thread(target=_refresh_in_background, args=(city, key, ready), daemon=True).start()
     if hit is not None and age < _STALE_LIMIT:
-        if key not in _refreshing:  # 并发调用只投一个刷新线程
-            _refreshing.add(key)
-            threading.Thread(
-                target=_refresh_in_background, args=(city, key), daemon=True).start()
-        logger.info("天气预报缓存过期（city=%s），先回旧值后台刷新", city)
         return hit[1]
-    return _fetch_forecast(city, key)
+    # 首拉最多占用交互预算；任务继续为下一轮预热，不把过旧天气当成今天预报。
+    if ready.wait(_INTERACTIVE_WAIT_S):
+        updated = _forecast_cache.get(key)
+        if updated is not None and datetime.now() - updated[0] < _TTL:
+            return updated[1]
+    return None
 
 
-def _refresh_in_background(city: str, key: str) -> None:
-    """后台刷新线程体：成功即更新缓存（下次调用命中新值），失败保持旧值等下次再试。"""
+def _refresh_in_background(city: str, key: str, ready: threading.Event) -> None:
     try:
         _fetch_forecast(city, key)
     finally:
-        _refreshing.discard(key)
+        with _refresh_lock:
+            _refreshing.pop(key, None)
+            ready.set()
 
 
 def _fetch_forecast(city: str, key: str) -> list[dict] | None:
@@ -153,7 +162,8 @@ def _fetch_forecast(city: str, key: str) -> list[dict] | None:
                 "latitude": coord[0],
                 "longitude": coord[1],
                 "daily": ("weather_code,temperature_2m_max,temperature_2m_min,"
-                          "precipitation_probability_max"),
+                          "precipitation_probability_max,wind_speed_10m_max"),
+                "wind_speed_unit": "kmh",
                 "timezone": "auto",
                 "forecast_days": _FORECAST_DAYS,
             },
@@ -172,6 +182,9 @@ def _fetch_forecast(city: str, key: str) -> list[dict] | None:
             daily.get("temperature_2m_min") or [],
             daily.get("precipitation_probability_max") or [],
         )]
+        for row, speed in zip(rows, daily.get("wind_speed_10m_max") or []):
+            if isinstance(speed, (int, float)):
+                row["wind_kmh"] = speed
         rows = [r for r in rows if r.get("date")]
         if not rows:
             logger.warning("天气预报响应无有效日行（city=%s），本轮天气对照跳过", city)

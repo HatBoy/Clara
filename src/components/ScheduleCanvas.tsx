@@ -32,7 +32,7 @@ import {
   type ScheduledTask,
   type Task,
 } from "../data/tasks";
-import { epochDayOf, manualPickToRelative } from "../lib/api";
+import { getJson, epochDayOf, manualPickToRelative } from "../lib/api";
 import {
   isTodoDrag,
   parseTodoDrag,
@@ -864,6 +864,22 @@ function ScheduleCanvas({
           const tEnd = t.end ?? t.start + 1;
           return drag.start < tEnd && t.start < drag.end;
         });
+
+  const [focusTip, setFocusTip] = useState("");
+  useEffect(() => {
+    setFocusTip("");
+    const base = dragBaseRef.current;
+    if (!drag || !base || base.allDay || (!drag.dayShift && drag.start === base.origStart && drag.end === base.origEnd)) return;
+    let active = true;
+    const qs = new URLSearchParams({task_id: drag.eventId, original: dateKeyOfOffset(drag.sourceOffset),
+      day: dateKeyOfOffset(drag.sourceOffset + drag.dayShift), start: String(Math.round(drag.start*60)), end: String(Math.round(drag.end*60))});
+    const timer = window.setTimeout(() => {
+      void getJson<{before:number; after:number; last_focus:boolean; alternative:string|null}>(`/api/strategy/focus?${qs}`).then(v => {
+        if (active && v.before !== v.after) setFocusTip(`目标日最长连续空档：${v.before} → ${v.after} 分钟${v.last_focus ? " · 明天最后一段完整专注时间将消失" : ""}${v.alternative ? `，可改到 ${v.alternative}` : ""}`);
+      }).catch(() => {});
+    }, 140);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [drag]);
 
   const onCardPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     const base = dragBaseRef.current;
@@ -1792,6 +1808,7 @@ function ScheduleCanvas({
 
   return (
     <section className="schedule" style={style}>
+      {drag && focusTip && <div role="status" className="focus-preview-note">{focusTip}</div>}
       <header className="schedule-console">
         <div className="schedule-date-row">
           <div className="schedule-date-nav">

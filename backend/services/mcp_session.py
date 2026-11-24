@@ -36,6 +36,7 @@ _TTL_S = 15 * 60
 
 _loop: asyncio.AbstractEventLoop | None = None
 _sessions: dict[str, tuple] = {}  # 服务名 -> (client, tools, 命中时刻 monotonic)
+_generations: dict[str, int] = {}
 _start_lock = threading.Lock()
 _pool_lock = threading.Lock()
 
@@ -69,18 +70,14 @@ def _shutdown() -> None:
 atexit.register(_shutdown)
 
 
-def _drop(name: str) -> None:
-    """丢弃一条会话（调用异常自愈：下次调用重建）。"""
-    with _pool_lock:
-        _sessions.pop(name, None)
-
-
 def invalidate(name: str) -> None:
     """配置写入（新建/编辑/删除）后主动失效该服务的池会话（_drop 公共壳，
     2026-10-16 起）：会话按服务名缓存，凭据轮换后旧会话最长残留 TTL 15 分钟——
     采集路径有一次性桥接兜底不会因此失败，但清单/补采等同步路径会先撞一次旧
     会话；主动失效让「改完配置立即生效」成立。"""
-    _drop(name)
+    with _pool_lock:
+        _generations[name] = _generations.get(name, 0) + 1
+        _sessions.pop(name, None)
 
 
 async def _connect(conn: dict):
@@ -98,6 +95,7 @@ async def _acquire_and_call(conn: dict, name: str, tool_name: str | None, argume
     丢弃会话再向上抛（会话可能已坏，不让下次命中僵尸会话）。"""
     now = time.monotonic()
     with _pool_lock:
+        generation = _generations.get(name, 0)
         hit = _sessions.get(name)
         if hit is not None and now - hit[2] >= _TTL_S:
             _sessions.pop(name, None)
@@ -105,6 +103,8 @@ async def _acquire_and_call(conn: dict, name: str, tool_name: str | None, argume
     if hit is None:
         client, tools = await _connect(conn)
         with _pool_lock:
+            if generation != _generations.get(name, 0):
+                return {"tools": []} if tool_name is None else {"missing": tool_name}
             _sessions[name] = (client, tools, time.monotonic())
     else:
         client, tools = hit[0], hit[1]
@@ -117,7 +117,10 @@ async def _acquire_and_call(conn: dict, name: str, tool_name: str | None, argume
             try:
                 return {"result": await t.ainvoke(arguments)}
             except Exception:
-                _drop(name)
+                with _pool_lock:
+                    current = _sessions.get(name)
+                    if current and current[0] is client:
+                        _sessions.pop(name)
                 raise
     return {"missing": tool_name}
 
@@ -177,3 +180,4 @@ def _reset_for_tests() -> None:
     保留（线程与真实运行形态一致，假 client 由 monkeypatch factory 注入）。"""
     with _pool_lock:
         _sessions.clear()
+        _generations.clear()

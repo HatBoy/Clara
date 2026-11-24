@@ -156,3 +156,31 @@ def test_holiday_table_lookups():
     ups = upcoming_holidays(days=10, today=date(2026, 9, 28))
     assert ups and ups[0]["name"] == "中秋国庆" and ups[0]["in_days"] == 3
     assert upcoming_holidays(days=5, today=date(2026, 11, 10)) == []
+
+
+def test_cold_weather_shares_one_pending_refresh(monkeypatch):
+    import threading
+    calls = []
+    finish = threading.Event()
+    def fetch(city, key):
+        calls.append(city)
+        finish.wait(2)
+        weather._forecast_cache[key] = (datetime.now(), [{'text': '晴'}])
+    monkeypatch.setattr(weather, '_fetch_forecast', fetch)
+    monkeypatch.setattr(weather, '_INTERACTIVE_WAIT_S', 0.01)
+    try:
+        assert weather.forecast_for_city('测试市') is None
+        ready = weather._refreshing['测试市']
+        assert weather.forecast_for_city('测试市') is None
+        assert calls == ['测试市']
+    finally:
+        finish.set()
+    assert ready.wait(2)
+    assert weather.forecast_for_city('测试市') == [{'text': '晴'}]
+
+
+def test_partial_wind_forecast_does_not_drop_other_days(monkeypatch):
+    forecast = {'daily': {**_FORECAST['daily'], 'wind_speed_10m_max': [62.0]}}
+    _install_fetch(monkeypatch, geo=_GEO, forecast=forecast)
+    first, second = weather.forecast_for_city('测试城')
+    assert first['wind_kmh'] == 62 and 'wind_kmh' not in second

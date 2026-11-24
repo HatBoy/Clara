@@ -384,7 +384,7 @@ export function McpServerForm({
         <>
           <div className="mcp-field">
             <span className="mcp-field-label">传输方式</span>
-            <SetSegmented value={transport} options={TRANSPORT_OPTIONS} onChange={setTransport} />
+            <SetSegmented value={transport} options={TRANSPORT_OPTIONS} onChange={(v) => { setTransport(v); setEnvRows(rowsFrom(null)); setHeaderRows(rowsFrom(null)); }} />
           </div>
 
       {isStdio ? (
@@ -396,7 +396,7 @@ export function McpServerForm({
               value={command}
               maxLength={200}
               placeholder="如：npx / uvx / python"
-              onChange={(e) => setCommand(e.target.value)}
+              onChange={(e) => { setCommand(e.target.value); setEnvRows(rowsFrom(null)); }}
             />
             <span className="mcp-field-hint">
               本地命令型服务（npm 包用 npx 按需运行，Python 包用 uvx）
@@ -408,7 +408,7 @@ export function McpServerForm({
               className="mcp-args-textarea mono"
               value={argsText}
               placeholder={"每行一个参数，如：\n-y\n@modelcontextprotocol/server-filesystem\nD:/Docs"}
-              onChange={(e) => setArgsText(e.target.value)}
+              onChange={(e) => { setArgsText(e.target.value); setEnvRows(rowsFrom(null)); }}
             />
             <span className="mcp-field-hint">每行一个参数（无需引号），空行忽略</span>
           </div>
@@ -441,7 +441,7 @@ export function McpServerForm({
               value={url}
               maxLength={500}
               placeholder="https://example.com/mcp"
-              onChange={(e) => setUrl(e.target.value)}
+              onChange={(e) => { setUrl(e.target.value); setHeaderRows(rowsFrom(null)); }}
             />
             <span className="mcp-field-hint">MCP 端点完整地址（Streamable HTTP 或 SSE）</span>
           </div>

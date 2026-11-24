@@ -992,7 +992,7 @@ function DataSettings() {
           const key = await fetchComposioKey();
           if (!cancelled) {
             setKeyInfo(key);
-            setKeyDraft(key.api_key ?? "");
+            setKeyDraft("");
           }
         } catch {
           /* 后端缺席：保持未配置态 */
@@ -1057,7 +1057,7 @@ function DataSettings() {
   }, [searchInput]);
 
   // Key 已配置且有效才解锁搜索与连接（后端也会拦，前端先禁用省一次必败请求）
-  const keyReady = Boolean(keyInfo?.api_key);
+  const keyReady = Boolean(keyInfo?.api_key_set);
 
   // 已连接 slug 集（小写口径，供精选隐藏与搜索结果过滤）
   const connectedSlugs = useMemo(
@@ -1111,6 +1111,7 @@ function DataSettings() {
     try {
       const r = await saveComposioKey(keyDraft.trim() || null); // 后端保存后自动验证
       setKeyInfo(r);
+      setKeyDraft("");
       if (r.key_ok) flashKeyOk("save");
     } catch (e) {
       setKeyError(
@@ -1631,7 +1632,7 @@ function DataSettings() {
                   type={showKey ? "text" : "password"}
                   value={keyDraft}
                   maxLength={200}
-                  placeholder="在 Composio 控制台申请"
+                  placeholder={keyReady ? "已保存，可输入新密钥替换" : "在 Composio 控制台申请"}
                   onChange={(e) => setKeyDraft(e.target.value)}
                 />
                 <button
@@ -1649,7 +1650,7 @@ function DataSettings() {
                 disabled={keyBusy}
                 onClick={handleSaveKey}
               >
-                {savingKey ? "验证中…" : keyOkFlash === "save" ? "✓ 有效" : "保存"}
+                {savingKey ? "验证中…" : keyOkFlash === "save" ? "✓ 有效" : keyReady && !keyDraft.trim() ? "清除密钥" : "保存"}
               </button>
               <button
                 type="button"

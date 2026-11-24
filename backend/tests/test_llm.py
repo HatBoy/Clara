@@ -719,22 +719,32 @@ def test_no_thinking_covers_reasoning_model_families():
     assert llm._no_thinking("deepseek/deepseek-chat") == {}
 
 
-def test_call_llm_aux_falls_back_to_main_on_failure(monkeypatch):
+@pytest.mark.parametrize("blank", [True, False])
+def test_call_llm_aux_falls_back_to_main_on_failure(monkeypatch, blank):
     """aux 槽故障（不支持 JSON/上下文太小/不可用）回落主模型（优化批 2）。"""
+
+    _use_test_db(monkeypatch)
+    with TestingSessionLocal() as db:
+        db.add(ModelProvider(name="测试辅助", model_name="ollama/test", is_aux=True))
+        db.commit()
+    roles = []
 
     class FakeModel:
         def __init__(self, role: str):
             self.role = role
 
         def invoke(self, messages):
+            roles.append(self.role)
             if self.role == "aux":
+                if blank:
+                    return AIMessage(content="  ")
                 raise RuntimeError("aux down")
             return AIMessage(content="main-ok")
 
     monkeypatch.setattr(llm, "init_llm",
                         lambda **kw: FakeModel(kw.get("role", "main")))
     out = llm.call_llm_aux([{"role": "user", "content": "u"}], json_mode=True)
-    assert out == "main-ok"
+    assert out == "main-ok" and roles == ["aux", "main"]
 
 
 # —— check_ai 闸门单源（2026-11-17 架构批 1）————————————————————————

@@ -46,13 +46,14 @@ from schemas import (
     PhilosophyOut,
     ProposalOut,
     ProposalOutcomeIn,
-    ProposalSettleItemsIn,
+    ProposalAcceptItemIn, ProposalDecideIn, ProposalDecideOut, ProposalSettleItemsIn,
     RuleConflictCheckIn,
     RuleConflictCheckOut,
     SessionCompactOut,
     _to_naive_local,
 )
 from services import ai_data, data_ingest, episodic, workflows
+from services import proposal_decisions
 from services import chat_turn
 from services.ai_data import list_memory_rules
 from services.chat_turn import (
@@ -117,6 +118,14 @@ def meeting_minutes(body: MinutesIn, db: Session = Depends(get_db)):
     线程池不卡事件循环，同 QuickAdd 复核同步先例）；浮层 / 聊天入口共用。
     AI 关 / 零激活 / 提炼失败（解析全空）→ 503；会议 id 无效 → 404。
     items 空仍建卡（"未识别出行动项"也是有效回执）。"""
+    try:
+        replay = proposal_decisions.invite_result(db, body)
+    except KeyError as e:
+        raise HTTPException(404, '邀约不存在') from e
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    if replay is not None:
+        return replay
     gate = check_ai(db)
     if gate is not None:
         raise HTTPException(503, gate.message)
@@ -137,7 +146,7 @@ def meeting_minutes(body: MinutesIn, db: Session = Depends(get_db)):
         logger.warning("会后纪要提炼失败（解析全空），text=%s…", body.text[:50])
         raise HTTPException(503, "纪要提炼失败，请稍后重试")
     meeting = result.get("meeting") or {}
-    proposal = ai_data.create_proposal(db, kind="minutes", payload={
+    payload = {
         "meeting_task_id": meeting.get("task_id"),
         "meeting_title": meeting.get("title"),
         "meeting_start": meeting.get("start"),
@@ -145,10 +154,15 @@ def meeting_minutes(body: MinutesIn, db: Session = Depends(get_db)):
         "items": items,
         # 纪要原文留档：proposals 行不删天然持久，浮层回看区块直接消费
         "source_text": body.text,
-    })
-    ai_data.append_message(db, role="assistant",
-                           content=reply or headline or "会后纪要已提炼",
-                           proposal_id=proposal.id)
+    }
+    try:
+        proposal, created = proposal_decisions.save_minutes(db, body, payload, reply or headline or '会后纪要已提炼')
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    except KeyError as e:
+        raise HTTPException(404, '邀约不存在') from e
+    if not created:
+        return proposal
     title_part = f"《{meeting['title']}》" if meeting.get("title") else ""
     workflows.broadcast({
         "type": "minutes",
@@ -233,37 +247,56 @@ def get_proposals(unresolved: bool = False, limit: int = 50, db: Session = Depen
     return ai_data.list_proposals(db, unresolved_only=unresolved, limit=limit)
 
 
+@router.get("/proposals/{proposal_id}", response_model=ProposalOut)
+def get_proposal(proposal_id: str, db: Session = Depends(get_db)):
+    row = ai_data.get_proposal(db, proposal_id)
+    if row is None:
+        raise HTTPException(404, '建议不存在')
+    return row
+
+
+@router.post("/proposals/{proposal_id}/decide", response_model=ProposalDecideOut)
+def decide_proposal(proposal_id: str, body: ProposalDecideIn, db: Session = Depends(get_db)):
+    try:
+        return proposal_decisions.decide(db, proposal_id, [it.model_dump(exclude_none=True) for it in body.items])
+    except KeyError as e:
+        raise HTTPException(404, '建议不存在') from e
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+
+
 @router.post("/proposals/{proposal_id}/outcome", response_model=ProposalOut)
 def resolve_proposal(proposal_id: str, body: ProposalOutcomeIn, db: Session = Depends(get_db)):
-    """建议回写（采纳/修改后采纳/拒绝/忽略）；拒绝可选填理由（习惯学习信号）。
-    拒绝的采集类建议同步落台账永静默（on_proposal_settled——转发不是业务，同
-    settings 先例）。"""
-    row = ai_data.record_proposal_outcome(db, proposal_id, body.outcome, reason=body.reason,
-                                          applied_entries=body.applied_entries)
-    if row is None:
-        raise HTTPException(status_code=404, detail="建议不存在")
-    data_ingest.on_proposal_settled(db, row.kind, row.payload or {}, body.outcome)
-    return row
-
-
-@router.post("/proposals/{proposal_id}/settle-items", response_model=ProposalOut)
-def settle_proposal_items(proposal_id: str, body: ProposalSettleItemsIn, db: Session = Depends(get_db)):
-    """条目级部分结算（2026-10-24 数据源页单条操作）：从待处理卡移除指定条目
-    （payload 收缩，卡清空才按 outcome 回写整卡）；拒绝只静默被拒条目的指纹
-    （on_proposal_settled 喂 mini payload——同卡其余条目不受牵连）。"""
     try:
-        result = ai_data.settle_proposal_items(db, proposal_id, body.indexes, body.outcome,
-                                               applied_entries=body.applied_entries)
+        return proposal_decisions.resolve(db, proposal_id, body.outcome, body.reason)
+    except KeyError as e:
+        raise HTTPException(404, '建议不存在') from e
     except ValueError as e:
-        raise HTTPException(
-            status_code=422,
-            detail="建议已结算或非待处理卡" if str(e) == "settled" else "条目序号越界",
-        )
-    if result is None:
-        raise HTTPException(status_code=404, detail="建议不存在")
-    row, mini = result
-    data_ingest.on_proposal_settled(db, row.kind, mini, body.outcome)
-    return row
+        raise HTTPException(409, str(e)) from e
+
+
+@router.post("/proposals/{proposal_id}/accept-item", response_model=ProposalOut)
+def accept_item(proposal_id: str, body: ProposalAcceptItemIn, db: Session = Depends(get_db)):
+    # 老协议有完整原始快照：可安全转换成稳定标识，拒绝错位请求。
+    card = ai_data.get_proposal(db, proposal_id)
+    if card is None:
+        raise HTTPException(404, '建议不存在')
+    stable = proposal_decisions.ids(proposal_id, body.expected)
+    original = (card.payload.get(proposal_decisions.STATE) or {}).get('ids', card.item_ids)
+    if body.index >= len(stable) or stable != original:
+        raise HTTPException(409, '建议已变更')
+    try:
+        result = proposal_decisions.decide(db, proposal_id, [{'item_id': stable[body.index], 'action':'accept'}])
+        return result['proposal']
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    except KeyError as e:
+        raise HTTPException(404, '建议不存在') from e
+
+
+@router.post("/proposals/{proposal_id}/settle-items", deprecated=True)
+def settle_proposal_items(proposal_id: str, body: ProposalSettleItemsIn):
+    raise HTTPException(409, '旧版条目序号不能安全重试，请刷新客户端后按条目标识结算')
 
 
 # —— 记忆画像 CRUD（设置 → 记忆画像白盒界面；PRD §4.5） ——
@@ -326,8 +359,5 @@ def delete_fact(fact_id: str, db: Session = Depends(get_db)):
 @router.get("/stream")
 async def stream_workflow_events():
     """工作流事件流（晨间对齐 / 夜间整理 / 负荷熔断），协议同提醒流
-    （帧与退订时序收在 sse_kit.subscribe_stream 单源）。"""
-    q = workflows.subscribe()
-    return StreamingResponse(
-        sse_kit.subscribe_stream(q, unsubscribe=workflows.unsubscribe),
-        media_type="text/event-stream")
+    （帧与退订时序收在 sse_kit.subscription_response 单源）。"""
+    return sse_kit.subscription_response(workflows.subscribe, workflows.unsubscribe)
