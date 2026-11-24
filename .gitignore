@@ -41,3 +41,7 @@ docs/
 *.sln
 *.sw?
 .playwright-cli/
+
+# 发版验收真实层凭据（CLARA_QA_* 环境变量文件，绝不入库）
+backend/tests/.qa_env
+.pybuild/
