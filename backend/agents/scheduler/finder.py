@@ -319,6 +319,13 @@ def finder_node(state: SchedulerState) -> dict:
                               "slot": slot.isoformat()})
             entry = {"task_id": e["task_id"], "title": e["title"],
                      "start": slot.isoformat(), "duration": e["duration"]}
+            # profile 回传（2026-11-24 验收批修复，v1.0.0 起丢失的回归）：裁决器
+            # 四段软指引（精力/天气/通勤/组织，build_adjudicator_prompt 段裁剪）
+            # 依赖 entry["profile"]——主流程自 v1.0.0 起恒空致四段静默失效
+            # （conflict_queue 完整条目不受影响）。出壳由 _shell_entry 剥离，
+            # 九键契约零污染。
+            if isinstance(e.get("profile"), dict):
+                entry["profile"] = e["profile"]
             if _commute_needed(e.get("profile") if isinstance(e.get("profile"), dict) else {}):
                 # 通勤条目内部标记：裁决器出口在最终槽前插"路上"块随卡出
                 entry["_commute"] = COMMUTE_MINUTES
