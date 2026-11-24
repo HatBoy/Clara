@@ -6,7 +6,9 @@ httpx
 litellm
 openai
 composio-langchain  # 提供 composio SDK（已验证 0.21.1；SDK API 变动频繁，升级须回归 tests/test_integrations.py）
-mcp
+mcp>=1.30,<2  # 官方 SDK 2.0（2026-07）移除 mcp.server.fastmcp（FastMCP→MCPServer 旧路径不兼容），
+              # 且客户端链 langchain-mcp-adapters 0.3.x 尚未支持 2.x（上游 issue #578 跟踪中）——
+              # 钉 1.x 段（1.30 实测基线）；升级须等服务端+客户端+打包 collect 三面回归，登记 tech-debt
 markitdown[docx,pdf,xlsx,xls,pptx]  # bare 安装无 word/pdf/excel 格式能力（MissingDependencyException）
 langchain-mcp-adapters
 langchain-core  # 直接依赖 BaseChatModel / 消息类型（原本随 langgraph 间接安装，显式声明）
