@@ -1006,6 +1006,13 @@ def _probe_remote_changed(client: WebDavClient | None = None) -> bool:
     return hashes != _last_seen_hashes
 
 
+def _backoff_period(fail_streak: int) -> int:
+    """失败退避周期（秒）：300 × 2^min(streak,3)，上限 1800——2026-11-24 验收批
+    从 sync_loop 内联公式提取为纯函数（测试锚点 + 限频跳 3 进长退避的曲线
+    锁定）。"""
+    return min(PERIODIC_S * (2 ** min(fail_streak, 3)), MAX_PERIOD_S)
+
+
 async def sync_loop() -> None:
     """后台同步循环（main.lifespan 挂 create_task）：启动延迟 → 每秒检查三级
     触发——①防抖（脏表/唤醒 ≥3s）②30s 远端轻探测（manifest hash 变才拉全量）
@@ -1028,7 +1035,7 @@ async def sync_loop() -> None:
             woke = await asyncio.to_thread(_wake.wait, 1.0)
             _wake.clear()
             now = time.monotonic()
-            period = min(PERIODIC_S * (2 ** min(fail_streak, 3)), MAX_PERIOD_S)
+            period = _backoff_period(fail_streak)
             dirty = peek_dirty_tables()
             since_last = now - last_attempt
             if not ((dirty or woke) and since_last >= DEBOUNCE_S) and since_last < period:
