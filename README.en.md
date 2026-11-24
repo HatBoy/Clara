@@ -104,7 +104,7 @@ Four ingestion pipelines with incremental cursors and item-level settlement:
 - Structured sources map directly with zero LLM calls; high-confidence items pass straight through, and the AI only refines when it genuinely adds value — saving tokens and guesswork
 
 ### Sync & Backup
-
+![backup](images/dav.png)
 Data sovereignty is more than "stored locally" — it's **portable and recoverable**:
 
 - **WebDAV cross-device sync** — works with any WebDAV service (Jianguoyun, Nextcloud, …). Multi-device incremental sync with row-level three-way merging and last-writer-wins; changes are visible on the other end within 30 seconds. Triple guards prevent a wiped local database from emptying the cloud, and cold starts merge automatically with no confirmation dialogs
