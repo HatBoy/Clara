@@ -105,6 +105,10 @@ class MultiKeyLLMCapture:
     def users(self, key: str) -> list[str]:
         return [user for system, user, _, _ in self.calls if key in system]
 
+    def systems(self, key: str) -> list[str]:
+        """system 段观测（裁决器哲学/精力/天气段在 system，user 载荷看不到）。"""
+        return [system for system, _, _, _ in self.calls if key in system]
+
 
 def frozen_dt_cls(anchor: datetime):
     """冻结 now 的 datetime 子类工厂（test_scheduler_graph._FrozenDT 泛化）。

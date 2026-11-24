@@ -487,3 +487,64 @@ def _tmp_note():
         "- 周四下午 3 点拜访客户demo\n- 周五整理季度复盘文档\n",
         encoding="utf-8")
     return root
+
+
+# —— 发版前验收批补充：mit-3 行为级 + 会前辅导清单质量（模块二/三真实层）——————
+
+
+def test_real_mit3_high_priority_cap(client, monkeypatch):
+    """真模型 mit-3 行为级：每日三要事启用 + 5 条杂务一次排期。硬：草案非空
+    且全部带合法时段（引擎产出守恒）；软：裁决说明体现取舍/要事语义
+    （mit-3 纯 prompt 注入哲学——文本是否真影响裁决按样本记录不判死，
+    RELEASE_ACCEPTANCE「三哲学组合未穷尽」的 mit-3 真实层样本）。"""
+    t0 = time.perf_counter()
+    monkeypatch.setattr("services.weather.forecast_for_city", lambda city: None)
+    from services.settings import get_settings as _gs
+
+    with TestingSessionLocal() as db:
+        s = _gs(db)
+        s.ai_philosophy = "mit-3"
+        db.commit()
+    events = _chat(client, "帮我安排这五件事：写周报、回复客户邮件、整理会议纪要、"
+                           "准备评审材料、更新项目文档")
+    reply = (_first(events, "reply") or {}).get("content") or ""
+    drafts = _draft_entries(events)
+    wall = (time.perf_counter() - t0) * 1000
+    _hard(bool(drafts), "零草案")
+    for d in drafts:
+        _hard(bool(d.get("start")), f"草案缺时段：{d.get('title')}")
+    soft = (_soft(len(drafts) <= 5, f"条目数异常：{len(drafts)}")
+            + _soft(any(k in reply for k in ("要事", "取舍", "优先", "三件", "精力")),
+                    "裁决说明未体现 mit-3 取舍语义"))
+    _record("mit-3 每日三要事", "D2", passed=True,
+            hard=[("草案非空且时段合法", True, "")],
+            soft=soft, wall_ms=wall, reply=reply[:400])
+
+
+def test_real_meeting_prep_checklist_quality(client, monkeypatch):
+    """真模型会前辅导质量：明确会议输入 → meeting_prep 场景出简报卡。
+    硬：checklist 1-6 条且每条 ≤40 字（铁律 3）、准备块估时 [15,240]、
+    零编造 task_id；软：推演语义（目标/问题/开场/材料/预演任一）。"""
+    t0 = time.perf_counter()
+    monkeypatch.setattr("services.weather.forecast_for_city", lambda city: None)
+    events = _chat(client, "下周三下午两点有个融资路演，帮我准备一下")
+    reply = (_first(events, "reply") or {}).get("content") or ""
+    proposal = _first(events, "proposal")
+    payload = (proposal or {}).get("payload") or {}
+    checklist = [c for c in (payload.get("checklist") or []) if isinstance(c, str)]
+    drafts = _draft_entries(events)
+    wall = (time.perf_counter() - t0) * 1000
+    _hard(bool(reply), "零回复")
+    _hard(1 <= len(checklist) <= 6, f"checklist 条数越界：{len(checklist)}")
+    for c in checklist:
+        _hard(len(c) <= 40, f"清单条目超长：{c}")
+    known = {t["id"] for t in client.get("/api/tasks").json()}
+    for d in drafts:
+        dur = d.get("duration") or 0
+        _hard(15 <= dur <= 240, f"准备块估时越界：{d.get('title')}={dur}")
+        _hard(not d.get("task_id") or d["task_id"] in known, f"编造 task_id：{d}")
+    soft = _soft(any(k in reply for k in ("目标", "问题", "开场", "材料", "预演")),
+                 "缺推演语义") + _soft(bool(payload), "未出会前简报卡")
+    _record("会前辅导清单质量", "D3", passed=True,
+            hard=[("清单形态", True, ""), ("估时/白名单", True, "")],
+            soft=soft, wall_ms=wall, reply=reply[:600])

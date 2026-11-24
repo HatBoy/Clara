@@ -473,3 +473,107 @@ def test_episodic_ttl_clamp_and_2gram_fallback():
         # 2-gram 兜底：trigram 对双字查询失效（<3 字符不进 FTS）→ 2-gram 召回
         hits = search_facts(db, "出差")
         assert hits and "杭州" in hits[0].fact
+
+
+# —— 发版前验收批补充：午后低谷规律跨夜置信演化（模块四·行为遥测→置信升档）——
+
+
+def test_afternoon_valley_confidence_uplift_across_nights(client, monkeypatch):
+    """「午后低谷」规律挖掘全链（模块四 14:30 深度任务三连推迟场景）：
+    真实 PATCH 遥测三连（14:30→15/16/17，同下午桶）→ 夜1 反思收簇
+    （count=3、period=下午、avg_delta>0 进 REFLECT 载荷）→ behavior 新规则
+    0.7 → 夜2-4 用户继续微调推迟（每夜新遥测事件进簇）→ keep×3 印证
+    observation_count 0→3 触发 min(0.8, +0.15) 升档 → 0.8 → 次晚打锚步
+    （run_reflection:328 先于早退）置 structured_anchor——观察→验证→法则
+    中间档爬升全链零断点。
+
+    机制口径：候选 source_ids 由 _reflect_candidates 从真实簇 event_ids 派生
+    （reflection.py:212-219，替身候选的 source_ids 字段不透传）；同一批证据
+    跨夜不 fresh（_apply_actions:264 防同证据刷置信）——故每夜须有新遥测
+    事件。keep 印证含 Bug#2 就地提交修复点（reflection.py:281）。"""
+    tid = _make_task_at()
+    with TestingSessionLocal() as db:
+        start0 = db.get(Task, tid).start_time
+    for new_h in (15, 16, 17):
+        resp = client.patch(f"/api/tasks/{tid}", json={
+            "start_time": start0.replace(hour=new_h).isoformat(),
+            "end_time": start0.replace(hour=new_h + 1).isoformat()})
+        assert resp.status_code == 200
+        start0 = start0.replace(hour=new_h)
+
+    content = "周三下午别排会"
+    with TestingSessionLocal() as db:
+        cluster = [c for c in aggregate_deviations(db)
+                   if c["kind"] == "reschedule" and c["count"] >= 3
+                   and c["period"] == "下午"]
+        assert cluster and cluster[0]["avg_delta"] > 0
+
+    def _reflect():
+        return json.dumps({"candidates": [
+            {"category": "精力节律", "content": content,
+             "evidence": "近14天周三下午反复改期，平均推迟约150分钟",
+             "confidence": 0.7, "signal": "behavior",
+             "source_idx": 0}], "facts": []}, ensure_ascii=False)
+
+    # 夜1：真实簇 → behavior 新规则 0.7（observation_count=0 起步）
+    fake = MultiKeyLLMCapture({
+        REFLECT_PROMPT: _reflect(),
+        RESOLVE_PROMPT: json.dumps({"actions": [
+            {"candidate_idx": 0, "action": "new", "rule_id": None,
+             "category": "精力节律", "content": content,
+             "evidence": "近14天周三下午3次改期", "confidence": 0.7}]},
+            ensure_ascii=False),
+    }, default="")
+    monkeypatch.setattr(llm, "call_llm", fake)
+    with TestingSessionLocal() as db:
+        reflection.run_reflection(db)
+        rules = list_memory_rules(db)
+    assert len(rules) == 1
+    assert rules[0].source == "ai_reflect" and rules[0].confidence == 0.7
+    assert "下午" in rules[0].content  # 午后低谷语义落在规则文本
+    payload = fake.users(REFLECT_PROMPT)[0]
+    assert '"count": 3' in payload or '"count":3' in payload
+    assert "下午" in payload
+    rid = rules[0].id
+
+    # 夜2-4：用户继续推迟（每夜新 PATCH 事件进簇 → 簇 event_ids 有 fresh id）
+    # → keep×3 → observation_count 3 触发 min(0.8, +0.15) 升档
+    # +5 分钟步进：全程留在下午桶（_PERIODS 以 18:00 整为界——18:00 入「晚上」
+    # 桶会另立新簇，簇 event_ids 无 fresh id，keep 印证被防刷置信门槛跳过）
+    for night, shift in (("夜2", 5), ("夜3", 5), ("夜4", 5)):
+        resp = client.patch(f"/api/tasks/{tid}", json={
+            "start_time": (start0 + timedelta(minutes=shift)).isoformat(),
+            "end_time": (start0 + timedelta(hours=1, minutes=shift)).isoformat()})
+        assert resp.status_code == 200
+        start0 = start0 + timedelta(minutes=shift)
+        fake = MultiKeyLLMCapture({
+            REFLECT_PROMPT: _reflect(),
+            RESOLVE_PROMPT: json.dumps({"actions": [
+                {"candidate_idx": 0, "action": "keep", "rule_id": rid,
+                 "category": "精力节律", "content": None,
+                 "evidence": "同簇再现（%s）" % night, "confidence": 0.7}]},
+                ensure_ascii=False),
+        }, default="")
+        monkeypatch.setattr(llm, "call_llm", fake)
+        with TestingSessionLocal() as db:
+            report = reflection.run_reflection(db)
+        assert not report.skipped, night + " 反思被跳过"
+
+    from models import MemoryRule
+
+    with TestingSessionLocal() as db:
+        row = db.get(MemoryRule, rid)
+    assert row.observation_count == 3
+    assert row.confidence == 0.8, row.confidence  # 0.7+0.15 → min(0.8, 0.85)
+
+    # 夜5：打锚步（先于早退）——0.8 且文本可解析（泛指宾语「会」过闸③）
+    # → structured_anchor 置锚（设置页硬约束徽标数据源）
+    fake = MultiKeyLLMCapture({REFLECT_PROMPT: '{"candidates": [], "facts": []}'},
+                              default="")
+    monkeypatch.setattr(llm, "call_llm", fake)
+    with TestingSessionLocal() as db:
+        report = reflection.run_reflection(db)
+        assert report.anchored >= 1
+        row = db.get(MemoryRule, rid)
+        db.refresh(row)
+    assert row.structured_anchor

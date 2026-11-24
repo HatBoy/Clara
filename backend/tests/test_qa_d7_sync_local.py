@@ -340,3 +340,62 @@ def test_csv_parse_and_ics_reimport_supported_fields(tmp_path):
                 title, notes, start, end, rule)
     finally:
         engine.dispose()
+
+
+# —— 发版前验收批补充：失败退避曲线 + 覆盖恢复后手动规则最高优 ——————————————————
+
+
+def test_sync_backoff_period_curve():
+    """指数退避曲线锁定（模块五/七韧性口径；渠道层无指数退避——飞书/钉钉
+    SDK 内部重连、企微/微信固定 sleep，这是全库唯一指数退避实现）：
+    300×2^min(streak,3) 上限 1800；限频（429/503）fail_streak 跳 3 →
+    一步进长退避（真机批六根因回归锚）。_backoff_period 由 sync_loop 内联
+    公式提取（2026-11-24 验收批），行为零变化。"""
+    assert [se._backoff_period(n) for n in range(5)] == [300, 600, 1200, 1800, 1800]
+    assert se._backoff_period(99) == 1800  # 封顶不再增长
+    assert se._backoff_period(0 + 3) == 1800  # 限频跳升：跳过 600/1200 两档
+
+
+def test_overwrite_restore_keeps_manual_rules_top_priority(tmp_path):
+    """覆盖式恢复（两段置换）后手动最高优先级记忆规则完整还原且注入序最高
+    （模块五·导入还原安全性）：备份含 user_manual 铁律 + ai_reflect 低置信行 →
+    恢复前偏离（手写行被改写）→ 恢复后备份时点行回来：list_memory_rules 首行
+    = user_manual 原文；format_memory_lines core 段含「·用户设定·」标签行、
+    ai_reflect 0.7 行只在 reference 段（分级注入契约恢复不破）。"""
+    (backup.get_data_dir() / "config_snapshot.json").write_text("{}", encoding="utf-8")
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from database import Base
+    from services.ai_data import format_memory_lines, list_memory_rules
+
+    engine = create_engine(f"sqlite:///{backup.DATABASE_PATH}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        db.add(MemoryRule(category="边界", content="周五下午绝不排会",
+                          source="user_manual", confidence=1.0))
+        db.add(MemoryRule(category="精力节律", content="上午黄金段排硬骨头",
+                          source="ai_reflect", confidence=0.7, evidence="遥测"))
+        db.commit()
+    engine.dispose()
+    src = tmp_path / "qa-manual-restore.zip"
+    assert backup.create_backup(src, version="qa") is not None
+    with closing(sqlite3.connect(backup.DATABASE_PATH)) as raw:  # 恢复前漂移
+        raw.execute("UPDATE memory_rules SET content='恢复前漂移'")
+        raw.commit()
+    assert backup.prepare_restore(str(src))["requires_restart"]
+    assert backup.apply_pending_restore() is True
+    engine = create_engine(f"sqlite:///{backup.DATABASE_PATH}")
+    try:
+        with Session(engine) as db:
+            rules = list_memory_rules(db)
+            assert rules[0].source == "user_manual"
+            assert rules[0].content == "周五下午绝不排会"
+            core, ref = format_memory_lines(db)
+            assert any("周五下午绝不排会" in ln and "用户设定" in ln for ln in core)
+            assert any("上午黄金段排硬骨头" in ln and "AI学习·置信0.7" in ln
+                       for ln in ref)
+            assert not any("恢复前漂移" in ln for ln in core + ref)
+    finally:
+        engine.dispose()
+    assert backup.apply_pending_restore() is False

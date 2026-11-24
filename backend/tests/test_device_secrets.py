@@ -73,3 +73,36 @@ def test_prune_only_unreferenced_old_tokens(tmp_path):
     broken.unlink()
     assert device_secrets.prune_orphaned_secrets(tmp_path, now=now) == 1
     assert {p.name for p in folder.iterdir()} == {live,recovery,recent,'用户文件'}
+
+
+# —— 发版前验收批补充：DPAPI 往返/篡改降级/拒绝明文回退（模块五·凭证加密存储）——
+
+
+def test_dpapi_roundtrip_tamper_and_bad_ref_degrade(tmp_path, monkeypatch):
+    """DPAPI 加密往返与降级边界：_save 落盘密文（不含明文片段）→ _load 明文
+    等值；密文被篡改 → 不可读即回退 missing（绝不抛、绝不回读明文）；坏引用
+    形态（非 clara-secret:<hex32>）同降级——历史明文值留在列里也读不出来。"""
+    import re as _re
+
+    monkeypatch.setattr(device_secrets, 'get_data_dir', lambda: tmp_path)
+    marker = 'FAKE-SECRET-881-ROUNDTRIP'
+    ref = device_secrets._save(marker)
+    assert _re.fullmatch(r'clara-secret:[a-f0-9]{32}', ref)
+    token = tmp_path / 'credentials' / ref[len('clara-secret:'):]
+    assert token.is_file() and marker.encode() not in token.read_bytes()
+    assert device_secrets._load(ref, missing=None) == marker  # DPAPI 往返
+    token.write_bytes(token.read_bytes()[:-4] + b'junk')      # 密文篡改
+    assert device_secrets._load(ref, missing='fallback') == 'fallback'
+    assert device_secrets._load('clara-secret:' + 'z' * 32, missing='gone') == 'gone'
+    assert device_secrets._load('sk-plaintext-leftover', missing='gone') == 'gone'
+    assert device_secrets._save('') == '' and device_secrets._save(None) is None
+
+
+def test_dpapi_non_windows_refuses_plaintext_fallback(monkeypatch):
+    """非 Windows 平台拒绝本机凭证：抛 RuntimeError 绝不回退明文落库
+    （device_secrets._dpapi:32 红线）。"""
+    import pytest
+
+    monkeypatch.setattr(device_secrets.os, 'name', 'posix')
+    with pytest.raises(RuntimeError):
+        device_secrets._dpapi(b'x')

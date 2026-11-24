@@ -378,3 +378,22 @@ def test_deep_task_follows_observed_peak(monkeypatch, peak):
     slots = {e['title']: datetime.fromisoformat(e['start']) for e in out['draft_plan']}
     assert slots['写架构方案'].hour == peak
     assert (slots['整理报销'].hour, slots['整理报销'].minute) == (13, 30)
+
+
+# —— 发版前验收批补充：雨日拦截后的室内替代指引 ———————————————————————————————
+
+
+def test_rainy_window_carries_indoor_alternative_guidance(monkeypatch):
+    """雨日拦户外后的「室内替代」指引必达裁决器（2026-11-24 验收批：
+    _ADJ_WEATHER 增补——全周雨日时 reason 给室内替代/改期建议，不硬塞
+    雨日）。放行雨日改期链路（无雨日草案正常产出）以捕获天气段注入，
+    行为级（真模型是否给出替代建议）归真实层。"""
+    weather = _weather({0: 80, 1: 80, 2: 10, 3: 10, 4: 10})
+    out, cap = _invoke(monkeypatch, "这周找个时间去爬山", [
+        _agent("周末爬山", 120, category="外出体力", energy_drain="高",
+               env_deps=["需要好天气"])], weather=weather)
+    drafts = out.get("draft_plan") or []
+    assert drafts  # 存在无雨日 → 走到裁决器（天气段注入条件成立）
+    assert "室内替代" in cap.systems(KEY_ADJUDICATOR)[0]
+    start = datetime.fromisoformat(drafts[0]["start"])
+    assert start.date() >= (ANCHOR + timedelta(days=2)).date()  # 仍避雨日
