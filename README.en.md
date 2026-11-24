@@ -18,7 +18,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://github.com/HatBoy/Clara/releases"><img src="https://img.shields.io/badge/version-1.1.0-6C63FF.svg" alt="v1.1.0" /></a>
   <a href="https://github.com/HatBoy/Clara/releases"><img src="https://img.shields.io/badge/platform-Windows%20x64-0078D6.svg" alt="Windows" /></a>
-  <a href="backend/tests"><img src="https://img.shields.io/badge/tests-1500%2B%20passed-brightgreen.svg" alt="tests" /></a>
+  <a href="backend/tests"><img src="https://img.shields.io/badge/tests-1700%2B%20passed-brightgreen.svg" alt="tests" /></a>
   <img src="https://img.shields.io/badge/Tauri%202-Rust-orange.svg" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/React%2019-TypeScript-61DAFB.svg" alt="React 19" />
   <img src="https://img.shields.io/badge/backend-Python%20FastAPI-3776AB.svg" alt="FastAPI" />
@@ -34,7 +34,7 @@ Clara is an AI schedule assistant that runs entirely on your own machine. It is 
 - **Plans the work, doesn't do the work** — writing code and decks is for other tools. Clara owns the upstream decisions: what happens when, how to avoid conflicts, and how to protect your peak hours for what matters
 - **Local-first** — schedules, tasks, and memory live in a local SQLite database, never on someone else's cloud. Your model API keys never leave your machine
 - **Model freedom** — powered by LiteLLM's unified protocol: OpenAI, Claude, DeepSeek, Qwen, GLM, Kimi… switch anytime, or run a local model via Ollama. No vendor lock-in
-- **Gets smarter about you over time** — a two-tier memory system quietly learns your rhythm and preferences from how you drag, reschedule, and complete tasks, then consolidates overnight. No surveys to fill in
+- **Gets smarter about you over time** — a two-tier memory system quietly learns your rhythm and preferences from how you drag, reschedule, and complete tasks, then consolidates overnight; behavior-verified patterns automatically graduate into hard scheduling constraints. No surveys to fill in
 
 > Official releases currently ship a **Windows x64 installer**. macOS / Linux can be built from source (icon assets included) but are not officially tested.
 
@@ -173,7 +173,7 @@ flowchart LR
 | Ingestion | Composio · MCP · CLI executor · icalendar |
 | Sync & backup | WebDAV (Jianguoyun / Nextcloud) · row-level three-way merge · zip backup slots |
 | Messaging | Feishu lark-oapi · DingTalk dingtalk-stream · WeCom SDK · WeChat iLink |
-| Quality | 1500+ pytest cases · zero-error frontend tsc |
+| Quality | 1700+ pytest cases (incl. a seven-dimension end-to-end QA suite) · zero-error frontend tsc |
 
 ## Getting Started
 
@@ -224,6 +224,13 @@ The dev database lives at `backend/data/clara.db` (startup never seeds test data
 conda activate <your-env> && cd backend && python -m pytest
 ```
 
+The suite is dual-track: the **deterministic baseline** (~1700 cases, in-memory SQLite + full mocking, millisecond-fast with zero network calls) runs with plain `pytest`; the **real-world track** is gated separately — a live-LLM evaluation suite and a real-WebDAV A/B two-instance sync suite (subprocesses + a dedicated remote subdirectory, never touching your existing sync baseline):
+
+```bash
+CLARA_QA_REAL=1 python -m pytest tests/test_qa_real_llm.py -m real_llm        # live model evaluation
+CLARA_QA_WEBDAV=1 python -m pytest tests/test_qa_real_webdav.py -m real_webdav  # real Jianguoyun A/B sync
+```
+
 ### Build for release
 
 ```bash
@@ -242,7 +249,7 @@ Output: `src-tauri/target/release/bundle/nsis/Clara_<version>_x64-setup.exe`. **
 │   ├── services/         # Business logic layer (agents never query the DB directly)
 │   ├── routers/          # Thin HTTP shell (decoding and status codes only)
 │   ├── agents/           # LangGraph: dual subgraphs + unified scheduling engine + prompts
-│   └── tests/            # 1500+ pytest cases
+│   └── tests/            # 1700+ pytest cases (incl. a seven-dimension end-to-end QA suite)
 └── brand/                # Brand assets
 ```
 
