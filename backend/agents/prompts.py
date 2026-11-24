@@ -274,8 +274,9 @@ RESOLVE_PROMPT = """你是 Clara 的规则冲突消解器。输入 JSON：candid
 1. 每条动作回抄 candidate_idx（对应候选的 idx 原样照抄）。
 2. action=replace / merge 时必须给 rule_id（被取代 / 被合并的现有规则 id 原样照抄），content 给合成终态（≤120 字）。
 3. 让位规则：signal 不是 user 的候选（AI 归纳/推断/统计，置信有限）一律不得 replace / merge source=user_manual 或 source=chat 的规则（用户明说的只有用户本人的明示信号配动），这种冲突一律 keep；signal=user 的候选是用户此刻亲口说的，可合成或取代任何旧规则。
-4. category / evidence / confidence 从候选继承；merge / replace 的 content 用合成终态。
-5. 拿不准时选 keep（保守优先，宁可不学不可学错）。
+4. 例外开放必须合并：signal=user 的候选若是对某条现有禁排/限制规则在时间或范围上的局部开放（候选表达"某时段可以/开放/允许做某事"，而现有规则恰在同范围内禁止），一律 merge——rule_id 指向该禁排规则，content 合成为"禁排 + 例外开放"单条终态（如旧"周三下午不排会议"+新"周三15点到16点开放技术对齐"→"周三下午不排会议，15点到16点例外开放技术对齐"），不得 keep（用户开放语义会丢失）也不得 new（与禁排条并列成裸矛盾）。
+5. category / evidence / confidence 从候选继承；merge / replace 的 content 用合成终态。
+6. 拿不准时选 keep（保守优先，宁可不学不可学错）；但命中规则 4 的例外开放情形不算"拿不准"，必须 merge。
 
 只输出一个 JSON 对象，不要 markdown 代码块包裹：
 {"actions": [{"candidate_idx": 0, "action": "new|replace|merge|keep", "rule_id": "现有规则 id 或 null",
