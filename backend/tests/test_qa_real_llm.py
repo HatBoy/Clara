@@ -42,14 +42,15 @@ def _restore_real_model(monkeypatch, request):
     """使用测试环境专用模型；数据与凭证完全独立于开发目录。"""
     from qa_helpers import patch_nodes_session, patch_strategist_reads
 
-    from qa_model_gate import bounded_relay, dedicated_config
+    from qa_model_gate import BUDGET_ATTEMPTS, bounded_relay, dedicated_config
 
     config = dedicated_config()
     if config is None:
         pytest.skip("缺少专用模型、密钥、HTTPS 地址或三轮共享预算目录；禁止外联")
     model, key, url, ledger = config
-    if all((ledger / f'provider-{i:02}.used').exists() for i in range(1, 31)):
-        pytest.skip("累计 30 次供应商尝试，剩余未验")
+    if all((ledger / f'provider-{i:02}.used').exists()
+           for i in range(1, BUDGET_ATTEMPTS + 1)):
+        pytest.skip(f"累计 {BUDGET_ATTEMPTS} 次供应商尝试，剩余未验")
     monkeypatch.setenv('NO_PROXY', '127.0.0.1,localhost')
     monkeypatch.setenv('no_proxy', '127.0.0.1,localhost')
     # 失败样本也入分母；测试主体全部硬断言通过才会追加 _record。

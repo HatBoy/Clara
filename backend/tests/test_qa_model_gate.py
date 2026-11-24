@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import httpx
 import pytest
 
-from qa_model_gate import bounded_relay, dedicated_config, reserve_attempt
+from qa_model_gate import BUDGET_ATTEMPTS, bounded_relay, dedicated_config, reserve_attempt
 
 
 def test_dedicated_config_never_falls_back(monkeypatch, tmp_path):
@@ -21,8 +21,9 @@ def test_dedicated_config_never_falls_back(monkeypatch, tmp_path):
 
 
 def test_relay_retry_cannot_cross_shared_budget(tmp_path, monkeypatch):
-    # 前轮预占 29 次；第二轮一次失败供应商应答也消耗额度，SDK 重试不能透传。
-    for _ in range(29):
+    # 前轮预占 BUDGET_ATTEMPTS-1 次；第二轮一次失败供应商应答也消耗额度，
+    # SDK 重试不能透传。
+    for _ in range(BUDGET_ATTEMPTS - 1):
         assert reserve_attempt(tmp_path)
     upstream = []
     real_client = httpx.Client
@@ -41,9 +42,10 @@ def test_relay_retry_cannot_cross_shared_budget(tmp_path, monkeypatch):
     assert upstream == [('https://example.invalid/v1/chat/completions', 'Bearer qa-only')]
 
 
-def test_concurrent_budget_stops_at_30(tmp_path):
+def test_concurrent_budget_stops_at_cap(tmp_path):
     with ThreadPoolExecutor(max_workers=8) as pool:
-        assert sum(pool.map(lambda _: reserve_attempt(tmp_path), range(40))) == 30
+        assert sum(pool.map(lambda _: reserve_attempt(tmp_path),
+                            range(BUDGET_ATTEMPTS + 10))) == BUDGET_ATTEMPTS
     assert not reserve_attempt(tmp_path)
 
 

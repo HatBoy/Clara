@@ -9,9 +9,14 @@ from urllib.parse import urlsplit
 import httpx
 
 
+# 三轮共享供应商尝试上限（2026-11-24 验收批 30→40：真实层 13 例 + SDK/空正文
+# 重试余量；RC8 批 12 场景实测 30 触顶致记忆例外用例未跑完）
+BUDGET_ATTEMPTS = 40
+
+
 def reserve_attempt(directory):
     """三轮共用一个专属目录；先原子占位再发包，崩溃或失败也不退额度。"""
-    for i in range(1, 31):
+    for i in range(1, BUDGET_ATTEMPTS + 1):
         try:
             (directory / f'provider-{i:02}.used').touch(exist_ok=False)
         except FileExistsError:
