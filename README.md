@@ -18,7 +18,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" /></a>
   <a href="https://github.com/HatBoy/Clara/releases"><img src="https://img.shields.io/badge/version-1.1.0-6C63FF.svg" alt="v1.1.0" /></a>
   <a href="https://github.com/HatBoy/Clara/releases"><img src="https://img.shields.io/badge/platform-Windows%20x64-0078D6.svg" alt="Windows" /></a>
-  <a href="backend/tests"><img src="https://img.shields.io/badge/tests-1700%2B%20passed-brightgreen.svg" alt="tests" /></a>
+  <a href="backend/tests"><img src="https://img.shields.io/badge/tests-1800%2B%20passed-brightgreen.svg" alt="tests" /></a>
   <img src="https://img.shields.io/badge/Tauri%202-Rust-orange.svg" alt="Tauri 2" />
   <img src="https://img.shields.io/badge/React%2019-TypeScript-61DAFB.svg" alt="React 19" />
   <img src="https://img.shields.io/badge/backend-Python%20FastAPI-3776AB.svg" alt="FastAPI" />
@@ -173,7 +173,7 @@ flowchart LR
 | 数据接入 | Composio · MCP · CLI 执行器 · icalendar |
 | 同步备份 | WebDAV（坚果云 / Nextcloud）· 行级三路合并 · zip 备份槽 |
 | 通讯 | 飞书 lark-oapi · 钉钉 dingtalk-stream · 企微 SDK · 微信 iLink |
-| 质量 | pytest 1700+ 用例（含七维度端到端 QA 套件）· 前端 tsc 零错误 |
+| 质量 | pytest 1800+ 用例（含八模块端到端 QA 验收套件）· 前端 tsc 零错误 |
 
 ## 快速开始
 
@@ -224,7 +224,7 @@ dev 数据库在 `backend/data/clara.db`（启动一律零灌入测试数据；�
 conda activate <你的环境> && cd backend && python -m pytest
 ```
 
-测试采用双轨制：**确定性基线**（~1700 例，内存 SQLite + 全量 mock，毫秒级零外呼）随 `pytest` 直接跑；**真实层**单独门控——真实 LLM 端点评测与真实 WebDAV A/B 双实例同步（子进程 + 独立远端子目录，不碰现有同步基线），按需运行：
+测试采用双轨制：**确定性基线**（~1800 例，内存 SQLite + 全量 mock，毫秒级零外呼）随 `pytest` 直接跑；**真实层**单独门控——真实 LLM 端点评测与真实 WebDAV A/B 双实例同步（子进程 + 独立远端子目录，不碰现有同步基线），按需运行：
 
 ```bash
 CLARA_QA_REAL=1 python -m pytest tests/test_qa_real_llm.py -m real_llm        # 真实模型评测
@@ -249,7 +249,7 @@ npm run build:all    # 先 PyInstaller 编边车 → src-tauri/bin/，再 tauri 
 │   ├── services/         # 业务逻辑层（AI 不越层直查库）
 │   ├── routers/          # HTTP 薄壳（只做编解码与状态码）
 │   ├── agents/           # LangGraph：双子图 + 统一排期引擎 + prompts
-│   └── tests/            # pytest 1700+ 用例（含七维度端到端 QA 套件）
+│   └── tests/            # pytest 1800+ 用例（含八模块端到端 QA 验收套件）
 └── brand/                # 品牌资源
 ```
 
